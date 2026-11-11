@@ -572,7 +572,52 @@ function MultiTimeframeSignal({symbol,market}) {
     return()=>{live=false;clearInterval(timer);};
   },[symbol,market]);
   const rows=result?.data?['4h','1h','15m','5m'].map(tf=>[tf,result.data[tf]]):[];
-  useEffect(()=>{let live=true;const pending=tracked.filter(x=>x.status==='PENDING');if(!pending.length)return;const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';(async()=>{try{const start=Math.min(...pending.map(x=>x.candleTime))+300000;const r=await fetch(base+path+'?symbol='+symbol+'&interval=5m&startTime='+start+'&limit=1000',{cache:'no-store'});if(!r.ok)return;const candles=await r.json();if(!live||!Array.isArray(candles)||!candles.length)return;setTracked(prev=>{let changed=false;const next=prev.map(sig=>{if(sig.status!=='PENDING'||sig.symbol!==symbol||sig.market!==market)return sig;let bars=sig.bars,exit=null,reason=null;for(const k of candles){const t=Number(k[0]);if(t<=sig.candleTime+sig.bars*300000||Number(k[6])>=Date.now())continue;bars++;const hi=Number(k[2]),lo=Number(k[3]),cl=Number(k[4]),stop=sig.side==='LONG'?lo<=sig.stop:hi>=sig.stop,target=sig.side==='LONG'?hi>=sig.target:lo<=sig.target;if(stop){exit=sig.stop;reason='STOP LOSS';break;}if(target){exit=sig.target;reason='TAKE PROFIT';break;}if(bars>=12){exit=cl;reason='12-CANDLE TIME EXIT';break;}}if(!exit){if(bars!==sig.bars){changed=true;return {...sig,bars};}return sig;}const gross=(exit-sig.entry)/sig.entry*(sig.side==='LONG'?1:-1)*100,net=gross-0.14;changed=true;return {...sig,bars,exit,reason,grossPct:gross,netPct:net,status:'CLOSED',closedAt:Date.now()};});if(changed){try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;}return prev;});}catch{}})();return()=>{live=false;};},[symbol,market,tracked.filter(x=>x.status==='PENDING').map(x=>x.id+':'+x.bars).join('|')]);
+  useEffect(()=>{
+    let live=true;
+    const pending=tracked.filter(x=>x.status==='PENDING'&&x.symbol===symbol&&x.market===market);
+    if(!pending.length)return;
+    const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
+    const path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
+    (async()=>{
+      try{
+        const start=Math.min(...pending.map(x=>x.candleTime))+300000;
+        const r=await fetch(base+path+'?symbol='+symbol+'&interval=5m&startTime='+start+'&limit=1000',{cache:'no-store'});
+        if(!r.ok)return;
+        const raw=await r.json();
+        const candles=Array.isArray(raw)?raw.filter(k=>Number(k[6])<Date.now()).sort((a,b)=>Number(a[0])-Number(b[0])):[];
+        if(!live||!candles.length)return;
+        setTracked(prev=>{
+          let changed=false;
+          const next=prev.map(sig=>{
+            if(sig.status!=='PENDING'||sig.symbol!==symbol||sig.market!==market)return sig;
+            let bars=sig.bars,exit=null,reason=null,review=false;
+            let expected=sig.candleTime+300000;
+            for(const k of candles){
+              const t=Number(k[0]);
+              if(t<expected)continue;
+              if(t!==expected){review=true;break;}
+              bars++;
+              const hi=Number(k[2]),lo=Number(k[3]),cl=Number(k[4]);
+              const stop=sig.side==='LONG'?lo<=sig.stop:hi>=sig.stop;
+              const target=sig.side==='LONG'?hi>=sig.target:lo<=sig.target;
+              if(stop){exit=sig.stop;reason='STOP LOSS';break;}
+              if(target){exit=sig.target;reason='TAKE PROFIT';break;}
+              if(bars>=12){exit=cl;reason='12-CANDLE TIME EXIT';break;}
+              expected+=300000;
+            }
+            if(review){changed=true;return {...sig,bars,status:'REVIEW',reason:'DATA GAP — outcome not scored',reviewedAt:Date.now()};}
+            if(!exit){if(bars!==sig.bars){changed=true;return {...sig,bars};}return sig;}
+            const gross=(exit-sig.entry)/sig.entry*(sig.side==='LONG'?1:-1)*100,net=gross-0.14;
+            changed=true;
+            return {...sig,bars,exit,reason,grossPct:gross,netPct:net,status:'CLOSED',closedAt:Date.now()};
+          });
+          if(changed){try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;}
+          return prev;
+        });
+      }catch{}
+    })();
+    return()=>{live=false;};
+  },[symbol,market,tracked.filter(x=>x.status==='PENDING'&&x.symbol===symbol&&x.market===market).map(x=>x.id+':'+x.bars).join('|')]);
   const closedTracked=tracked.filter(x=>x.status==='CLOSED'),trackedWins=closedTracked.filter(x=>x.netPct>0).length,trackedNet=closedTracked.reduce((s,x)=>s+x.netPct,0);
   const ratio=n=>n==null||!Number.isFinite(n)?'—':n.toFixed(2)+'x';
   return <section className="panel mtf-panel">
@@ -581,10 +626,10 @@ function MultiTimeframeSignal({symbol,market}) {
     <div className="mtf-table-wrap"><table className="mtf-table"><thead><tr><th>TIMEFRAME</th><th>TREND</th><th>ADX</th><th>STRUCTURE</th><th>BOS</th><th>CHoCH</th><th>SWEEP</th><th>RSI</th><th>VOL / AVG</th></tr></thead><tbody>{rows.map(([tf,x])=><tr key={tf}><td>{tf.toUpperCase()}</td><td className={x.trend==='BULLISH'?'positive':x.trend==='BEARISH'?'negative':''}>{x.trend}</td><td>{fmt(x.adx,1)}</td><td>{x.structure}</td><td>{x.bos==='NONE'?'—':x.bos}</td><td>{x.choch==='NONE'?'—':x.choch}</td><td>{x.sweep==='NONE'?'—':x.sweep}</td><td>{fmt(x.rsi,1)}</td><td>{fmt(x.volumeRatio,2)}x</td></tr>)}</tbody></table></div>
     {result?.flow&&<div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TAKER BUY / SELL</span><b>{ratio(result.flow.takerRatio)}</b><small>{result.flow.externalTakerRatio!==null?'Binance Futures 5m ratio':'Completed 5m candle estimate'}</small></div><div className="public-data-card"><span>TOP-20 DEPTH BID / ASK</span><b>{ratio(result.flow.depthRatio)}</b><small>Snapshot imbalance · not full order flow</small></div><div className="public-data-card"><span>ADX REGIME</span><b>{result.data['4h'].adx>=15&&result.data['1h'].adx>=15?'TREND-ELIGIBLE':'WEAK / MIXED'}</b><small>ADX is a strength filter, not direction</small></div></div>}
     {error&&<p className="public-data-error">{error}</p>}
-    <div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TRACKED LIVE SIGNALS</span><b>{tracked.length}</b><small>Saved in this browser</small></div><div className="public-data-card"><span>CLOSED SIGNAL WIN RATE</span><b>{closedTracked.length?fmt(trackedWins/closedTracked.length*100,1)+'%':'—'}</b><small>{closedTracked.length} resolved signals</small></div><div className="public-data-card"><span>NET TRACKED RETURN</span><b className={trackedNet>=0?'positive':'negative'}>{closedTracked.length?(trackedNet>=0?'+':'')+fmt(trackedNet,2)+'%':'—'}</b><small>Equal-weight price return proxy</small></div></div>
-    {tracked.length>0&&<div className="mtf-reasons">{tracked.slice(0,8).map(x=><span key={x.id}>{x.symbol} {x.side} · {x.status==='PENDING'?'PENDING '+x.bars+'/12':x.reason+' · '+(x.netPct>=0?'+':'')+fmt(x.netPct,2)+'%'}</span>)}</div>}
+    <div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TRACKED LIVE SIGNALS</span><b>{tracked.length}</b><small>Saved in this browser</small></div><div className="public-data-card"><span>CLOSED SIGNAL WIN RATE</span><b>{closedTracked.length?fmt(trackedWins/closedTracked.length*100,1)+'%':'—'}</b><small>{closedTracked.length} resolved · {tracked.filter(x=>x.status==='REVIEW').length} need review</small></div><div className="public-data-card"><span>NET TRACKED RETURN</span><b className={trackedNet>=0?'positive':'negative'}>{closedTracked.length?(trackedNet>=0?'+':'')+fmt(trackedNet,2)+'%':'—'}</b><small>Equal-weight price return proxy</small></div></div>
+    {tracked.length>0&&<div className="mtf-reasons">{tracked.slice(0,8).map(x=><span key={x.id}>{x.symbol} {x.side} · {x.status==='PENDING'?'PENDING '+x.bars+'/12':x.status==='REVIEW'?x.reason:x.reason+' · '+(x.netPct>=0?'+':'')+fmt(x.netPct,2)+'%'}</span>)}</div>}
     <div className="mtf-reasons">{(result?.reasons||['Waiting for completed candles and order-book snapshot.']).map((x,i)=><span key={i}>{x}</span>)}</div>
-    <p className="public-data-foot">Research-only rule set. Signal log is browser-local and tracks only emitted LONG/SHORT decisions; entry is the completed 5M candle close reference (not a guaranteed next-open fill). Outcomes resolve at 1.5x ATR stop, 3x ATR target, or 12 completed 5M candles, with stop-first same-candle handling and a fixed 0.14% round-trip cost assumption. This is a monitoring proxy, not a broker fill or independently validated win rate. ADX uses Wilder-style smoothing; pivots require three right-side closed candles. Order book is a single top-20 snapshot. No orders are placed.</p>
+    <p className="public-data-foot">Research-only rule set. Signal log is browser-local and tracks only emitted LONG/SHORT decisions for the selected symbol/market; pending signals for another selection pause until revisited. Entry is the completed 5M candle close reference, not a guaranteed next-open fill. Outcomes use a 1.5x ATR stop, 3x ATR target, or 12 completed 5M candles, stop-first same-candle handling and a fixed 0.14% round-trip cost assumption. Missing 5M intervals are marked REVIEW and excluded from win-rate calculations. This is a monitoring proxy, not a broker fill or independently validated win rate. ADX uses Wilder-style smoothing; pivots require three right-side closed candles. Order book is a single top-20 snapshot. No orders are placed.</p>
   </section>;
 }
 
@@ -689,13 +734,14 @@ function App() {
   useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
   const closeTrade=(id,exitPrice,reason='MANUAL')=>{
     const t=paperTrades.find(x=>x.id===id);if(!t||t.status!=='OPEN')return;
-    const gross=(exitPrice-t.entry)*t.quantity*(t.side==='LONG'?1:-1),exitFee=exitPrice*t.quantity*0.0005;
-    const netPnl=gross-(t.entryFee||0)-exitFee;
+    const gross=(exitPrice-t.entry)*t.quantity*(t.side==='LONG'?1:-1),exitFee=exitPrice*t.quantity*0.0005,entryFee=Number(t.entryFee||0);
+    const netPnl=gross-entryFee-exitFee;
     setDemoBalance(b=>b+(t.margin||t.entry*t.quantity/(t.leverage||1))+gross-exitFee);
-    setPaperTrades(rows=>rows.map(x=>x.id===id?{...x,status:'CLOSED',exit:exitPrice,pnl:netPnl,exitReason:reason}:x));
+    setPaperTrades(rows=>rows.map(x=>x.id===id?{...x,status:'CLOSED',exit:exitPrice,pnl:netPnl,grossPnl:gross,exitFee,closedAt:Date.now(),exitReason:reason}:x));
     closingIds.current.delete(id);
   };
   const addPaperTrade=()=>{
+    if(!signalHealth.priceFresh||!signalHealth.candleFresh||!signalHealth.hasTicker||!signalHealth.hasClosedCandles||!signalHealth.reconciliationOk||signalHealth.candleGaps!==0){showNotice('Paper trade blocked: market data integrity is not fully valid. Wait for fresh, reconciled data with continuous completed candles.');return;}
     if(!price){showNotice('Market price is not available yet.');return;}
     if(analysis.bias==='WAIT'||!analysis.atr){showNotice('No trade opened: setup is WAIT or ATR data is unavailable.');return;}
     if(paperTrades.some(t=>t.status==='OPEN'&&t.market!==market)){showNotice('Close open paper positions in the other market before opening a new one.');return;}
@@ -708,7 +754,7 @@ function App() {
     if(!Number.isFinite(quantity)||quantity<=0){showNotice('Insufficient demo balance for this position.');return;}
     const margin=price*quantity/leverage,entryFee=price*quantity*0.0005;
     if(margin+entryFee>demoBalance){showNotice('Insufficient demo balance.');return;}
-    const trade={id:Date.now(),symbol,side,market,entry:price,quantity,stop,target,leverage,margin,entryFee,status:'OPEN',time:new Date().toLocaleString()};
+    const trade={id:Date.now()+'_'+symbol,symbol,side,market,entry:price,quantity,stop,target,leverage,margin,entryFee,status:'OPEN',time:new Date().toLocaleString(),openedAt:Date.now(),feeRate:0.0005};
     setPaperTrades(rows=>[trade,...rows]);setDemoBalance(b=>b-margin-entryFee);
     showNotice('Paper '+side+' opened with '+leverage+'x leverage and a 1% risk cap.');
   };
@@ -716,11 +762,11 @@ function App() {
     paperTrades.filter(t=>t.status==='OPEN').forEach(t=>{
       const live=Number(prices[t.symbol]?.lastPrice||0);if(!live||closingIds.current.has(t.id))return;
       const stopHit=t.side==='LONG'?live<=t.stop:live>=t.stop,targetHit=t.side==='LONG'?live>=t.target:live<=t.target;
-      if(stopHit||targetHit){closingIds.current.add(t.id);closeTrade(t.id,stopHit?t.stop:t.target,stopHit?'STOP LOSS':'TAKE PROFIT');}
+      if(stopHit||targetHit){closingIds.current.add(t.id);closeTrade(t.id,stopHit?live:t.target,stopHit?'STOP LOSS':'TAKE PROFIT');}
     });
   },[prices,paperTrades]);
 
-  const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN').reduce((sum,t)=>{const live=Number(prices[t.symbol]?.lastPrice||t.entry);return sum+(live-t.entry)*t.quantity*(t.side==='LONG'?1:-1);},0);
+  const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN').reduce((sum,t)=>{const live=Number(prices[t.symbol]?.lastPrice||t.entry),gross=(live-t.entry)*t.quantity*(t.side==='LONG'?1:-1),estimatedExitFee=live*t.quantity*Number(t.feeRate||0.0005);return sum+gross-Number(t.entryFee||0)-estimatedExitFee;},0);
   return <div className={`app ${theme}`}>
     <aside className={`sidebar ${mobileNav?'open':''}`}>
       <div className="brand"><div className="brand-mark"><Activity size={19}/></div><div><b>Crypto<span>Bot</span></b><small>TRADING TERMINAL</small></div><button className="icon-btn mobile-close" onClick={()=>setMobileNav(false)}><X size={17}/></button></div>
@@ -795,7 +841,7 @@ function App() {
         )}
         <section className="lower-grid">
           <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>Selected liquid markets</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Live WebSocket stream · REST fallback · {filtered.length} assets shown</div></div>
-          <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USD</span><span>Starting balance: $10,000</span></div><div className="paper-stats"><div><span>OPEN TRADES</span><b>{paperTrades.filter(t=>t.status==='OPEN').length}</b></div><div><span>UNREALIZED P&L</span><b className={unrealizedPnl>=0?'positive':'negative'}>{unrealizedPnl>=0?'+':''}${fmt(unrealizedPnl)}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation and does not represent real execution or guaranteed results.</p></div>
+          <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USD</span><span>Starting balance: $10,000</span></div><div className="paper-stats"><div><span>OPEN TRADES</span><b>{paperTrades.filter(t=>t.status==='OPEN').length}</b></div><div><span>EST. NET UNREALIZED P&L</span><b className={unrealizedPnl>=0?'positive':'negative'}>{unrealizedPnl>=0?'+':''}${fmt(unrealizedPnl)}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation and does not represent real execution or guaranteed results.</p></div>
         </section>
         {(tab==='Paper Trading'||tab==='Trade Journal')&&(
           <section className="panel journal-panel">
