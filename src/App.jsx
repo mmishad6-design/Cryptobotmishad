@@ -49,8 +49,9 @@ function App() {
   const [tab,setTab] = useState('Overview');
   const [mobileNav,setMobileNav] = useState(false);
   const [watchOnly,setWatchOnly] = useState(false);
-  const [demoBalance,setDemoBalance] = useState(10000);
-  const [paperTrades,setPaperTrades] = useState([]);
+  const [demoBalance,setDemoBalance] = useState(()=>{try{return Number(localStorage.getItem('cryptobot.demoBalance'))||10000;}catch{return 10000;}});
+  const [paperTrades,setPaperTrades] = useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.paperTrades')||'[]');}catch{return [];}});
+  const closingIds=useRef(new Set());
   const [notice,setNotice] = useState('');
 
   const active = WATCH.find(c=>c[0]===symbol) || WATCH[0];
@@ -123,21 +124,40 @@ function App() {
   },[candles,demoBalance]);
   const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
+  useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
+  const closeTrade=(id,exitPrice,reason='MANUAL')=>{
+    const t=paperTrades.find(x=>x.id===id);if(!t||t.status!=='OPEN')return;
+    const gross=(exitPrice-t.entry)*t.quantity*(t.side==='LONG'?1:-1),exitFee=exitPrice*t.quantity*0.0005;
+    const netPnl=gross-(t.entryFee||0)-exitFee;
+    setDemoBalance(b=>b+(t.margin||t.entry*t.quantity/(t.leverage||1))+gross-exitFee);
+    setPaperTrades(rows=>rows.map(x=>x.id===id?{...x,status:'CLOSED',exit:exitPrice,pnl:netPnl,exitReason:reason}:x));
+    closingIds.current.delete(id);
+  };
   const addPaperTrade=()=>{
     if(!price){showNotice('Market price is not available yet.');return;}
-    if(analysis.bias==='WAIT'){showNotice('No paper trade opened: current setup is WAIT.');return;}
-    const side=analysis.bias;
-    const trade={id:Date.now(),symbol,side,entry:price,quantity:0.01,status:'OPEN',time:new Date().toLocaleString()};
-    setPaperTrades(t=>[trade,...t]);setDemoBalance(b=>b- price*0.01);
-    showNotice(`Paper ${side} opened for ${active[2]} (0.01 units).`);
+    if(analysis.bias==='WAIT'||!analysis.atr){showNotice('No trade opened: setup is WAIT or ATR data is unavailable.');return;}
+    if(market==='Spot'&&analysis.bias==='SHORT'){showNotice('Spot mode cannot open short positions. Switch to Futures or wait for a LONG setup.');return;}
+    const side=analysis.bias,leverage=market==='Futures'?3:1;
+    const stop=side==='LONG'?price-analysis.atr*1.5:price+analysis.atr*1.5;
+    const target=side==='LONG'?price+analysis.atr*3:price-analysis.atr*3;
+    const riskQuantity=analysis.riskUsd/Math.abs(price-stop),affordableQuantity=demoBalance/(price/leverage+price*0.0005);
+    const quantity=Math.min(riskQuantity,affordableQuantity);
+    if(!Number.isFinite(quantity)||quantity<=0){showNotice('Insufficient demo balance for this position.');return;}
+    const margin=price*quantity/leverage,entryFee=price*quantity*0.0005;
+    if(margin+entryFee>demoBalance){showNotice('Insufficient demo balance.');return;}
+    const trade={id:Date.now(),symbol,side,market,entry:price,quantity,stop,target,leverage,margin,entryFee,status:'OPEN',time:new Date().toLocaleString()};
+    setPaperTrades(rows=>[trade,...rows]);setDemoBalance(b=>b-margin-entryFee);
+    showNotice('Paper '+side+' opened with '+leverage+'x leverage and a 1% risk cap.');
   };
-  const closeTrade=id=>{
-    const t=paperTrades.find(x=>x.id===id); if(!t)return;
-    const pnl=(price-t.entry)*t.quantity*(t.side==='LONG'?1:-1);
-    setDemoBalance(b=>b+t.entry*t.quantity+pnl);
-    setPaperTrades(a=>a.map(x=>x.id===id?{...x,status:'CLOSED',exit:price,pnl}:x));
-  };
+  useEffect(()=>{
+    paperTrades.filter(t=>t.status==='OPEN').forEach(t=>{
+      const live=Number(prices[t.symbol]?.lastPrice||0);if(!live||closingIds.current.has(t.id))return;
+      const stopHit=t.side==='LONG'?live<=t.stop:live>=t.stop,targetHit=t.side==='LONG'?live>=t.target:live<=t.target;
+      if(stopHit||targetHit){closingIds.current.add(t.id);closeTrade(t.id,stopHit?t.stop:t.target,stopHit?'STOP LOSS':'TAKE PROFIT');}
+    });
+  },[prices,paperTrades]);
 
+  const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN').reduce((sum,t)=>{const live=Number(prices[t.symbol]?.lastPrice||t.entry);return sum+(live-t.entry)*t.quantity*(t.side==='LONG'?1:-1);},0);
   return <div className={`app ${theme}`}>
     <aside className={`sidebar ${mobileNav?'open':''}`}>
       <div className="brand"><div className="brand-mark"><Activity size={19}/></div><div><b>Crypto<span>Bot</span></b><small>TRADING TERMINAL</small></div><button className="icon-btn mobile-close" onClick={()=>setMobileNav(false)}><X size={17}/></button></div>
@@ -194,9 +214,21 @@ function App() {
         )}
         <section className="lower-grid">
           <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>Selected liquid markets</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Live WebSocket stream · REST fallback · {filtered.length} assets shown</div></div>
-          <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USD</span><span>Starting balance: $10,000</span></div><div className="paper-stats"><div><span>OPEN TRADES</span><b>{paperTrades.filter(t=>t.status==='OPEN').length}</b></div><div><span>TOTAL TRADES</span><b>{paperTrades.length}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation and does not represent real execution or guaranteed results.</p></div>
+          <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USD</span><span>Starting balance: $10,000</span></div><div className="paper-stats"><div><span>OPEN TRADES</span><b>{paperTrades.filter(t=>t.status==='OPEN').length}</b></div><div><span>UNREALIZED P&L</span><b className={unrealizedPnl>=0?'positive':'negative'}>{unrealizedPnl>=0?'+':''}${fmt(unrealizedPnl)}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation and does not represent real execution or guaranteed results.</p></div>
         </section>
-        {tab==='Paper Trading'&&<section className="panel journal-panel"><div className="panel-title"><div><h3>Paper trade journal</h3><p>Practice entries and review outcomes</p></div><button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button></div>{paperTrades.length===0?<div className="empty-state">No paper trades yet. A trade can only be opened when the setup assessment is LONG or SHORT.</div>:<div className="trade-list">{paperTrades.map(t=><div className="trade-row" key={t.id}><b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b><span>Entry: ${fmt(t.entry)}</span><span>{t.status==='OPEN'?'Open':`Exit: $${fmt(t.exit)}`}</span>{t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id)}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
+        {tab==='Paper Trading'&&<section className="panel journal-panel"><div className="panel-title"><div><h3>Paper trade journal</h3><p>Practice entries and review outcomes</p></div><button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button></div>{paperTrades.length===0?<div className="empty-state">No paper trades yet. A trade can only be opened when the setup assessment is LONG or SHORT.</div>:<div className="trade-list">{paperTrades.map(t=><div className="trade-row" key={t.id}><b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b><span>Entry: ${fmt(t.entry)}</span><span>{t.status==='OPEN'?'Live: {t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(prices[t.symbol]?.lastPrice||t.entry),'MANUAL')}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
+        <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
+      </div>
+    </main>
+  </div>;
+}
+export default App;+fmt(prices[t.symbol]?.lastPrice||t.entry):'Exit: {t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(prices[t.symbol]?.lastPrice||t.entry),'MANUAL')}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
+        <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
+      </div>
+    </main>
+  </div>;
+}
+export default App;+fmt(t.exit)}</span><span>SL: ${fmt(t.stop)} · TP: ${fmt(t.target)}</span>{t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(prices[t.symbol]?.lastPrice||t.entry),'MANUAL')}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
         <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
       </div>
     </main>
