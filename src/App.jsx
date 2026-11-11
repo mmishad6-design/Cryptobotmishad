@@ -422,7 +422,22 @@ function PublicDerivativesPanel({symbol}) {
   return <section className="panel public-derivatives-panel">
     <div className="panel-title"><div><h3>Live derivatives & order flow</h3><p>{symbol.replace('USDT','')}/USDT · Binance Futures public endpoints</p></div><span className={'tiny-live '+(status==='LIVE'?'':'data-status-warn')}>{status}</span></div>
     <div className="public-data-grid">
-      <div className="public-data-card"><span>ORDER BOOK BID VALUE</span><b className="positive">{data.bids!==null?'
+      <div className="public-data-card"><span>ORDER BOOK BID VALUE</span><b className="positive">{data.bids!==null?String.fromCharCode(36)+money(data.bids):'—'}</b><small>Top 20 bid levels</small></div>
+      <div className="public-data-card"><span>ORDER BOOK ASK VALUE</span><b className="negative">{data.asks!==null?String.fromCharCode(36)+money(data.asks):'—'}</b><small>Top 20 ask levels</small></div>
+      <div className="public-data-card"><span>GLOBAL LONG / SHORT</span><b>{ratioText(data.globalRatio)}</b><small>Accounts · 5 minute</small></div>
+      <div className="public-data-card"><span>TOP TRADER POSITION RATIO</span><b>{ratioText(data.topRatio)}</b><small>Positions · 5 minute</small></div>
+      <div className="public-data-card"><span>TAKER BUY / SELL RATIO</span><b>{ratioText(data.takerRatio)}</b><small>Above 1 = more taker buy volume</small></div>
+      <div className="public-data-card"><span>OPEN INTEREST CHANGE</span><b className={data.oiChange===null?'':data.oiChange>=0?'positive':'negative'}>{data.oiChange===null?'—':(data.oiChange>=0?'+':'')+data.oiChange.toFixed(3)+'%'}</b><small>Latest 5m interval vs previous</small></div>
+    </div>
+    <div className="depth-balance"><div><span>ORDER BOOK DEPTH BALANCE</span><b>{depthTotal?bidPct.toFixed(1)+'% bids / '+(100-bidPct).toFixed(1)+'% asks':'Waiting for depth data'}</b></div><div className="depth-track"><i style={{width:bidPct+'%'}}/></div></div>
+    {error&&<p className="public-data-error">{error}</p>}
+    <div className="liquidation-head"><div><b>Recent liquidation feed</b><small>Symbol-specific Binance force-order stream · Live events only</small></div><span>{liquidations.length} events</span></div>
+    {liquidations.length===0?<div className="liquidation-empty">Waiting for liquidation events. No event does not mean there are no liquidations across the wider market.</div>:<div className="liquidation-list">{liquidations.map(x=><div className="liquidation-row" key={x.id}><b className={x.side.startsWith('LONG')?'negative':'positive'}>{x.side}</b><span>{x.qty.toLocaleString('en-US',{maximumFractionDigits:4})} {symbol.replace('USDT','')}</span><span>{String.fromCharCode(36)}{x.price.toLocaleString('en-US',{maximumFractionDigits:5})}</span><small>{x.time.toLocaleTimeString()}</small></div>)}</div>}
+    <p className="public-data-foot">Updated: {data.updated?data.updated.toLocaleTimeString():'Waiting…'} · Public endpoints can be delayed, rate-limited or unavailable. Order book is a top-20 snapshot, not full market liquidity. Liquidation feed is not a complete market-wide liquidation history.</p>
+  </section>;
+}
+
+function App() {
   const [symbol,setSymbol] = useState('BTCUSDT');
   const [interval,setTimeframe] = useState('15m');
   const [market,setMarket] = useState('Futures');
