@@ -144,6 +144,84 @@ function BacktestPanel({symbol,market,defaultInterval}) {
   </section>;
 }
 
+
+function StrategyOptimizer({symbol,market}) {
+  const [tf,setTf]=useState('15m'),[days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02');
+  const [running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
+  const run=async()=>{
+    setRunning(true);setError('');setResult(null);
+    try{
+      const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
+      const endpoint=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
+      const now=Date.now(),start=now-Number(days)*86400000;
+      const ms={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[tf];
+      let cursor=Math.max(start,now-5000*ms),raw=[];
+      while(cursor<now&&raw.length<5000){
+        const r=await fetch(base+endpoint+'?symbol='+symbol+'&interval='+tf+'&startTime='+cursor+'&endTime='+now+'&limit=1000');
+        if(!r.ok)throw new Error('Binance historical data request failed ('+r.status+').');
+        const batch=await r.json();if(!Array.isArray(batch)||!batch.length)break;
+        raw=raw.concat(batch);cursor=Number(batch[batch.length-1][0])+ms;if(batch.length<1000)break;
+      }
+      const data=raw.slice(0,5000).map(k=>({time:k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
+      if(data.length<180)throw new Error('At least 180 candles are required. Choose a longer history or timeframe.');
+      const feeRate=Math.max(0,Math.min(1,Number(fee)||0))/100,slipRate=Math.max(0,Math.min(1,Number(slippage)||0))/100;
+      const split=Math.floor(data.length*.7),starting=10000;
+      const configs=[];
+      [10,20].forEach(fast=>[50,100].forEach(slow=>{if(fast>=slow)return;[1,1.5].forEach(sl=>[2,3].forEach(tp=>configs.push({fast,slow,sl,tp})));}));
+      const simulate=(cfg,from,to)=>{
+        let equity=starting,peak=starting,maxDD=0,pos=null,trades=[];
+        const avg=(i,n)=>{let s=0;for(let j=i-n+1;j<=i;j++)s+=data[j].close;return s/n;};
+        const atr=i=>{let s=0;for(let j=i-14;j<=i;j++){const p=data[j-1]?.close??data[j].close;s+=Math.max(data[j].high-data[j].low,Math.abs(data[j].high-p),Math.abs(data[j].low-p));}return s/15;};
+        const close=(raw,reason,time)=>{const p=pos;if(!p)return;const exit=p.side==='LONG'?raw*(1-slipRate):raw*(1+slipRate);const gross=(exit-p.entry)*p.qty*(p.side==='LONG'?1:-1);const net=gross-p.entry* p.qty*feeRate-exit*p.qty*feeRate;equity+=net;trades.push({pnl:net,reason});pos=null;};
+        for(let i=Math.max(cfg.slow,from);i<to-1;i++){
+          const c=data[i],next=data[i+1],last=c.close,mf=avg(i,cfg.fast),mslow=avg(i,cfg.slow),mom=(last-data[i-1].close)/data[i-1].close*100;
+          let score=50;if(last>mf)score+=12;else score-=12;if(mf>mslow)score+=15;else score-=15;if(mom>.08)score+=8;else if(mom<-.08)score-=8;
+          const bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
+          if(pos){const stop=pos.side==='LONG'?c.low<=pos.stop:c.high>=pos.stop;const target=pos.side==='LONG'?c.high>=pos.target:c.low<=pos.target;if(stop)close(pos.stop,'SL',c.time);else if(target)close(pos.target,'TP',c.time);}
+          if(!pos&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){
+            const a=atr(i),entryRaw=next.open,entry=bias==='LONG'?entryRaw*(1+slipRate):entryRaw*(1-slipRate),distance=a*cfg.sl,risk=equity*.01;
+            let qty=risk/distance;qty=Math.min(qty,equity*(market==='Futures'?3:1)/(entry*(1+feeRate)));
+            const margin=entry*qty/(market==='Futures'?3:1),entryFee=entry*qty*feeRate;
+            if(Number.isFinite(qty)&&qty>0&&margin+entryFee<=equity)pos={side:bias,entry,qty,stop:bias==='LONG'?entry-distance:entry+distance,target:bias==='LONG'?entry+a*cfg.tp:entry-a*cfg.tp};
+          }
+          const marked=equity+(pos?((c.close-pos.entry)*pos.qty*(pos.side==='LONG'?1:-1)-pos.entry*pos.qty*feeRate):0);
+          peak=Math.max(peak,marked);maxDD=Math.max(maxDD,(peak-marked)/peak*100);
+        }
+        if(pos)close(data[to-1].close,'END',data[to-1].time);
+        const wins=trades.filter(t=>t.pnl>0),losses=trades.filter(t=>t.pnl<0),gp=wins.reduce((s,t)=>s+t.pnl,0),gl=Math.abs(losses.reduce((s,t)=>s+t.pnl,0));
+        return {trades:trades.length,winRate:trades.length?wins.length/trades.length*100:0,net:equity-starting,returnPct:(equity-starting)/starting*100,maxDD,profitFactor:gl?gp/gl:gp>0?null:0,expectancy:trades.length?(equity-starting)/trades.length:0};
+      };
+      const tested=configs.map(cfg=>({...cfg,train:simulate(cfg,0,split)})).filter(x=>x.train.trades>=5);
+      if(!tested.length)throw new Error('No parameter set produced at least 5 training trades. Try a longer history or another timeframe.');
+      tested.sort((a,b)=>{
+        const score=x=>(x.train.profitFactor===null?3:x.train.profitFactor)+x.train.returnPct*.015-x.train.maxDD*.08;
+        return score(b)-score(a);
+      });
+      const ranked=tested.slice(0,8).map(x=>({...x,test:simulate(x,split,data.length)}));
+      setResult({symbol,market,tf,days,candles:data.length,from:data[0].time,split:data[split].time,to:data[data.length-1].time,trainingCandles:split,testCandles:data.length-split,ranked,feeRate,slipRate});
+    }catch(e){setError(e.message||'Optimization failed. Please retry.');}
+    finally{setRunning(false);}
+  };
+  return <section className="panel optimizer-panel">
+    <div className="panel-title"><div><h3>Strategy optimization & validation</h3><p>Parameter search on the first 70% · independent validation on the final 30%</p></div><span className="tiny-live">RESEARCH MODE</span></div>
+    <div className="backtest-controls optimizer-controls">
+      <label>TIMEFRAME<select value={tf} onChange={e=>setTf(e.target.value)}>{['5m','15m','1h','4h','1d'].map(x=><option key={x}>{x}</option>)}</select></label>
+      <label>HISTORY<select value={days} onChange={e=>setDays(e.target.value)}><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
+      <label>FEE (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label>
+      <label>SLIPPAGE (%)<input type="number" min="0" max="1" step="0.01" value={slippage} onChange={e=>setSlippage(e.target.value)}/></label>
+      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'Testing…':'Optimize strategy'}</button>
+    </div>
+    {error&&<div className="backtest-error">{error}</div>}
+    {result&&<>
+      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} candles · {result.ranked.length} candidates ranked</span></div>
+      <div className="validation-split"><div><b>IN-SAMPLE · 70%</b><span>{result.trainingCandles} candles · used to rank settings</span></div><div><b>OUT-OF-SAMPLE · 30%</b><span>{result.testCandles} candles · unseen validation period</span></div></div>
+      <div className="backtest-table-wrap"><table className="backtest-table optimizer-table"><thead><tr><th>Rank</th><th>Parameters (Fast / Slow)</th><th>SL × ATR</th><th>TP × ATR</th><th>Train return</th><th>Train DD</th><th>Test return</th><th>Test win rate</th><th>Test trades</th><th>Test PF</th></tr></thead><tbody>{result.ranked.map((x,i)=><tr key={x.fast+'-'+x.slow+'-'+x.sl+'-'+x.tp}><td>{i+1}</td><td>SMA {x.fast}/{x.slow}</td><td>{x.sl}×</td><td>{x.tp}×</td><td className={x.train.returnPct>=0?'positive':'negative'}>{x.train.returnPct>=0?'+':''}{fmt(x.train.returnPct)}%</td><td>{fmt(x.train.maxDD)}%</td><td className={x.test.returnPct>=0?'positive':'negative'}>{x.test.returnPct>=0?'+':''}{fmt(x.test.returnPct)}%</td><td>{fmt(x.test.winRate)}%</td><td>{x.test.trades}</td><td>{x.test.profitFactor===null?'∞':fmt(x.test.profitFactor)}</td></tr>)}</tbody></table></div>
+      <p className="backtest-assumption">Ranking uses training-period results only. The final 30% is evaluated after selecting candidates and is not used to rank them. Starting capital $10,000 per simulation; 1% risk budget per trade; Futures notional capped at 3×. Fees and slippage applied on entry/exit. Funding, liquidation, spread, partial fills and market impact are excluded. Up to 5,000 recent candles.</p>
+    </>}
+    <div className="backtest-disclaimer"><ShieldCheck size={14}/> This is a parameter sensitivity experiment, not proof of a trading edge. Small samples and historical regimes can mislead; compare out-of-sample results and drawdown before drawing conclusions.</div>
+  </section>;
+}
+
 function App() {
   const [symbol,setSymbol] = useState('BTCUSDT');
   const [interval,setTimeframe] = useState('15m');
@@ -232,7 +310,7 @@ function App() {
     const positionSize=stop?riskUsd/Math.abs(last-stop):0;
     return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,atr,stop,target,positionSize,riskUsd,reason:`Price is ${last>e20?'above':'below'} the 20-period average and the short-term trend is ${e20>e50?'positive':'negative'} versus the 50-period average.`};
   },[candles,demoBalance]);
-  const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['News & Events',Newspaper]];
+  const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
   useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
   const closeTrade=(id,exitPrice,reason='MANUAL')=>{
@@ -304,6 +382,7 @@ function App() {
           </div>
         </section>
         {tab==='Backtesting'&&<BacktestPanel symbol={symbol} market={market} defaultInterval={interval}/>}
+        {tab==='Strategy Lab'&&<StrategyOptimizer symbol={symbol} market={market}/>}
         {tab==='Futures Analysis'&&(
           <section className="panel risk-panel">
             <div className="panel-title">
