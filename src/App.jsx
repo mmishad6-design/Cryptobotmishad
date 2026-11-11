@@ -96,7 +96,8 @@ function BacktestPanel({symbol,market,defaultInterval}) {
         const qty=Math.min(equity*.01/distance,(equity*(market==='Futures'?3:1))/(entry*(1+feeRate)));
         if(Number.isFinite(qty)&&qty>0){const margin=entry*qty/(market==='Futures'?3:1),entryFee=entry*qty*feeRate;if(margin+entryFee<=equity)position={side:bias,entry,qty,stop:bias==='LONG'?entry-distance:entry+distance,target:bias==='LONG'?entry+atr*3:entry-atr*3,entryFee,entryTime:data[i+1].time};}
       }
-      const marked=equity+(position?((c.close-position.entry)*position.qty*(position.side==='LONG'?1:-1)-position.entryFee):0);peak=Math.max(peak,marked);maxDrawdown=Math.max(maxDrawdown,(peak-marked)/peak*100);
+      const positionActiveAtClose=position&&position.entryTime<=c.time;
+      const marked=equity+(positionActiveAtClose?((c.close-position.entry)*position.qty*(position.side==='LONG'?1:-1)-position.entryFee):0);peak=Math.max(peak,marked);maxDrawdown=Math.max(maxDrawdown,(peak-marked)/peak*100);
     }
     if(position)close(data.at(-1).close,'END OF TEST',data.at(-1).time);
     const wins=trades.filter(t=>t.pnl>0),losses=trades.filter(t=>t.pnl<0),gp=wins.reduce((s,t)=>s+t.pnl,0),gl=Math.abs(losses.reduce((s,t)=>s+t.pnl,0));
@@ -449,7 +450,7 @@ function PublicDerivativesPanel({symbol}) {
 
 
 function evaluateTimeframe(candles) {
-  const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
+  const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
   if(rows.length<60) throw new Error('Not enough completed candles');
   const closes=rows.map(x=>x.close);
   const ema=(period)=>{const alpha=2/(period+1);let value=closes.slice(0,period).reduce((a,b)=>a+b,0)/period;for(let i=period;i<closes.length;i++)value=closes[i]*alpha+value*(1-alpha);return value;};
@@ -501,7 +502,7 @@ function evaluateTimeframe(candles) {
   const sweep=lastHigh&&last.high>lastHigh.price&&last.close<lastHigh.price?'HIGH-SIDE':lastLow&&last.low<lastLow.price&&last.close>lastLow.price?'LOW-SIDE':'NONE';
   const takerSell=Math.max(0,last.volume-last.takerBuy);
   const takerRatio=takerSell>0?last.takerBuy/takerSell:null;
-  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,structure,bos,choch,sweep,takerRatio};
+  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,structure,bos,choch,sweep,takerRatio};
 }
 function MultiTimeframeSignal({symbol,market}) {
   const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
@@ -529,11 +530,14 @@ function MultiTimeframeSignal({symbol,market}) {
         if(market==='Futures'){
           try{
             const tr=await fetch('https://fapi.binance.com/futures/data/takerlongshortRatio?symbol='+symbol+'&period=5m&limit=1',{cache:'no-store'});
-            if(tr.ok){const values=await tr.json();if(values.length)externalTakerRatio=Number(values[0].buySellRatio);}
+            if(tr.ok){const values=await tr.json();const latest=values?.[0],stamp=Number(latest?.timestamp);if(latest&&Number.isFinite(stamp)&&Date.now()-stamp<=10*60*1000)externalTakerRatio=Number(latest.buySellRatio);}
           }catch{}
         }
         if(!live)return;
         const data=Object.fromEntries(all),[h4,h1,m15,m5]=frames.map(tf=>data[tf]);
+        const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000};
+        const staleFrames=frames.filter(tf=>!data[tf]||!Number.isFinite(data[tf].closeTime)||Date.now()-data[tf].closeTime>frameMs[tf]+120000);
+        if(staleFrames.length){setResult({symbol,market,decision:'NO TRADE',score:0,data,flow:null,reasons:['Completed candle data is stale for: '+staleFrames.map(x=>x.toUpperCase()).join(', ')+'. Waiting for a fresh Binance snapshot.'],updated:new Date(),status:'BLOCKED'});return;}
         const takerRatio=Number.isFinite(externalTakerRatio)&&externalTakerRatio>0?externalTakerRatio:m5.takerRatio;
         const longBias=h4.trend==='BULLISH'&&h1.trend==='BULLISH';
         const shortBias=h4.trend==='BEARISH'&&h1.trend==='BEARISH';
@@ -558,7 +562,7 @@ function MultiTimeframeSignal({symbol,market}) {
         if(score>=85&&volumeOk&&adxRegimeOk&&structureOk)decision=longBias?'LONG':'SHORT';
         else reasons.push('Strict confirmation gate not satisfied — NO TRADE');
         setResult({symbol,market,decision,score,data,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio},reasons,updated:new Date(),status:'READY'});
-        setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const entry=m5.close,atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
+        setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const entry=m5.close,atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,entryType:'COMPLETED_5M_CLOSE_REFERENCE',stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
       }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['Required timeframe or order-book data unavailable.'],updated:new Date(),status:'BLOCKED'});setError(e.message||'Multi-timeframe analysis failed.');}}
       finally{if(live)setLoading(false);}
     };
@@ -578,7 +582,7 @@ function MultiTimeframeSignal({symbol,market}) {
     <div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TRACKED LIVE SIGNALS</span><b>{tracked.length}</b><small>Saved in this browser</small></div><div className="public-data-card"><span>CLOSED SIGNAL WIN RATE</span><b>{closedTracked.length?fmt(trackedWins/closedTracked.length*100,1)+'%':'—'}</b><small>{closedTracked.length} resolved signals</small></div><div className="public-data-card"><span>NET TRACKED RETURN</span><b className={trackedNet>=0?'positive':'negative'}>{closedTracked.length?(trackedNet>=0?'+':'')+fmt(trackedNet,2)+'%':'—'}</b><small>Equal-weight price return proxy</small></div></div>
     {tracked.length>0&&<div className="mtf-reasons">{tracked.slice(0,8).map(x=><span key={x.id}>{x.symbol} {x.side} · {x.status==='PENDING'?'PENDING '+x.bars+'/12':x.reason+' · '+(x.netPct>=0?'+':'')+fmt(x.netPct,2)+'%'}</span>)}</div>}
     <div className="mtf-reasons">{(result?.reasons||['Waiting for completed candles and order-book snapshot.']).map((x,i)=><span key={i}>{x}</span>)}</div>
-    <p className="public-data-foot">Research-only rule set. Signal log is browser-local and tracks only emitted LONG/SHORT decisions; outcomes resolve at 1.5x ATR stop, 3x ATR target, or 12 completed 5M candles, with stop-first same-candle handling and a fixed 0.14% round-trip cost assumption. This is a monitoring proxy, not a broker fill or independently validated win rate. ADX uses Wilder-style smoothing; pivots require three right-side closed candles. Order book is a single top-20 snapshot. No orders are placed.</p>
+    <p className="public-data-foot">Research-only rule set. Signal log is browser-local and tracks only emitted LONG/SHORT decisions; entry is the completed 5M candle close reference (not a guaranteed next-open fill). Outcomes resolve at 1.5x ATR stop, 3x ATR target, or 12 completed 5M candles, with stop-first same-candle handling and a fixed 0.14% round-trip cost assumption. This is a monitoring proxy, not a broker fill or independently validated win rate. ADX uses Wilder-style smoothing; pivots require three right-side closed candles. Order book is a single top-20 snapshot. No orders are placed.</p>
   </section>;
 }
 
@@ -657,12 +661,14 @@ function App() {
   const activeFeed = feedMeta[symbol] || {};
   const priceAge = activeFeed.priceAt ? feedClock-activeFeed.priceAt : Infinity;
   const candleAge = activeFeed.candleAt ? feedClock-activeFeed.candleAt : Infinity;
+  const latestClosedCandleAt=validClosed.at(-1)?.closeTime;
+  const closedCandleAge=Number.isFinite(latestClosedCandleAt)?feedClock-latestClosedCandleAt:Infinity;
   const validClosed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
   const expectedCandleMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[interval];
   const candleGaps=validClosed.slice(1).filter((c,i)=>c.time-validClosed[i].time!==expectedCandleMs/1000).length;
   const restReferenceFresh=Boolean(activeFeed.restAt&&feedClock-activeFeed.restAt<=60000&&Number(activeFeed.restPrice)>0);
   const reconciliationOk=restReferenceFresh&&Number.isFinite(activeFeed.divergencePct)&&activeFeed.divergencePct<=0.5;
-  const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
+  const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000&&closedCandleAge<=expectedCandleMs+30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
   const analysis = useMemo(()=>{
     const closed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
     const valid=signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.reconciliationOk&&signalHealth.candleGaps===0&&closed.length>=50;
@@ -728,7 +734,7 @@ function App() {
         <div className="page-heading"><div><div className="eyebrow">WEDNESDAY, NOVEMBER 11, 2026 <span>·</span> MARKET OVERVIEW</div><h1>{tab==='Overview'?'Market overview':tab}</h1><p>Read the market. Respect the risk. Trade with a plan.</p></div><div className="heading-actions"><button className="secondary-btn" onClick={()=>{setLoading(true);fetch(candleUrl).then(r=>r.json()).then(rows=>setCandles(rows.filter(k=>Number(k[6])>Number(k[0])).map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})))).finally(()=>setLoading(false));}}><RefreshCw size={15}/> Refresh</button><button className="primary-btn" onClick={()=>setTab('Paper Trading')}><Plus size={16}/> New paper trade</button></div></div>
         {notice&&<div className="notice"><CircleHelp size={15}/>{notice}<button onClick={()=>setNotice('')}><X size={14}/></button></div>}
         <section className="data-integrity-panel">
-          <div className="integrity-heading"><div><b>DATA INTEGRITY</b><small>Signal gate · active market / timeframe</small></div><span className={signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.hasClosedCandles?"integrity-ok":"integrity-warn"}>{signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.hasClosedCandles?"DATA VALID":"SIGNAL BLOCKED"}</span></div>
+          <div className="integrity-heading"><div><b>DATA INTEGRITY</b><small>Signal gate · active market / timeframe</small></div><span className={signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.hasClosedCandles&&signalHealth.reconciliationOk&&signalHealth.candleGaps===0?"integrity-ok":"integrity-warn"}>{signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.hasClosedCandles&&signalHealth.reconciliationOk&&signalHealth.candleGaps===0?"DATA VALID":"SIGNAL BLOCKED"}</span></div>
           <div className="integrity-grid">
             <div><span>PRICE FEED</span><b>{signalHealth.hasTicker?(signalHealth.priceFresh?"FRESH":"STALE"):"MISSING"}</b><small>{activeFeed.priceSource||"No source"} · {Number.isFinite(priceAge)?Math.max(0,Math.round(priceAge/1000))+"s ago":"—"}</small></div>
             <div><span>CANDLE FEED</span><b>{signalHealth.hasClosedCandles?(signalHealth.candleFresh?"FRESH":"STALE"):"INSUFFICIENT"}</b><small>{activeFeed.candleSource||"No source"} · {Number.isFinite(candleAge)?Math.max(0,Math.round(candleAge/1000))+"s ago":"—"}</small></div>
