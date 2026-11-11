@@ -15,6 +15,7 @@ function ChartPanel({symbol, interval, candles, loading, market}) {
   const host = useRef(null);
   const chartRef = useRef(null);
   const didFit = useRef(false);
+  const lastKey = useRef('');
   useEffect(() => {
     if (!host.current) return;
     const chart = createChart(host.current, {
@@ -24,7 +25,9 @@ function ChartPanel({symbol, interval, candles, loading, market}) {
       crosshair: { mode: 0 }, handleScroll: true, handleScale: true
     });
     const series = chart.addSeries(CandlestickSeries, { upColor:'#19b88a', downColor:'#ef6472', borderUpColor:'#19b88a', borderDownColor:'#ef6472', wickUpColor:'#19b88a', wickDownColor:'#ef6472' });
-    chartRef.current = {chart,series};
+    const ema20Series = chart.addSeries(LineSeries, { color:'#f0b95b', lineWidth:2, priceLineVisible:false, lastValueVisible:false, crosshairMarkerVisible:false, title:'EMA 20' });
+    const ema50Series = chart.addSeries(LineSeries, { color:'#69a9ff', lineWidth:2, priceLineVisible:false, lastValueVisible:false, crosshairMarkerVisible:false, title:'EMA 50' });
+    chartRef.current = {chart,series,ema20Series,ema50Series};
     didFit.current = false;
     const resize = new ResizeObserver(entries => { if(entries[0]) chart.applyOptions({width:entries[0].contentRect.width}); });
     resize.observe(host.current);
@@ -32,12 +35,28 @@ function ChartPanel({symbol, interval, candles, loading, market}) {
   }, []);
   useEffect(() => {
     if (!chartRef.current || !candles?.length) return;
-    chartRef.current.series.setData(candles);
-    if (!didFit.current) { chartRef.current.chart.timeScale().fitContent(); didFit.current = true; }
-  }, [candles]);
-  return <div className="chart-wrap"><div className="chart-label">{loading ? 'Updating market data…' : `Binance ${market} · Public market data`} <span>•</span> {symbol.replace('USDT','')}/USDT</div><div className="chart-canvas" ref={host}/>{!candles?.length && <div className="chart-empty">Waiting for candle data</div>}</div>;
+    const valid = candles.filter(c => Number.isFinite(c.time) && [c.open,c.high,c.low,c.close].every(v=>Number.isFinite(Number(v))&&Number(v)>0)).sort((a,b)=>a.time-b.time);
+    if (!valid.length) return;
+    chartRef.current.series.setData(valid.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
+    const makeEma = period => {
+      if (valid.length < period) return [];
+      const alpha=2/(period+1), points=[];
+      let value=valid.slice(0,period).reduce((sum,c)=>sum+c.close,0)/period;
+      points.push({time:valid[period-1].time,value});
+      for(let i=period;i<valid.length;i++){value=valid[i].close*alpha+value*(1-alpha);points.push({time:valid[i].time,value});}
+      return points;
+    };
+    chartRef.current.ema20Series.setData(makeEma(20));
+    chartRef.current.ema50Series.setData(makeEma(50));
+    const key=symbol+'_'+interval+'_'+market;
+    if (!didFit.current || lastKey.current!==key) {
+      chartRef.current.chart.timeScale().fitContent();
+      didFit.current=true;
+      lastKey.current=key;
+    }
+  }, [candles,symbol,interval,market]);
+  return <div className="chart-wrap"><div className="chart-label">{loading ? 'Updating market data…' : `Binance ${market} · Live kline stream`} <span>•</span> {symbol.replace('USDT','')}/USDT</div><div className="chart-canvas" ref={host}/>{!candles?.length && <div className="chart-empty">Waiting for candle data</div>}<div className="chart-indicator-legend"><span><i className="ema20-dot"/> EMA 20 · live candle</span><span><i className="ema50-dot"/> EMA 50 · live candle</span><small>চলমান ক্যান্ডেলসহ প্রতি WebSocket আপডেটে হিসাব</small></div></div>;
 }
-
 
 function BacktestPanel({symbol,market,defaultInterval}) {
   const [tf,setTf]=useState('5m'),[days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02'),[running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
@@ -539,7 +558,7 @@ function MultiTimeframeSignal({symbol,market}) {
         const data=Object.fromEntries(all),[h4,h1,m15,m5]=frames.map(tf=>data[tf]);
         const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000};
         const staleFrames=frames.filter(tf=>!data[tf]||!Number.isFinite(data[tf].closeTime)||Date.now()-data[tf].closeTime>frameMs[tf]+120000||data[tf].candleGaps>0);
-        if(staleFrames.length){setResult({symbol,market,decision:'NO TRADE',score:0,data,flow:null,reasons:['Completed candle data is stale or discontinuous for: '+staleFrames.map(x=>x.toUpperCase()).join(', ')+'. Waiting for a clean Binance snapshot.'],updated:new Date(),status:'BLOCKED'});return;}
+        if(staleFrames.length){setResult({symbol,market,decision:'NO TRADE',score:0,data,flow:null,reasons:['সিগন্যাল বন্ধ রাখা হয়েছে: '+staleFrames.map(x=>x.toUpperCase()).join(', ')+' টাইমফ্রেমের ক্যান্ডেল পুরোনো অথবা মাঝখানে ক্যান্ডেল অনুপস্থিত। Binance থেকে ধারাবাহিক সম্পূর্ণ ক্যান্ডেল না আসা পর্যন্ত অপেক্ষা করতে হবে।'],updated:new Date(),status:'BLOCKED'});return;}
         const takerRatio=Number.isFinite(externalTakerRatio)&&externalTakerRatio>0?externalTakerRatio:m5.takerRatio;
         const longBias=h4.trend==='BULLISH'&&h1.trend==='BULLISH';
         const shortBias=h4.trend==='BEARISH'&&h1.trend==='BEARISH';
@@ -553,19 +572,20 @@ function MultiTimeframeSignal({symbol,market}) {
         const flowLong=takerRatio!==null&&takerRatio>=1.05&&depthRatio!==null&&depthRatio>=1.02;
         const flowShort=takerRatio!==null&&takerRatio<=0.95&&depthRatio!==null&&depthRatio<=0.98;
         let score=0,decision='NO TRADE',reasons=[];
-        if(longBias||shortBias){score+=25;reasons.push('4H and 1H trend aligned '+(longBias?'bullish':'bearish'));}else reasons.push('Higher-timeframe trend conflict');
-        if(longSetup||shortSetup){score+=20;reasons.push('15M setup confirmed with ADX and RSI');}else reasons.push('15M ADX / RSI setup not confirmed');
-        if(longTiming||shortTiming){score+=15;reasons.push('5M entry momentum and trend aligned');}else reasons.push('5M entry timing not confirmed');
-        if((longBias&&longStructure)||(shortBias&&shortStructure)){score+=15;reasons.push('BOS or liquidity sweep supports the higher-timeframe direction');}else reasons.push('No aligned BOS / liquidity-sweep confirmation');
-        if(volumeOk){score+=10;reasons.push('15M and 5M volume participation acceptable');}else reasons.push('Volume participation weak');
-        if((longBias&&flowLong)||(shortBias&&flowShort)){score+=15;reasons.push('Taker flow and top-20 order-book imbalance aligned');}else reasons.push('Order-flow confirmation absent or conflicting');
+        if(longBias||shortBias){score+=25;reasons.push('৪ ঘণ্টা ও ১ ঘণ্টার ট্রেন্ড একই দিকে: '+(longBias?'ঊর্ধ্বমুখী — LONG-এর পক্ষে':'নিম্নমুখী — SHORT-এর পক্ষে')+'।');}else reasons.push('NO TRADE কারণ: ৪ ঘণ্টার ট্রেন্ড '+(h4.trend==='BULLISH'?'ঊর্ধ্বমুখী':h4.trend==='BEARISH'?'নিম্নমুখী':'মিশ্র')+' এবং ১ ঘণ্টার ট্রেন্ড '+(h1.trend==='BULLISH'?'ঊর্ধ্বমুখী':h1.trend==='BEARISH'?'নিম্নমুখী':'মিশ্র')+' — বড় টাইমফ্রেমে একই দিকের সমর্থন নেই।');
+        if(longSetup||shortSetup){score+=20;reasons.push('১৫ মিনিটের সেটআপ নিশ্চিত: ট্রেন্ড, RSI ('+fmt(m15.rsi,1)+') ও ADX ('+fmt(m15.adx,1)+') নির্ধারিত শর্ত পূরণ করেছে।');}else reasons.push('NO TRADE কারণ: ১৫ মিনিটের সেটআপ মেলেনি। বর্তমান ট্রেন্ড '+(m15.trend==='BULLISH'?'ঊর্ধ্বমুখী':m15.trend==='BEARISH'?'নিম্নমুখী':'মিশ্র')+', RSI '+fmt(m15.rsi,1)+', ADX '+fmt(m15.adx,1)+'। LONG-এর জন্য bullish trend, RSI ৫০–৭২ ও ADX কমপক্ষে ১৮; SHORT-এর জন্য bearish trend, RSI ২৮–৫০ ও ADX কমপক্ষে ১৮ দরকার।'];
+        if(longTiming||shortTiming){score+=15;reasons.push('৫ মিনিটের এন্ট্রি টাইমিং সমর্থন করছে: ট্রেন্ড '+(longTiming?'ঊর্ধ্বমুখী':'নিম্নমুখী')+', RSI '+fmt(m5.rsi,1)+', ADX '+fmt(m5.adx,1)+'।');}else reasons.push('NO TRADE কারণ: ৫ মিনিটে এন্ট্রির সময় এখনো উপযুক্ত নয়। ট্রেন্ড '+(m5.trend==='BULLISH'?'ঊর্ধ্বমুখী':m5.trend==='BEARISH'?'নিম্নমুখী':'মিশ্র')+', RSI '+fmt(m5.rsi,1)+', ADX '+fmt(m5.adx,1)+'। দিক অনুযায়ী RSI ৫০-এর ওপরে/নিচে এবং ADX কমপক্ষে ১৫ দরকার।');
+        if((longBias&&longStructure)||(shortBias&&shortStructure)){score+=15;reasons.push('মার্কেট স্ট্রাকচার সমর্থন করছে: BOS / CHoCH / liquidity sweep বড় টাইমফ্রেমের দিকের সঙ্গে মিলেছে।');}else reasons.push('NO TRADE কারণ: ১৫ বা ৫ মিনিটে বড় ট্রেন্ডের দিক সমর্থন করে এমন BOS, CHoCH অথবা liquidity sweep পাওয়া যায়নি।');
+        if(volumeOk){score+=10;reasons.push('ভলিউম গ্রহণযোগ্য: ১৫ ও ৫ মিনিট—দুই টাইমফ্রেমেই ভলিউম গড়ের অন্তত ০.৮ গুণ।');}else reasons.push('NO TRADE কারণ: ভলিউম দুর্বল। ১৫ মিনিটের ভলিউম '+fmt(m15.volumeRatio,2)+'x এবং ৫ মিনিটের ভলিউম '+fmt(m5.volumeRatio,2)+'x; উভয়টিই গড়ের অন্তত ০.৮ গুণ হওয়া দরকার।');
+        if((longBias&&flowLong)||(shortBias&&flowShort)){score+=15;reasons.push('অর্ডার-ফ্লো সমর্থন করছে: taker buy/sell ratio '+fmt(takerRatio,2)+'x এবং top-20 bid/ask depth ratio '+fmt(depthRatio,2)+'x—দুটিই সিগন্যালের দিকের সঙ্গে মিলেছে।');}else reasons.push('NO TRADE কারণ: অর্ডার-ফ্লো নিশ্চিত নয় বা বিপরীত। Taker buy/sell '+fmt(takerRatio,2)+'x, bid/ask depth '+fmt(depthRatio,2)+'x। LONG-এর জন্য যথাক্রমে ≥১.০৫x ও ≥১.০২x; SHORT-এর জন্য ≤০.৯৫x ও ≤০.৯৮x দরকার।');
         const adxRegimeOk=h4.adx>=15&&h1.adx>=15&&m15.adx>=18;
+        if(!adxRegimeOk)reasons.push('NO TRADE কারণ: ট্রেন্ডের শক্তি (ADX) যথেষ্ট নয়। ৪ ঘণ্টা '+fmt(h4.adx,1)+', ১ ঘণ্টা '+fmt(h1.adx,1)+', ১৫ মিনিট '+fmt(m15.adx,1)+'; যথাক্রমে ১৫, ১৫ ও ১৮ বা বেশি প্রয়োজন।');
         const structureOk=(longBias&&longSetup&&longTiming&&longStructure&&flowLong)||(shortBias&&shortSetup&&shortTiming&&shortStructure&&flowShort);
-        if(score>=85&&volumeOk&&adxRegimeOk&&structureOk)decision=longBias?'LONG':'SHORT';
-        else reasons.push('Strict confirmation gate not satisfied — NO TRADE');
+        if(score>=85&&volumeOk&&adxRegimeOk&&structureOk){decision=longBias?'LONG':'SHORT';reasons.push('সিগন্যালের সিদ্ধান্ত: '+(decision==='LONG'?'LONG — সব বাধ্যতামূলক শর্ত পূরণ হয়েছে এবং বড় টাইমফ্রেম ঊর্ধ্বমুখী।':'SHORT — সব বাধ্যতামূলক শর্ত পূরণ হয়েছে এবং বড় টাইমফ্রেম নিম্নমুখী।')+' কনফ্লুয়েন্স স্কোর '+score+'/100।');}
+        else {if(score<85)reasons.push('NO TRADE কারণ: কনফ্লুয়েন্স স্কোর '+score+'/100; সিগন্যালের জন্য কমপক্ষে ৮৫/১০০ প্রয়োজন।');if(!structureOk)reasons.push('NO TRADE কারণ: দিক, সেটআপ, এন্ট্রি টাইমিং, স্ট্রাকচার ও অর্ডার-ফ্লোর সব বাধ্যতামূলক শর্ত একসঙ্গে পূরণ হয়নি।');}
         setResult({symbol,market,decision,score,data,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio},reasons,updated:new Date(),status:'READY'});
         setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const entry=m5.close,atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,entryType:'COMPLETED_5M_CLOSE_REFERENCE',stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
-      }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['Required timeframe or order-book data unavailable.'],updated:new Date(),status:'BLOCKED'});setError(e.message||'Multi-timeframe analysis failed.');}}
+      }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['NO TRADE: প্রয়োজনীয় টাইমফ্রেমের ক্যান্ডেল অথবা order-book ডেটা পাওয়া যায়নি। সংযোগ, Binance API বা rate limit সমস্যার কারণে বিশ্লেষণ সম্পূর্ণ হয়নি। বিস্তারিত: '+(e.message||'অজানা ডেটা সমস্যা')],updated:new Date(),status:'BLOCKED'});setError(e.message||'Multi-timeframe analysis failed.');}}
       finally{if(live)setLoading(false);}
     };
     run();const timer=window.setInterval(run,60000);
@@ -717,18 +737,25 @@ function App() {
   const reconciliationOk=restReferenceFresh&&Number.isFinite(activeFeed.divergencePct)&&activeFeed.divergencePct<=0.5;
   const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000&&closedCandleAge<=expectedCandleMs+30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
   const analysis = useMemo(()=>{
-    const closed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
-    const valid=signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.reconciliationOk&&signalHealth.candleGaps===0&&closed.length>=50;
-    if(!valid)return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,reason:'Signal blocked: stale data, REST/stream mismatch, missing candles, or fewer than 50 completed candles.'};
-    const data=closed.slice(-160),closes=data.map(c=>c.close),avg=n=>closes.slice(-n).reduce((a,b)=>a+b,0)/n;
-    const e20=avg(20),e50=avg(50),last=closes.at(-1),prev=closes.at(-2),momentum=(last-prev)/prev*100;
-    let score=50;if(last>e20)score+=12;else score-=12;if(e20>e50)score+=15;else score-=15;if(momentum>0.08)score+=8;else if(momentum<-.08)score-=8;
-    const bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
-    const ranges=data.slice(-15).map((c,i)=>{const p=data[data.length-16+i]?.close??c.close;return Math.max(c.high-c.low,Math.abs(c.high-p),Math.abs(c.low-p));});
-    const atr=ranges.reduce((a,b)=>a+b,0)/ranges.length,stop=bias==='LONG'?last-atr*1.5:bias==='SHORT'?last+atr*1.5:null,target=bias==='LONG'?last+atr*3:bias==='SHORT'?last-atr*3:null;
-    const riskUsd=demoBalance*0.01,positionSize=stop?riskUsd/Math.abs(last-stop):0;
-    return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,atr,stop,target,positionSize,riskUsd,reason:'Closed-candle check: price is '+(last>e20?'above':'below')+' the 20-period average; short-term trend is '+(e20>e50?'positive':'negative')+' versus the 50-period average.'};
-  },[candles,demoBalance,signalHealth.priceFresh,signalHealth.candleFresh,signalHealth.hasTicker,signalHealth.hasClosedCandles,signalHealth.reconciliationOk,signalHealth.candleGaps]);
+     const closed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
+     const blockers=[];
+     if(!signalHealth.hasTicker)blockers.push('লাইভ প্রাইস পাওয়া যাচ্ছে না');
+     else if(!signalHealth.priceFresh)blockers.push('লাইভ প্রাইস ৩০ সেকেন্ডের বেশি পুরোনো');
+     if(!signalHealth.hasClosedCandles||closed.length<50)blockers.push('কমপক্ষে ৫০টি সম্পূর্ণ ক্যান্ডেল পাওয়া যায়নি');
+     if(!signalHealth.candleFresh)blockers.push('ক্যান্ডেল ডেটা পুরোনো বা সর্বশেষ ক্যান্ডেল আপডেট হয়নি');
+     if(!signalHealth.reconciliationOk)blockers.push('REST ও WebSocket প্রাইস ০.৫০% সীমার মধ্যে মেলেনি বা REST reference পাওয়া যায়নি');
+     if(signalHealth.candleGaps!==0)blockers.push('ক্যান্ডেল সিরিজে '+signalHealth.candleGaps+'টি gap আছে');
+     if(blockers.length)return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,reason:'NO TRADE — '+blockers.join('। ')+'. ডেটা ঠিক না হওয়া পর্যন্ত কোনো এন্ট্রি নেওয়া হবে না।'};
+     const data=closed.slice(-160),closes=data.map(c=>c.close),avg=n=>closes.slice(-n).reduce((a,b)=>a+b,0)/n;
+     const e20=avg(20),e50=avg(50),last=closes.at(-1),prev=closes.at(-2),momentum=(last-prev)/prev*100;
+     let score=50;if(last>e20)score+=12;else score-=12;if(e20>e50)score+=15;else score-=15;if(momentum>0.08)score+=8;else if(momentum<-.08)score-=8;
+     const bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
+     const ranges=data.slice(-15).map((c,i)=>{const p=data[data.length-16+i]?.close??c.close;return Math.max(c.high-c.low,Math.abs(c.high-p),Math.abs(c.low-p));});
+     const atr=ranges.reduce((a,b)=>a+b,0)/ranges.length,stop=bias==='LONG'?last-atr*1.5:bias==='SHORT'?last+atr*1.5:null,target=bias==='LONG'?last+atr*3:bias==='SHORT'?last-atr*3:null;
+     const riskUsd=demoBalance*0.01,positionSize=stop?riskUsd/Math.abs(last-stop):0;
+     const reason='বন্ধ ক্যান্ডেলের হিসাব: সর্বশেষ দাম EMA20-এর '+(last>e20?'ওপরে':'নিচে')+'; EMA20 '+(e20>e50?'EMA50-এর ওপরে':'EMA50-এর নিচে')+'। মোমেন্টাম '+fmt(momentum,3)+'%। '+(bias==='LONG'?'LONG কারণ: দাম EMA20-এর ওপরে, EMA20 EMA50-এর ওপরে এবং মোমেন্টাম +০.০৮%-এর বেশি; স্কোর '+score+'/100।':bias==='SHORT'?'SHORT কারণ: দাম EMA20-এর নিচে, EMA20 EMA50-এর নিচে এবং মোমেন্টাম −০.০৮%-এর কম; স্কোর '+score+'/100।':'NO TRADE কারণ: LONG-এর জন্য স্কোর কমপক্ষে ৬৫ এবং SHORT-এর জন্য সর্বোচ্চ ৩৫ দরকার। বর্তমান স্কোর '+score+'/100; শর্তগুলো একই দিকে একমত নয়।');
+     return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,atr,stop,target,positionSize,riskUsd,reason};
+   },[candles,demoBalance,signalHealth.priceFresh,signalHealth.candleFresh,signalHealth.hasTicker,signalHealth.hasClosedCandles,signalHealth.reconciliationOk,signalHealth.candleGaps]);
   const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['Multi-Asset Scanner',Globe2],['Market Regime',Activity],['Market Structure',Layers3],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
   useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
@@ -803,7 +830,7 @@ function App() {
         <div className="section-row"><div><h2>Market workspace</h2><p>Live {market.toLowerCase()} prices and multi-timeframe chart analysis</p></div><div className="market-actions"><button className="sui-focus-btn" onClick={()=>setSymbol('SUIUSDT')}>SUI / USDT <span>FOCUS</span></button><div className="market-toggle"><button className={market==='Spot'?'active':''} onClick={()=>{if(paperTrades.some(t=>t.status==='OPEN'&&t.market!=='Spot')){showNotice('Close open Futures paper positions before switching to Spot.');return;}setMarket('Spot');}}>Spot</button><button className={market==='Futures'?'active':''} onClick={()=>{if(paperTrades.some(t=>t.status==='OPEN'&&t.market!=='Futures')){showNotice('Close open Spot paper positions before switching to Futures.');return;}setMarket('Futures');}}>Futures</button></div></div></div>
         <section className="workspace-grid">
           <div className="panel chart-panel">
-            <div className="panel-head"><div className="asset-title"><div className="coin-icon">{active[2].slice(0,1)}</div><div><b>{active[1]} <span>{active[2]}/USDT</span></b><small>Binance · {market} market</small></div><ChevronDown size={14}/></div><div className="chart-tools">{intervals.map(i=><button key={i} className={interval===i?'chosen':''} onClick={()=>setTimeframe(i)}>{i}</button>)}<button className="tool-icon" onClick={()=>showNotice('Chart indicators are coming in the next build.')}><SlidersHorizontal size={15}/></button></div></div>
+            <div className="panel-head"><div className="asset-title"><div className="coin-icon">{active[2].slice(0,1)}</div><div><b>{active[1]} <span>{active[2]}/USDT</span></b><small>Binance · {market} market</small></div><ChevronDown size={14}/></div><div className="chart-tools">{intervals.map(i=><button key={i} className={interval===i?'chosen':''} onClick={()=>setTimeframe(i)}>{i}</button>)}<button className="tool-icon" onClick={()=>showNotice('চার্টে EMA 20 ও EMA 50 চালু আছে; দুটিই চলমান ক্যান্ডেলের সঙ্গে WebSocket আপডেটে পুনর্গণনা হয়।')}><SlidersHorizontal size={15}/></button></div></div>
             <div className="price-line"><div><strong>{price?'$'+fmt(price,price<1?5:2):'—'}</strong><span className={change>=0?'positive':'negative'}>{price?(change>=0?'+':'')+fmt(change)+'%':'Waiting for feed'} <small>24h</small></span></div><div className="range"><span>24H HIGH</span><b>{ticker?'$'+fmt(ticker.highPrice):'—'}</b><span>24H LOW</span><b>{ticker?'$'+fmt(ticker.lowPrice):'—'}</b></div></div>
             <ChartPanel symbol={symbol} interval={interval} candles={candles} loading={loading} market={market}/>
             <div className="chart-foot"><span><span className="legend-dot"/> Candlesticks</span><span>Timeframe: {interval}</span><span>Source: Binance public API</span></div>
