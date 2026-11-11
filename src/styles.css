@@ -41,3 +41,15 @@
 .backtest-error{color:#f47a87;background:#3a2028;border-radius:6px;padding:10px;font-size:9px;margin:10px 0}
 @media(max-width:900px){.backtest-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.backtest-controls .primary-btn{width:100%}.backtest-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:520px){.backtest-panel{padding:13px}.backtest-controls{gap:8px}.backtest-controls label{font-size:7px}.backtest-metrics>div{padding:11px}.backtest-metrics b{font-size:12px}.backtest-meta{gap:8px;flex-direction:column}}
+
+
+/* Strategy Lab validation workspace */
+.optimizer-panel{margin-top:16px;padding:20px}
+.optimizer-controls{grid-template-columns:1fr .8fr .8fr .8fr auto}
+.validation-split{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+.validation-split>div{display:flex;flex-direction:column;gap:6px;padding:13px;border:1px solid var(--line);border-radius:7px;background:var(--panel2)}
+.validation-split b{font:9px 'DM Mono';letter-spacing:.05em;color:#35c99d}
+.validation-split span{font-size:9px;color:var(--muted)}
+.optimizer-table{min-width:900px}
+@media(max-width:900px){.optimizer-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.optimizer-controls .primary-btn{width:100%}}
+@media(max-width:520px){.optimizer-panel{padding:13px}.validation-split{grid-template-columns:1fr}.optimizer-controls{gap:8px}}
