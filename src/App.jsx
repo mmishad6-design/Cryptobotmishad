@@ -40,110 +40,72 @@ function ChartPanel({symbol, interval, candles, loading, market}) {
 
 
 function BacktestPanel({symbol,market,defaultInterval}) {
-  const [tf,setTf]=useState(defaultInterval||'15m');
-  const [days,setDays]=useState('30');
-  const [fee,setFee]=useState('0.05');
-  const [slippage,setSlippage]=useState('0.02');
-  const [running,setRunning]=useState(false);
-  const [result,setResult]=useState(null);
-  const [error,setError]=useState('');
+  const [tf,setTf]=useState(defaultInterval||'15m'),[days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02'),[running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
+  const simulate=(data,feeRate,slipRate)=>{
+    let equity=10000,peak=10000,maxDrawdown=0,position=null,trades=[];
+    const avg=(end,n)=>data.slice(end-n+1,end+1).reduce((a,x)=>a+x.close,0)/n;
+    const atrAt=i=>{let sum=0;for(let j=i-14;j<=i;j++){const prev=data[j-1]?.close??data[j].close;sum+=Math.max(data[j].high-data[j].low,Math.abs(data[j].high-prev),Math.abs(data[j].low-prev));}return sum/15;};
+    const close=(rawExit,reason,time)=>{const p=position;if(!p)return;const exit=p.side==='LONG'?rawExit*(1-slipRate):rawExit*(1+slipRate),gross=(exit-p.entry)*p.qty*(p.side==='LONG'?1:-1),net=gross-p.entryFee-exit*p.qty*feeRate;equity+=net;trades.push({side:p.side,entry:p.entry,exit,qty:p.qty,pnl:net,reason,entryTime:p.entryTime,exitTime:time});position=null;};
+    for(let i=50;i<data.length-1;i++){
+      const c=data[i],next=data[i+1],ma20=avg(i,20),ma50=avg(i,50),momentum=(c.close-data[i-1].close)/data[i-1].close*100;
+      const score=50+(c.close>ma20?12:-12)+(ma20>ma50?15:-15)+(momentum>.08?8:momentum<-.08?-8:0),bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
+      if(position){const stopHit=position.side==='LONG'?c.low<=position.stop:c.high>=position.stop,targetHit=position.side==='LONG'?c.high>=position.target:c.low<=position.target;if(stopHit)close(position.stop,'STOP LOSS',c.time);else if(targetHit)close(position.target,'TAKE PROFIT',c.time);}
+      if(!position&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){
+        const atr=atrAt(i),rawEntry=next.open,entry=bias==='LONG'?rawEntry*(1+slipRate):rawEntry*(1-slipRate),distance=atr*1.5;
+        const qty=Math.min(equity*.01/distance,(equity*(market==='Futures'?3:1))/(entry*(1+feeRate)));
+        if(Number.isFinite(qty)&&qty>0){const margin=entry*qty/(market==='Futures'?3:1),entryFee=entry*qty*feeRate;if(margin+entryFee<=equity)position={side:bias,entry,qty,stop:bias==='LONG'?entry-distance:entry+distance,target:bias==='LONG'?entry+atr*3:entry-atr*3,entryFee,entryTime:next.time};}
+      }
+      const marked=equity+(position?((c.close-position.entry)*position.qty*(position.side==='LONG'?1:-1)-position.entryFee):0);peak=Math.max(peak,marked);maxDrawdown=Math.max(maxDrawdown,(peak-marked)/peak*100);
+    }
+    if(position)close(data[data.length-1].close,'END OF TEST',data[data.length-1].time);
+    const wins=trades.filter(t=>t.pnl>0),losses=trades.filter(t=>t.pnl<0),grossProfit=wins.reduce((a,t)=>a+t.pnl,0),grossLoss=Math.abs(losses.reduce((a,t)=>a+t.pnl,0));
+    return {equity,net:equity-10000,returnPct:(equity-10000)/100,tradeCount:trades.length,wins:wins.length,losses:losses.length,winRate:trades.length?wins.length/trades.length*100:0,profitFactor:grossLoss?grossProfit/grossLoss:grossProfit>0?null:0,expectancy:trades.length?(equity-10000)/trades.length:0,maxDrawdown,trades};
+  };
   const run=async()=>{
     setRunning(true);setError('');setResult(null);
     try{
-      const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
-      const endpoint=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
-      const now=Date.now(),start=now-Number(days)*86400000;
-      const intervalMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[tf];
-      // Binance paginates klines; fetch up to 5,000 recent bars within the selected lookback.
-      let cursor=Math.max(start,now-5000*intervalMs),raw=[];
-      while(cursor<now&&raw.length<5000){
-        const url=base+endpoint+'?symbol='+symbol+'&interval='+tf+'&startTime='+cursor+'&endTime='+now+'&limit=1000';
-        const response=await fetch(url);if(!response.ok)throw new Error('Binance historical data request failed ('+response.status+').');
-        const batch=await response.json();if(!Array.isArray(batch)||batch.length===0)break;
-        raw=raw.concat(batch);cursor=Number(batch[batch.length-1][0])+intervalMs;
-        if(batch.length<1000)break;
-      }
-      if(raw.length<70)throw new Error('Not enough historical candles returned. Choose a longer period or another timeframe.');
-      raw=raw.slice(0,5000);
-      const data=raw.map(k=>({time:k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
-      const feeRate=Math.max(0,Math.min(1,Number(fee)||0))/100,slipRate=Math.max(0,Math.min(1,Number(slippage)||0))/100,starting=10000,leverage=market==='Futures'?3:1;
-      let equity=starting,peak=starting,maxDrawdown=0,position=null,tradeList=[];
-      const avg=(arr,end,n)=>{let sum=0;for(let j=end-n+1;j<=end;j++)sum+=arr[j].close;return sum/n;};
-      const atrAt=i=>{let sum=0,count=0;for(let j=i-14;j<=i;j++){const prev=data[j-1]?.close??data[j].close;sum+=Math.max(data[j].high-data[j].low,Math.abs(data[j].high-prev),Math.abs(data[j].low-prev));count++;}return sum/count;};
-      const closePosition=(rawExit,reason,time)=>{
-        const p=position;if(!p)return;
-        const exit=p.side==='LONG'?rawExit*(1-slipRate):rawExit*(1+slipRate);
-        const gross=(exit-p.entry)*p.qty*(p.side==='LONG'?1:-1);
-        const exitFee=exit*p.qty*feeRate,net=gross-p.entryFee-exitFee;
-        equity+=net;
-        tradeList.push({side:p.side,entry:p.entry,exit,qty:p.qty,pnl:net,reason,entryTime:new Date(p.entryTime).toISOString(),exitTime:new Date(time).toISOString()});
-        position=null;
-      };
-      for(let i=50;i<data.length-1;i++){
-        const c=data[i],next=data[i+1],closes=data.slice(0,i+1).map(x=>x.close);
-        const last=c.close,ma20=avg(data,i,20),ma50=avg(data,i,50),prev=data[i-1].close,momentum=(last-prev)/prev*100;
-        let score=50;if(last>ma20)score+=12;else score-=12;if(ma20>ma50)score+=15;else score-=15;if(momentum>0.08)score+=8;else if(momentum<-.08)score-=8;
-        const bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
-        if(position){
-          const stopHit=position.side==='LONG'?c.low<=position.stop:c.high>=position.stop;
-          const targetHit=position.side==='LONG'?c.high>=position.target:c.low<=position.target;
-          // Conservative same-candle assumption: if both levels are touched, count the stop first.
-          if(stopHit)closePosition(position.stop,'STOP LOSS',c.time);
-          else if(targetHit)closePosition(position.target,'TAKE PROFIT',c.time);
-        }
-        if(!position&&next&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){
-          const atr=atrAt(i),rawEntry=next.open,entry=bias==='LONG'?rawEntry*(1+slipRate):rawEntry*(1-slipRate);
-          const stopDistance=atr*1.5,riskCash=equity*0.01;
-          let qty=riskCash/stopDistance;
-          qty=Math.min(qty,(equity*leverage)/(entry*(1+feeRate)));
-          if(Number.isFinite(qty)&&qty>0){
-            const margin=entry*qty/leverage,entryFee=entry*qty*feeRate;
-            if(margin+entryFee<=equity){
-              position={side:bias,entry,qty,stop:bias==='LONG'?entry-stopDistance:entry+stopDistance,target:bias==='LONG'?entry+atr*3:entry-atr*3,entryFee,entryTime:next.time};
-            }
-          }
-        }
-        const marked=equity+(position?((c.close-position.entry)*position.qty*(position.side==='LONG'?1:-1)-position.entryFee):0);
-        peak=Math.max(peak,marked);maxDrawdown=Math.max(maxDrawdown,(peak-marked)/peak*100);
-      }
-      if(position)closePosition(data[data.length-1].close,'END OF TEST',data[data.length-1].time);
-      peak=Math.max(peak,equity);maxDrawdown=Math.max(maxDrawdown,(peak-equity)/peak*100);
-      const wins=tradeList.filter(t=>t.pnl>0),losses=tradeList.filter(t=>t.pnl<0);
-      const grossProfit=wins.reduce((a,t)=>a+t.pnl,0),grossLoss=Math.abs(losses.reduce((a,t)=>a+t.pnl,0));
-      const net=equity-starting,winRate=tradeList.length?wins.length/tradeList.length*100:0;
-      setResult({symbol,market,tf,days,from:data[0].time,to:data[data.length-1].time,candles:data.length,trades:tradeList.length,wins:wins.length,losses:losses.length,winRate,net,returnPct:net/starting*100,finalEquity:equity,maxDrawdown,profitFactor:grossLoss?grossProfit/grossLoss:grossProfit>0?null:0,expectancy:tradeList.length?net/tradeList.length:0,feeRate,slipRate,tradeList:tradeList.slice(-12).reverse(),assumption:'Signals use closed candles; entries occur at the next candle open. If SL and TP both touch in one candle, SL is assumed first. Up to 5,000 recent candles are tested within the selected lookback.'});
-    }catch(e){setError(e.message||'Backtest failed. Please retry.');}
-    finally{setRunning(false);}
+      const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',endpoint=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines',now=Date.now(),startTime=now-Number(days)*86400000,intervalMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[tf];
+      let cursor=Math.max(startTime,now-5000*intervalMs),raw=[];
+      while(cursor<now&&raw.length<5000){const response=await fetch(base+endpoint+'?symbol='+symbol+'&interval='+tf+'&startTime='+cursor+'&endTime='+now+'&limit=1000',{cache:'no-store'});if(!response.ok)throw new Error('Binance historical data request failed ('+response.status+').');const batch=await response.json();if(!Array.isArray(batch)||!batch.length)break;raw=raw.concat(batch);cursor=Number(batch[batch.length-1][0])+intervalMs;if(batch.length<1000)break;}
+      const closed=raw.filter(k=>Number(k[6])<now).slice(0,5000);if(closed.length<180)throw new Error('Walk-forward validation needs at least 180 completed candles. Select a longer lookback or higher timeframe.');
+      const data=closed.map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]})),feeRate=Math.max(0,Math.min(1,Number(fee)||0))/100,slipRate=Math.max(0,Math.min(1,Number(slippage)||0))/100,split=Math.floor(data.length*.7);
+      const training=simulate(data.slice(0,split),feeRate,slipRate),outOfSample=simulate(data.slice(split-50),feeRate,slipRate),folds=[],testLength=Math.floor((data.length-split)/3);
+      for(let n=0;n<3;n++){const from=split+n*testLength,to=n===2?data.length:Math.min(data.length,split+(n+1)*testLength),foldData=data.slice(Math.max(0,from-50),to);if(foldData.length>=80)folds.push({label:'Fold '+(n+1),from:foldData[50]?.time??foldData[0].time,to:foldData.at(-1).time,...simulate(foldData,feeRate,slipRate)});}
+      setResult({symbol,market,tf,days,from:data[0].time,to:data.at(-1).time,candles:data.length,splitAt:data[split].time,training,outOfSample,folds,feeRate,slipRate,tradeList:outOfSample.trades.slice(-12).reverse(),assumption:'Chronological 70/30 split: first 70% is training, final 30% is unseen out-of-sample. Three sequential test folds use only their own prior 50 candles as indicator warm-up. Strategy rules and parameters are fixed; no parameter tuning is performed on the test period.'});
+    }catch(e){setError(e.message||'Walk-forward validation failed.');}finally{setRunning(false);}
   };
+  const metric=x=>x?((x.returnPct>=0?'+':'')+fmt(x.returnPct)+'% · '+x.tradeCount+' trades · '+fmt(x.winRate)+'% wins · PF '+(x.profitFactor===null?'∞':fmt(x.profitFactor))+' · DD '+fmt(x.maxDrawdown)+'%'):'—';
   return <section className="panel backtest-panel">
-    <div className="panel-title"><div><h3>Historical strategy backtest</h3><p>Same SMA20/SMA50 + momentum rules · No future-candle lookahead</p></div><span className="tiny-live">RESEARCH MODE</span></div>
+    <div className="panel-title"><div><h3>Historical strategy validation</h3><p>Chronological 70/30 split · 3 sequential out-of-sample folds · fixed rules, no test-set tuning</p></div><span className="tiny-live">RESEARCH MODE</span></div>
     <div className="backtest-controls">
       <label>MARKET TIMEFRAME<select value={tf} onChange={e=>setTf(e.target.value)}>{['1m','5m','15m','1h','4h','1d'].map(x=><option key={x}>{x}</option>)}</select></label>
       <label>HISTORY<select value={days} onChange={e=>setDays(e.target.value)}><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
       <label>TRADING FEE (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label>
       <label>SLIPPAGE (%)<input type="number" min="0" max="1" step="0.01" value={slippage} onChange={e=>setSlippage(e.target.value)}/></label>
-      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'Running…':'Run backtest'}</button>
+      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'Validating…':'Run validation'}</button>
     </div>
     {error&&<div className="backtest-error">{error}</div>}
     {result&&<>
-      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} candles</span></div>
+      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} completed candles</span></div>
       <div className="backtest-metrics">
-        <div><span>NET P&L</span><b className={result.net>=0?'positive':'negative'}>{result.net>=0?'+':''}${fmt(result.net)}</b></div>
-        <div><span>RETURN</span><b className={result.returnPct>=0?'positive':'negative'}>{result.returnPct>=0?'+':''}{fmt(result.returnPct)}%</b></div>
-        <div><span>WIN RATE</span><b>{fmt(result.winRate)}%</b></div>
-        <div><span>TRADES</span><b>{result.trades}</b></div>
-        <div><span>PROFIT FACTOR</span><b>{result.profitFactor===null?'∞':fmt(result.profitFactor)}</b></div>
-        <div><span>MAX DRAWDOWN</span><b className="negative">{fmt(result.maxDrawdown)}%</b></div>
-        <div><span>EXPECTANCY / TRADE</span><b className={result.expectancy>=0?'positive':'negative'}>${fmt(result.expectancy)}</b></div>
-        <div><span>ENDING EQUITY</span><b>${fmt(result.finalEquity)}</b></div>
+        <div><span>OUT-OF-SAMPLE RETURN</span><b className={result.outOfSample.returnPct>=0?'positive':'negative'}>{result.outOfSample.returnPct>=0?'+':''}{fmt(result.outOfSample.returnPct)}%</b></div>
+        <div><span>OOS WIN RATE</span><b>{fmt(result.outOfSample.winRate)}%</b></div><div><span>OOS TRADES</span><b>{result.outOfSample.tradeCount}</b></div>
+        <div><span>OOS PROFIT FACTOR</span><b>{result.outOfSample.profitFactor===null?'∞':fmt(result.outOfSample.profitFactor)}</b></div>
+        <div><span>OOS MAX DRAWDOWN</span><b className="negative">{fmt(result.outOfSample.maxDrawdown)}%</b></div>
+        <div><span>OOS EXPECTANCY / TRADE</span><b className={result.outOfSample.expectancy>=0?'positive':'negative'}>&#36;{fmt(result.outOfSample.expectancy)}</b></div>
+        <div><span>OOS ENDING EQUITY</span><b>&#36;{fmt(result.outOfSample.equity)}</b></div>
+        <div><span>TRAINING RETURN</span><b className={result.training.returnPct>=0?'positive':'negative'}>{result.training.returnPct>=0?'+':''}{fmt(result.training.returnPct)}%</b></div>
       </div>
-      <p className="backtest-assumption">{result.assumption} Starting capital: $10,000. Fee {fmt(Number(fee),3)}% per side; slippage {fmt(Number(slippage),3)}% per side. Futures simulation uses 3x notional cap. Funding, liquidation, spread and partial fills are not modelled.</p>
-      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>Side</th><th>Entry</th><th>Exit</th><th>Net P&L</th><th>Exit reason</th></tr></thead><tbody>{result.tradeList.map((t,i)=><tr key={i}><td>{t.side}</td><td>{fmt(t.entry, t.entry<1?5:3)}</td><td>{fmt(t.exit,t.exit<1?5:3)}</td><td className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</td><td>{t.reason}</td></tr>)}</tbody></table></div>
+      <div className="backtest-meta"><span>TRAIN: {new Date(result.from).toLocaleDateString()} – {new Date(result.splitAt).toLocaleDateString()}</span><span>UNSEEN TEST: {new Date(result.splitAt).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span></div>
+      <div className="mtf-reasons"><span>Training: {metric(result.training)}</span><span>Out-of-sample: {metric(result.outOfSample)}</span></div>
+      <h4 className="section-subtitle">Sequential out-of-sample folds</h4>
+      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>FOLD</th><th>TEST PERIOD</th><th>RETURN</th><th>TRADES</th><th>WIN RATE</th><th>PROFIT FACTOR</th><th>MAX DD</th></tr></thead><tbody>{result.folds.map(x=><tr key={x.label}><td>{x.label}</td><td>{new Date(x.from).toLocaleDateString()} – {new Date(x.to).toLocaleDateString()}</td><td className={x.returnPct>=0?'positive':'negative'}>{x.returnPct>=0?'+':''}{fmt(x.returnPct)}%</td><td>{x.tradeCount}</td><td>{fmt(x.winRate)}%</td><td>{x.profitFactor===null?'∞':fmt(x.profitFactor)}</td><td className="negative">{fmt(x.maxDrawdown)}%</td></tr>)}</tbody></table></div>
+      <p className="backtest-assumption">{result.assumption} Starting equity resets to $10,000 for each independent segment. Fee {fmt(Number(fee),3)}% and slippage {fmt(Number(slippage),3)}% are charged per side. Entries occur at the next candle open; if stop and target touch in the same candle, stop is assumed first. Futures uses a 3x notional cap. Funding, liquidation, spread, partial fills and market impact are not modelled. 5,000-candle maximum.</p>
+      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>OOS SIDE</th><th>ENTRY</th><th>EXIT</th><th>NET P&L</th><th>EXIT REASON</th></tr></thead><tbody>{result.tradeList.map((t,i)=><tr key={i}><td>{t.side}</td><td>{fmt(t.entry,t.entry<1?5:3)}</td><td>{fmt(t.exit,t.exit<1?5:3)}</td><td className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}{'&#36;'}{fmt(t.pnl)}</td><td>{t.reason}</td></tr>)}</tbody></table></div>
     </>}
-    <div className="backtest-disclaimer"><ShieldCheck size={14}/> Historical simulation only. Results are not forecasts, and a profitable backtest does not prove future profitability.</div>
+    <div className="backtest-disclaimer"><ShieldCheck size={14}/> Historical simulation only. Out-of-sample testing reduces in-sample overfitting but does not prove future profitability. This is a fixed baseline strategy, not the multi-timeframe signal engine yet.</div>
   </section>;
 }
-
 
 function StrategyOptimizer({symbol,market}) {
   const [tf,setTf]=useState('15m'),[days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02');
