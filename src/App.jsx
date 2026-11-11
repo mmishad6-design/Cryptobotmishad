@@ -444,7 +444,7 @@ function PublicDerivativesPanel({symbol}) {
 
 
 function evaluateTimeframe(candles) {
-  const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
+  const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
   if(rows.length<60) throw new Error('Not enough completed candles');
   const closes=rows.map(x=>x.close);
   const ema=(period)=>{const alpha=2/(period+1);let value=closes.slice(0,period).reduce((a,b)=>a+b,0)/period;for(let i=period;i<closes.length;i++)value=closes[i]*alpha+value*(1-alpha);return value;};
@@ -496,10 +496,10 @@ function evaluateTimeframe(candles) {
   const sweep=lastHigh&&last.high>lastHigh.price&&last.close<lastHigh.price?'HIGH-SIDE':lastLow&&last.low<lastLow.price&&last.close>lastLow.price?'LOW-SIDE':'NONE';
   const takerSell=Math.max(0,last.volume-last.takerBuy);
   const takerRatio=takerSell>0?last.takerBuy/takerSell:null;
-  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,structure,bos,choch,sweep,takerRatio};
+  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,structure,bos,choch,sweep,takerRatio};
 }
 function MultiTimeframeSignal({symbol,market}) {
-  const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState('');
+  const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
   useEffect(()=>{
     let live=true;
     const run=async()=>{
@@ -553,6 +553,7 @@ function MultiTimeframeSignal({symbol,market}) {
         if(score>=85&&volumeOk&&adxRegimeOk&&structureOk)decision=longBias?'LONG':'SHORT';
         else reasons.push('Strict confirmation gate not satisfied — NO TRADE');
         setResult({symbol,market,decision,score,data,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio},reasons,updated:new Date(),status:'READY'});
+        setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const entry=m5.close,atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
       }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['Required timeframe or order-book data unavailable.'],updated:new Date(),status:'BLOCKED'});setError(e.message||'Multi-timeframe analysis failed.');}}
       finally{if(live)setLoading(false);}
     };
@@ -560,6 +561,8 @@ function MultiTimeframeSignal({symbol,market}) {
     return()=>{live=false;clearInterval(timer);};
   },[symbol,market]);
   const rows=result?.data?['4h','1h','15m','5m'].map(tf=>[tf,result.data[tf]]):[];
+  useEffect(()=>{let live=true;const pending=tracked.filter(x=>x.status==='PENDING');if(!pending.length)return;const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';(async()=>{try{const start=Math.min(...pending.map(x=>x.candleTime))+300000;const r=await fetch(base+path+'?symbol='+symbol+'&interval=5m&startTime='+start+'&limit=1000',{cache:'no-store'});if(!r.ok)return;const candles=await r.json();if(!Array.isArray(candles)||!candles.length)return;setTracked(prev=>{let changed=false;const next=prev.map(sig=>{if(sig.status!=='PENDING'||sig.symbol!==symbol||sig.market!==market)return sig;let bars=sig.bars,exit=null,reason=null;for(const k of candles){const t=Number(k[0]);if(t<=sig.candleTime||Number(k[6])>=Date.now())continue;bars++;const hi=Number(k[2]),lo=Number(k[3]),cl=Number(k[4]),stop=sig.side==='LONG'?lo<=sig.stop:hi>=sig.stop,target=sig.side==='LONG'?hi>=sig.target:lo<=sig.target;if(stop){exit=sig.stop;reason='STOP LOSS';break;}if(target){exit=sig.target;reason='TAKE PROFIT';break;}if(bars>=12){exit=cl;reason='12-CANDLE TIME EXIT';break;}}if(!exit){if(bars!==sig.bars){changed=true;return {...sig,bars};}return sig;}const gross=(exit-sig.entry)/sig.entry*(sig.side==='LONG'?1:-1)*100,net=gross-0.14;changed=true;return {...sig,bars,exit,reason,grossPct:gross,netPct:net,status:'CLOSED',closedAt:Date.now()};});if(changed){try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;}return prev;});}catch{}})();return()=>{live=false;};},[symbol,market,tracked.filter(x=>x.status==='PENDING').map(x=>x.id+':'+x.bars).join('|')]);
+  const closedTracked=tracked.filter(x=>x.status==='CLOSED'),trackedWins=closedTracked.filter(x=>x.netPct>0).length,trackedNet=closedTracked.reduce((s,x)=>s+x.netPct,0);
   const ratio=n=>n==null||!Number.isFinite(n)?'—':n.toFixed(2)+'x';
   return <section className="panel mtf-panel">
     <div className="panel-title"><div><h3>Advanced multi-timeframe signal engine</h3><p>4H trend → 1H alignment → 15M setup → 5M timing · ADX / BOS / sweep / flow · Refreshes every 60s</p></div><span className={'tiny-live '+(result?.status==='READY'?'':'data-status-warn')}>{loading?'SCANNING':result?.status||'WAITING'}</span></div>
@@ -567,8 +570,10 @@ function MultiTimeframeSignal({symbol,market}) {
     <div className="mtf-table-wrap"><table className="mtf-table"><thead><tr><th>TIMEFRAME</th><th>TREND</th><th>ADX</th><th>STRUCTURE</th><th>BOS</th><th>CHoCH</th><th>SWEEP</th><th>RSI</th><th>VOL / AVG</th></tr></thead><tbody>{rows.map(([tf,x])=><tr key={tf}><td>{tf.toUpperCase()}</td><td className={x.trend==='BULLISH'?'positive':x.trend==='BEARISH'?'negative':''}>{x.trend}</td><td>{fmt(x.adx,1)}</td><td>{x.structure}</td><td>{x.bos==='NONE'?'—':x.bos}</td><td>{x.choch==='NONE'?'—':x.choch}</td><td>{x.sweep==='NONE'?'—':x.sweep}</td><td>{fmt(x.rsi,1)}</td><td>{fmt(x.volumeRatio,2)}x</td></tr>)}</tbody></table></div>
     {result?.flow&&<div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TAKER BUY / SELL</span><b>{ratio(result.flow.takerRatio)}</b><small>{result.flow.externalTakerRatio!==null?'Binance Futures 5m ratio':'Completed 5m candle estimate'}</small></div><div className="public-data-card"><span>TOP-20 DEPTH BID / ASK</span><b>{ratio(result.flow.depthRatio)}</b><small>Snapshot imbalance · not full order flow</small></div><div className="public-data-card"><span>ADX REGIME</span><b>{result.data['4h'].adx>=15&&result.data['1h'].adx>=15?'TREND-ELIGIBLE':'WEAK / MIXED'}</b><small>ADX is a strength filter, not direction</small></div></div>}
     {error&&<p className="public-data-error">{error}</p>}
+    <div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TRACKED LIVE SIGNALS</span><b>{tracked.length}</b><small>Saved in this browser</small></div><div className="public-data-card"><span>CLOSED SIGNAL WIN RATE</span><b>{closedTracked.length?fmt(trackedWins/closedTracked.length*100,1)+'%':'—'}</b><small>{closedTracked.length} resolved signals</small></div><div className="public-data-card"><span>NET TRACKED RETURN</span><b className={trackedNet>=0?'positive':'negative'}>{closedTracked.length?(trackedNet>=0?'+':'')+fmt(trackedNet,2)+'%':'—'}</b><small>Equal-weight price return proxy</small></div></div>
+    {tracked.length>0&&<div className="mtf-reasons">{tracked.slice(0,8).map(x=><span key={x.id}>{x.symbol} {x.side} · {x.status==='PENDING'?'PENDING '+x.bars+'/12':x.reason+' · '+(x.netPct>=0?'+':'')+fmt(x.netPct,2)+'%'}</span>)}</div>}
     <div className="mtf-reasons">{(result?.reasons||['Waiting for completed candles and order-book snapshot.']).map((x,i)=><span key={i}>{x}</span>)}</div>
-    <p className="public-data-foot">Research-only rule set. ADX uses Wilder-style smoothing; pivots require three right-side closed candles. Order book is a single top-20 snapshot, and taker ratios are aggregated estimates, not full order-flow or institutional positioning. No validated win rate or profitability is claimed. Not connected to paper-order execution.</p>
+    <p className="public-data-foot">Research-only rule set. Signal log is browser-local and tracks only emitted LONG/SHORT decisions; outcomes resolve at 1.5x ATR stop, 3x ATR target, or 12 completed 5M candles, with stop-first same-candle handling and a fixed 0.14% round-trip cost assumption. This is a monitoring proxy, not a broker fill or independently validated win rate. ADX uses Wilder-style smoothing; pivots require three right-side closed candles. Order book is a single top-20 snapshot. No orders are placed.</p>
   </section>;
 }
 
