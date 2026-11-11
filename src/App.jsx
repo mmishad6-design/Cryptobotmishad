@@ -107,7 +107,7 @@ function BacktestPanel({symbol,market,defaultInterval}) {
     setRunning(true);setError('');setResult(null);
     try{
       const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',endpoint=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines',now=Date.now(),startTime=now-Number(days)*86400000,warmupMs=30*86400000,fetchStart=startTime-warmupMs;
-      const fetchFrame=async frame=>{const ms=intervalMs[frame];let cursor=fetchStart,raw=[],pages=0;while(cursor<now&&pages<100){const response=await fetch(base+endpoint+'?symbol='+symbol+'&interval='+frame+'&startTime='+cursor+'&endTime='+now+'&limit=1000',{cache:'no-store'});if(!response.ok)throw new Error(frame+' historical data request failed ('+response.status+').');const batch=await response.json();if(!Array.isArray(batch)||!batch.length)break;raw=raw.concat(batch);const next=Number(batch.at(-1)[0])+ms;if(next<=cursor)throw new Error(frame+' pagination did not advance; stopping to avoid duplicate data.');cursor=next;pages++;if(batch.length<1000)break;}if(pages>=100&&cursor<now)throw new Error(frame+' history exceeded the safe pagination limit.');return toRows(raw,ms);};
+      const fetchFrame=async frame=>{const ms=intervalMs[frame];let cursor=fetchStart,raw=[],pages=0;while(cursor<now&&pages<100){const response=await fetch(base+endpoint+'?symbol='+symbol+'&interval='+frame+'&startTime='+cursor+'&endTime='+now+'&limit=1000',{cache:'no-store'});if(!response.ok)throw new Error(frame+' historical data request failed ('+response.status+').');const batch=await response.json();if(!Array.isArray(batch)||!batch.length)break;raw=raw.concat(batch);const next=Number(batch.at(-1)[0])+ms;if(next<=cursor)throw new Error(frame+' pagination did not advance; stopping to avoid duplicate data.');cursor=next;pages++;if(batch.length<1000)break;}if(pages>=100&&cursor<now)throw new Error(frame+' history exceeded the safe pagination limit.');const rows=toRows(raw,ms),gapIndex=rows.slice(1).findIndex((x,i)=>x.time-rows[i].time!==ms);if(gapIndex>=0)throw new Error(frame+' historical candles contain a missing interval near '+new Date(rows[gapIndex+1].time).toISOString()+'. Validation stopped.');return rows;};
       const fetched=await Promise.all(frames.map(fetchFrame)),historyByFrame=Object.fromEntries(frames.map((f,i)=>[f,fetched[i]]));
       const data=historyByFrame['5m'],requestedStartIndex=data.findIndex(x=>x.time>=startTime);if(requestedStartIndex<0||data.length-requestedStartIndex<240)throw new Error('Not enough completed 5m candles in the requested period. Try a longer history window.');
       const requestedCount=data.length-requestedStartIndex,split=requestedStartIndex+Math.floor(requestedCount*.7);if(split-requestedStartIndex<60||data.length-split<180)throw new Error('Selected period is too short for the 70/30 split and three validation folds. Choose 30 days or more.');
@@ -450,7 +450,7 @@ function PublicDerivativesPanel({symbol}) {
 }
 
 
-function evaluateTimeframe(candles) {
+function evaluateTimeframe(candles,timeframe) {
   const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
   if(rows.length<60) throw new Error('Not enough completed candles');
   const closes=rows.map(x=>x.close);
@@ -503,7 +503,8 @@ function evaluateTimeframe(candles) {
   const sweep=lastHigh&&last.high>lastHigh.price&&last.close<lastHigh.price?'HIGH-SIDE':lastLow&&last.low<lastLow.price&&last.close>lastLow.price?'LOW-SIDE':'NONE';
   const takerSell=Math.max(0,last.volume-last.takerBuy);
   const takerRatio=takerSell>0?last.takerBuy/takerSell:null;
-  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,structure,bos,choch,sweep,takerRatio};
+  const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-61),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
+  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio};
 }
 function MultiTimeframeSignal({symbol,market}) {
   const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
@@ -518,7 +519,7 @@ function MultiTimeframeSignal({symbol,market}) {
         const all=await Promise.all(frames.map(async tf=>{
           const response=await fetch(base+path+'?symbol='+symbol+'&interval='+tf+'&limit=120',{cache:'no-store'});
           if(!response.ok)throw new Error(tf+' timeframe data unavailable ('+response.status+')');
-          return [tf,evaluateTimeframe(await response.json())];
+          return [tf,evaluateTimeframe(await response.json(),tf)];
         }));
         const depthResponse=await fetch(base+(market==='Futures'?'/fapi/v1/depth':'/api/v3/depth')+'?symbol='+symbol+'&limit=20',{cache:'no-store'});
         if(!depthResponse.ok)throw new Error('Order-book snapshot unavailable ('+depthResponse.status+')');
@@ -537,8 +538,8 @@ function MultiTimeframeSignal({symbol,market}) {
         if(!live)return;
         const data=Object.fromEntries(all),[h4,h1,m15,m5]=frames.map(tf=>data[tf]);
         const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000};
-        const staleFrames=frames.filter(tf=>!data[tf]||!Number.isFinite(data[tf].closeTime)||Date.now()-data[tf].closeTime>frameMs[tf]+120000);
-        if(staleFrames.length){setResult({symbol,market,decision:'NO TRADE',score:0,data,flow:null,reasons:['Completed candle data is stale for: '+staleFrames.map(x=>x.toUpperCase()).join(', ')+'. Waiting for a fresh Binance snapshot.'],updated:new Date(),status:'BLOCKED'});return;}
+        const staleFrames=frames.filter(tf=>!data[tf]||!Number.isFinite(data[tf].closeTime)||Date.now()-data[tf].closeTime>frameMs[tf]+120000||data[tf].candleGaps>0);
+        if(staleFrames.length){setResult({symbol,market,decision:'NO TRADE',score:0,data,flow:null,reasons:['Completed candle data is stale or discontinuous for: '+staleFrames.map(x=>x.toUpperCase()).join(', ')+'. Waiting for a clean Binance snapshot.'],updated:new Date(),status:'BLOCKED'});return;}
         const takerRatio=Number.isFinite(externalTakerRatio)&&externalTakerRatio>0?externalTakerRatio:m5.takerRatio;
         const longBias=h4.trend==='BULLISH'&&h1.trend==='BULLISH';
         const shortBias=h4.trend==='BEARISH'&&h1.trend==='BEARISH';
