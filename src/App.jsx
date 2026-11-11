@@ -14,6 +14,7 @@ const intervals = ['1m','5m','15m','1h','4h','1d'];
 function ChartPanel({symbol, interval, candles, loading, market}) {
   const host = useRef(null);
   const chartRef = useRef(null);
+  const didFit = useRef(false);
   useEffect(() => {
     if (!host.current) return;
     const chart = createChart(host.current, {
@@ -24,6 +25,7 @@ function ChartPanel({symbol, interval, candles, loading, market}) {
     });
     const series = chart.addSeries(CandlestickSeries, { upColor:'#19b88a', downColor:'#ef6472', borderUpColor:'#19b88a', borderDownColor:'#ef6472', wickUpColor:'#19b88a', wickDownColor:'#ef6472' });
     chartRef.current = {chart,series};
+    didFit.current = false;
     const resize = new ResizeObserver(entries => { if(entries[0]) chart.applyOptions({width:entries[0].contentRect.width}); });
     resize.observe(host.current);
     return () => { resize.disconnect(); chart.remove(); chartRef.current = null; };
@@ -31,7 +33,7 @@ function ChartPanel({symbol, interval, candles, loading, market}) {
   useEffect(() => {
     if (!chartRef.current || !candles?.length) return;
     chartRef.current.series.setData(candles);
-    chartRef.current.chart.timeScale().fitContent();
+    if (!didFit.current) { chartRef.current.chart.timeScale().fitContent(); didFit.current = true; }
   }, [candles]);
   return <div className="chart-wrap"><div className="chart-label">{loading ? 'Updating market data…' : `Binance ${market} · Public market data`} <span>•</span> {symbol.replace('USDT','')}/USDT</div><div className="chart-canvas" ref={host}/>{!candles?.length && <div className="chart-empty">Waiting for candle data</div>}</div>;
 }
@@ -216,7 +218,7 @@ function App() {
           <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>Selected liquid markets</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Live WebSocket stream · REST fallback · {filtered.length} assets shown</div></div>
           <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USD</span><span>Starting balance: $10,000</span></div><div className="paper-stats"><div><span>OPEN TRADES</span><b>{paperTrades.filter(t=>t.status==='OPEN').length}</b></div><div><span>UNREALIZED P&L</span><b className={unrealizedPnl>=0?'positive':'negative'}>{unrealizedPnl>=0?'+':''}${fmt(unrealizedPnl)}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation and does not represent real execution or guaranteed results.</p></div>
         </section>
-        {tab==='Paper Trading'&&<section className="panel journal-panel"><div className="panel-title"><div><h3>Paper trade journal</h3><p>Practice entries and review outcomes</p></div><button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button></div>{paperTrades.length===0?<div className="empty-state">No paper trades yet. A trade can only be opened when the setup assessment is LONG or SHORT.</div>:<div className="trade-list">{paperTrades.map(t=><div className="trade-row" key={t.id}><b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b><span>Entry: ${fmt(t.entry)}</span><span>{t.status==='OPEN'?'Live: {t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(prices[t.symbol]?.lastPrice||t.entry),'MANUAL')}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
+        {(tab==='Paper Trading'||tab==='Trade Journal')&&<section className="panel journal-panel"><div className="panel-title"><div><h3>Paper trade journal</h3><p>Practice entries and review outcomes</p></div><button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button></div>{paperTrades.length===0?<div className="empty-state">No paper trades yet. A trade can only be opened when the setup assessment is LONG or SHORT.</div>:<div className="trade-list">{paperTrades.map(t=><div className="trade-row" key={t.id}><b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b><span>Entry: ${fmt(t.entry)}</span><span>{t.status==='OPEN'?'Live: {t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(prices[t.symbol]?.lastPrice||t.entry),'MANUAL')}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
         <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
       </div>
     </main>
