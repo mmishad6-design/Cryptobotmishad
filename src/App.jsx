@@ -91,7 +91,7 @@ function BacktestPanel({symbol,market,defaultInterval}) {
           if(stopHit)closePosition(position.stop,'STOP LOSS',c.time);
           else if(targetHit)closePosition(position.target,'TAKE PROFIT',c.time);
         }
-        if(!position&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){
+        if(!position&&next&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){
           const atr=atrAt(i),rawEntry=next.open,entry=bias==='LONG'?rawEntry*(1+slipRate):rawEntry*(1-slipRate);
           const stopDistance=atr*1.5,riskCash=equity*0.01;
           let qty=riskCash/stopDistance;
