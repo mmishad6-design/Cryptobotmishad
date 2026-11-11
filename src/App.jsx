@@ -358,7 +358,23 @@ function MarketStructureScanner({market}) {
  return {symbol:a[0],ticker:a[2],name:a[1],price:last.close,structure,bos,choch,sweep,support:near(lows),resistance:near(highs),fvg,ob,candles:d.length,time:last.time};
  }catch(e){return {symbol:a[0],ticker:a[2],error:e.message};}}));out.push(...batch);setRows([...out]);}if(!out.some(x=>x.symbol===selected&&!x.error))setSelected(out.find(x=>!x.error)?.symbol||'BTCUSDT');
  }catch(e){setError(e.message||'Scan failed');}finally{setBusy(false);}};
- const active=rows.find(x=>x.symbol===selected)||rows.find(x=>!x.error),money=v=>v==null?'—':'
+ const active=rows.find(x=>x.symbol===selected)||rows.find(x=>!x.error);
+ const money=v=>v==null?'—':'$'+fmt(v,v<1?6:3);
+ const exportCsv=()=>{const h=['Symbol','Price','Structure','BOS','CHoCH','Sweep','Support','Resistance','FVG','OB'];const data=rows.map(x=>[x.symbol,x.price,x.structure,x.bos,x.choch,x.sweep,x.support,x.resistance,x.fvg?.type,x.ob?.type]);const blob=new Blob([h.concat(data).map(r=>r.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\n')],{type:'text/csv'});const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='cryptobot-structure-'+tf+'.csv';a.click();URL.revokeObjectURL(u);};
+ return <section className="panel structure-panel">
+ <div className="panel-title"><div><h3>Market structure & liquidity</h3><p>BOS / CHoCH · swing pivots · liquidity sweeps · FVG · order blocks</p></div><span className="tiny-live">PRICE ACTION</span></div>
+ <div className="scanner-controls"><div className="scanner-control-group"><span>TIMEFRAME</span><div className="scanner-chips">{['5m','15m','1h','4h','1d'].map(x=><button key={x} className={tf===x?'active':''} onClick={()=>setTf(x)}>{x}</button>)}</div></div><button className="primary-btn" disabled={busy} onClick={scan}><Play size={14}/>{busy?'Scanning…':'Scan market structure'}</button>{rows.length>0&&<button className="secondary-btn" onClick={exportCsv}><Download size={14}/> Export CSV</button>}</div>
+ {error&&<div className="backtest-error">{error}</div>}
+ {busy&&<div className="scanner-progress"><span>Processed {rows.length} / {WATCH.length}</span><div><i style={{width:rows.length/WATCH.length*100+'%'}}/></div></div>}
+ {rows.length>0&&<><div className="scanner-summary"><span>{rows.filter(x=>!x.error).length} assets · Binance {market} · {tf}</span><span>Completed candles only</span></div><div className="backtest-table-wrap"><table className="backtest-table structure-table"><thead><tr><th>Asset</th><th>Structure</th><th>BOS</th><th>CHoCH</th><th>Liquidity sweep</th><th>Price</th></tr></thead><tbody>{rows.map(x=><tr key={x.symbol} onClick={()=>!x.error&&setSelected(x.symbol)} className={selected===x.symbol?'structure-selected':''}><td><b>{x.ticker}</b></td>{x.error?<td colSpan="5" className="negative">{x.error}</td>:<><td>{x.structure}</td><td>{x.bos}</td><td>{x.choch}</td><td>{x.sweep}</td><td>{money(x.price)}</td></>}</tr>)}</tbody></table></div></>}
+ {active&&!active.error&&<div className="structure-detail"><div className="structure-detail-head"><div><b>{active.name} / USDT</b><small>{active.ticker} · {tf} · {active.candles} completed candles</small></div><b>{money(active.price)}</b></div><div className="structure-levels"><div><span>NEAREST SUPPORT</span><b>{money(active.support)}</b></div><div><span>NEAREST RESISTANCE</span><b>{money(active.resistance)}</b></div><div><span>LATEST FVG</span><b>{active.fvg?.type||'None found'}</b><small>{active.fvg?money(active.fvg.low)+' – '+money(active.fvg.high):'No recent gap'}</small></div><div><span>ORDER BLOCK HEURISTIC</span><b>{active.ob?.type||'No recent BOS'}</b><small>{active.ob?money(active.ob.low)+' – '+money(active.ob.high):'No qualifying candle'}</small></div></div></div>}
+ <div className="regime-guide"><b>How the scan works</b><span><strong>BOS:</strong> completed candle closes beyond a confirmed swing pivot.</span><span><strong>CHoCH:</strong> break against recent pivot trend; not proof of reversal.</span><span><strong>Liquidity sweep:</strong> wick crosses a prior swing then closes back inside.</span><span><strong>FVG:</strong> three-candle gap. Order block is a simplified last-opposite-candle heuristic before a break.</span><span>Three candles on the right are required to confirm each swing pivot.</span></div>
+ <p className="backtest-assumption">Rules-based approximation, not actual order-flow or resting-order data. No liquidation clusters or institutional positions are read. Levels may fail quickly; no trades are placed.</p>
+ </section>;
+}
+
+function App() {
+  const [symbol,setSymbol] = useState('BTCUSDT');
   const [symbol,setSymbol] = useState('BTCUSDT');
   const [interval,setTimeframe] = useState('15m');
   const [market,setMarket] = useState('Futures');
@@ -522,6 +538,9 @@ function MarketStructureScanner({market}) {
         {tab==='Multi-Asset Scanner'&&<MultiAssetScanner market={market}/>}
         {tab==='Market Regime'&&<MarketRegimeScanner market={market}/>}
         {tab==='Market Structure'&&<MarketStructureScanner market={market}/ >}
+        {tab==='Multi-Asset Scanner'&&<MultiAssetScanner market={market}/>}
+        {tab==='Market Regime'&&<MarketRegimeScanner market={market}/>}
+        {tab==='Market Structure'&&<MarketStructureScanner market={market}/ >}
         {tab==='Futures Analysis'&&(
           <section className="panel risk-panel">
             <div className="panel-title">
@@ -674,7 +693,7 @@ function App() {
     const positionSize=stop?riskUsd/Math.abs(last-stop):0;
     return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,atr,stop,target,positionSize,riskUsd,reason:`Price is ${last>e20?'above':'below'} the 20-period average and the short-term trend is ${e20>e50?'positive':'negative'} versus the 50-period average.`};
   },[candles,demoBalance]);
-  const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['News & Events',Newspaper]];
+  const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['Multi-Asset Scanner',Globe2],['Market Regime',Activity],['Market Structure',Layers3],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
   useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
   const closeTrade=(id,exitPrice,reason='MANUAL')=>{
