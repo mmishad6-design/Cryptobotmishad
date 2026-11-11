@@ -464,18 +464,19 @@ function App() {
   const candleUrl = useMemo(()=>`${apiBase}${market==='Futures'?'/fapi/v1/klines':'/api/v3/klines'}?symbol=${symbol}&interval=${interval}&limit=160`,[symbol,interval,market]);
   const [futuresMetrics,setFuturesMetrics] = useState({openInterest:null,fundingRate:null,updated:null});
   const [feedStatus,setFeedStatus] = useState('CONNECTING');
+  const [feedMeta,setFeedMeta] = useState({});
 
   // Push-based 24h ticker feed: Binance WebSocket, with REST snapshot/fallback.
   useEffect(()=>{
     let live=true,ws=null,reconnect=null,fallback=null,snapshotTimer=null,delay=1000;
     const endpoint=market==='Futures'?'https://fapi.binance.com/fapi/v1/ticker/24hr':'https://api.binance.com/api/v3/ticker/24hr';
-    const snapshot=async()=>{try{const r=await fetch(endpoint);if(!r.ok)throw new Error();const rows=await r.json();if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol))next[x.symbol]={...x,...(prev[x.symbol]?.lastPrice?{lastPrice:prev[x.symbol].lastPrice}:{})};});return next;});setUpdated(new Date());}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}};
+    const snapshot=async()=>{try{const r=await fetch(endpoint);if(!r.ok)throw new Error();const rows=await r.json();if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol))next[x.symbol]={...x,lastPrice:x.lastPrice};});return next;});setUpdated(new Date());setFeedMeta(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol))next[x.symbol]={...(prev[x.symbol]||{}),priceAt:Date.now(),priceSource:'REST'};});return next;});}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}};
     const startFallback=()=>{if(fallback===null){setFeedStatus('REST FALLBACK');snapshot();fallback=window.setInterval(snapshot,5000);}};
     const connect=()=>{if(!live)return;setFeedStatus('CONNECTING');const host=market==='Futures'?'wss://fstream.binance.com/stream?streams=':'wss://stream.binance.com:9443/stream?streams=';
       const streams=WATCH.map(w=>w[0].toLowerCase()+'@trade').join('/');
       const url=host+streams;try{ws=new WebSocket(url);}catch{startFallback();return;}
       ws.onopen=()=>{delay=1000;if(fallback!==null){clearInterval(fallback);fallback=null;}setFeedStatus('LIVE');};
-      ws.onmessage=e=>{try{const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),symbol:x.s,lastPrice:x.p}}));setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
+      ws.onmessage=e=>{try{const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),symbol:x.s,lastPrice:x.p}}));setFeedMeta(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),priceAt:Date.now(),priceSource:'WEBSOCKET'}}));setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;setFeedStatus('RECONNECTING');startFallback();reconnect=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
@@ -484,10 +485,10 @@ function App() {
   // Load candle history once, then stream the active candle in real time.
   useEffect(()=>{
     let live=true,ws=null,retryTimer=null,fallbackTimer=null,delay=1000;
-    const history=async()=>{try{const r=await fetch(candleUrl);if(!r.ok)throw new Error();const rows=await r.json();if(live){setCandles(rows.map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4]})));setLoading(false);}}catch{if(live){setLoading(false);setNotice('Could not load Binance candle data. Retrying.');}}};
+    const history=async()=>{try{const r=await fetch(candleUrl);if(!r.ok)throw new Error();const rows=await r.json();if(live){setCandles(rows.filter(k=>Number(k[6])>Number(k[0])).map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})));setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'REST'}}));setLoading(false);}}catch{if(live){setLoading(false);setNotice('Could not load Binance candle data. Retrying.');}}};
     const connect=()=>{if(!live)return;const host=market==='Futures'?'wss://fstream.binance.com/ws/':'wss://stream.binance.com:9443/ws/';try{ws=new WebSocket(host+symbol.toLowerCase()+'@kline_'+interval);}catch{fallback();return;}
       ws.onopen=()=>{delay=1000;if(fallbackTimer){clearInterval(fallbackTimer);fallbackTimer=null;}};
-      ws.onmessage=e=>{try{const k=JSON.parse(e.data).k;if(!k||!live)return;const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c};setCandles(prev=>{if(!prev.length)return[c];const last=prev[prev.length-1];return last.time===c.time?[...prev.slice(0,-1),c]:[...prev,c].slice(-160);});}catch{}};
+      ws.onmessage=e=>{try{const k=JSON.parse(e.data).k;if(!k||!live)return;const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c,closeTime:Number(k.T),isClosed:Boolean(k.x)};setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'WEBSOCKET'}}));setCandles(prev=>{if(!prev.length)return[c];const last=prev[prev.length-1];return last.time===c.time?[...prev.slice(0,-1),c]:[...prev,c].slice(-160);});}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;fallback();retryTimer=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
@@ -506,25 +507,23 @@ function App() {
     return ()=>{live=false;};
   },[market,symbol]);
 
+  const activeFeed = feedMeta[symbol] || {};
+  const priceAge = activeFeed.priceAt ? Date.now()-activeFeed.priceAt : Infinity;
+  const candleAge = activeFeed.candleAt ? Date.now()-activeFeed.candleAt : Infinity;
+  const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0)).length>=50 };
   const analysis = useMemo(()=>{
-    if(candles.length<50) return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,reason:'Waiting for at least 50 candles before evaluating the setup.'};
-    const closes=candles.map(c=>c.close);
-    const avg=n=>closes.slice(-n).reduce((a,b)=>a+b,0)/n;
-    const e20=avg(20), e50=avg(50), last=closes.at(-1), prev=closes.at(-2);
-    const momentum=(last-prev)/prev*100;
-    let score=50;
-    if(last>e20) score+=12; else score-=12;
-    if(e20>e50) score+=15; else score-=15;
-    if(momentum>0.08) score+=8; else if(momentum<-.08) score-=8;
+    const closed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
+    const valid=signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&closed.length>=50;
+    if(!valid)return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,reason:'Signal blocked: market data is missing, stale, or has fewer than 50 completed candles.'};
+    const data=closed.slice(-160),closes=data.map(c=>c.close),avg=n=>closes.slice(-n).reduce((a,b)=>a+b,0)/n;
+    const e20=avg(20),e50=avg(50),last=closes.at(-1),prev=closes.at(-2),momentum=(last-prev)/prev*100;
+    let score=50;if(last>e20)score+=12;else score-=12;if(e20>e50)score+=15;else score-=15;if(momentum>0.08)score+=8;else if(momentum<-.08)score-=8;
     const bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
-    const ranges=candles.slice(-15).map((c,i)=>{const prevClose=candles[candles.length-16+i]?.close??c.close;return Math.max(c.high-c.low,Math.abs(c.high-prevClose),Math.abs(c.low-prevClose));});
-    const atr=ranges.reduce((a,b)=>a+b,0)/ranges.length;
-    const stop=bias==='LONG'?last-atr*1.5:bias==='SHORT'?last+atr*1.5:null;
-    const target=bias==='LONG'?last+atr*3:bias==='SHORT'?last-atr*3:null;
-    const riskUsd=demoBalance*0.01;
-    const positionSize=stop?riskUsd/Math.abs(last-stop):0;
-    return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,atr,stop,target,positionSize,riskUsd,reason:`Price is ${last>e20?'above':'below'} the 20-period average and the short-term trend is ${e20>e50?'positive':'negative'} versus the 50-period average.`};
-  },[candles,demoBalance]);
+    const ranges=data.slice(-15).map((c,i)=>{const p=data[data.length-16+i]?.close??c.close;return Math.max(c.high-c.low,Math.abs(c.high-p),Math.abs(c.low-p));});
+    const atr=ranges.reduce((a,b)=>a+b,0)/ranges.length,stop=bias==='LONG'?last-atr*1.5:bias==='SHORT'?last+atr*1.5:null,target=bias==='LONG'?last+atr*3:bias==='SHORT'?last-atr*3:null;
+    const riskUsd=demoBalance*0.01,positionSize=stop?riskUsd/Math.abs(last-stop):0;
+    return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,atr,stop,target,positionSize,riskUsd,reason:'Closed-candle check: price is '+(last>e20?'above':'below')+' the 20-period average; short-term trend is '+(e20>e50?'positive':'negative')+' versus the 50-period average.'};
+  },[candles,demoBalance,signalHealth.priceFresh,signalHealth.candleFresh,signalHealth.hasTicker,signalHealth.hasClosedCandles]);
   const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['Multi-Asset Scanner',Globe2],['Market Regime',Activity],['Market Structure',Layers3],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
   useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
@@ -574,8 +573,17 @@ function App() {
     <main className="main">
       <header className="topbar"><div className="top-left"><button className="icon-btn mobile-menu" onClick={()=>setMobileNav(true)}><Menu size={19}/></button><span className="crumb">Workspace</span><span className="slash">/</span><b>{tab}</b></div><div className="top-actions"><div className="feed"><span className={`pulse ${feedStatus==='LIVE'?'':'feed-warn'}`}/> <span>{feedStatus}</span></div><button className="icon-btn" onClick={()=>setTheme(t=>t==='dark'?'light':'dark')} title="Toggle theme">{theme==='dark'?<Sun size={17}/>:<Moon size={17}/>}</button><button className="icon-btn" onClick={()=>showNotice('Notifications are not configured yet.')}><Bell size={17}/></button><div className="top-avatar">M</div></div></header>
       <div className="content">
-        <div className="page-heading"><div><div className="eyebrow">WEDNESDAY, NOVEMBER 11, 2026 <span>·</span> MARKET OVERVIEW</div><h1>{tab==='Overview'?'Market overview':tab}</h1><p>Read the market. Respect the risk. Trade with a plan.</p></div><div className="heading-actions"><button className="secondary-btn" onClick={()=>{setLoading(true);fetch(candleUrl).then(r=>r.json()).then(rows=>setCandles(rows.map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4]})))).finally(()=>setLoading(false));}}><RefreshCw size={15}/> Refresh</button><button className="primary-btn" onClick={()=>setTab('Paper Trading')}><Plus size={16}/> New paper trade</button></div></div>
+        <div className="page-heading"><div><div className="eyebrow">WEDNESDAY, NOVEMBER 11, 2026 <span>·</span> MARKET OVERVIEW</div><h1>{tab==='Overview'?'Market overview':tab}</h1><p>Read the market. Respect the risk. Trade with a plan.</p></div><div className="heading-actions"><button className="secondary-btn" onClick={()=>{setLoading(true);fetch(candleUrl).then(r=>r.json()).then(rows=>setCandles(rows.filter(k=>Number(k[6])>Number(k[0])).map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})))).finally(()=>setLoading(false));}}><RefreshCw size={15}/> Refresh</button><button className="primary-btn" onClick={()=>setTab('Paper Trading')}><Plus size={16}/> New paper trade</button></div></div>
         {notice&&<div className="notice"><CircleHelp size={15}/>{notice}<button onClick={()=>setNotice('')}><X size={14}/></button></div>}
+        <section className="data-integrity-panel">
+          <div className="integrity-heading"><div><b>DATA INTEGRITY</b><small>Signal gate · active market / timeframe</small></div><span className={signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.hasClosedCandles?"integrity-ok":"integrity-warn"}>{signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.hasClosedCandles?"DATA VALID":"SIGNAL BLOCKED"}</span></div>
+          <div className="integrity-grid">
+            <div><span>PRICE FEED</span><b>{signalHealth.hasTicker?(signalHealth.priceFresh?"FRESH":"STALE"):"MISSING"}</b><small>{activeFeed.priceSource||"No source"} · {Number.isFinite(priceAge)?Math.max(0,Math.round(priceAge/1000))+"s ago":"—"}</small></div>
+            <div><span>CANDLE FEED</span><b>{signalHealth.hasClosedCandles?(signalHealth.candleFresh?"FRESH":"STALE"):"INSUFFICIENT"}</b><small>{activeFeed.candleSource||"No source"} · {Number.isFinite(candleAge)?Math.max(0,Math.round(candleAge/1000))+"s ago":"—"}</small></div>
+            <div><span>COMPLETED CANDLES</span><b>{candles.filter(c=>c.isClosed).length}</b><small>Open candle excluded from signal</small></div>
+            <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
+          </div><p>Age is measured from browser receipt time. This check cannot guarantee zero exchange/network latency.</p>
+        </section>
         <section className="market-strip">
           <div className="market-stat"><span>BTC / USDT</span><b>{prices.BTCUSDT?'$'+fmt(prices.BTCUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.BTCUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.BTCUSDT?fmt(prices.BTCUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat"><span>ETH / USDT</span><b>{prices.ETHUSDT?'$'+fmt(prices.ETHUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.ETHUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.ETHUSDT?fmt(prices.ETHUSDT.priceChangePercent)+'%':'—'}</em></div>
@@ -592,7 +600,7 @@ function App() {
             <div className="chart-foot"><span><span className="legend-dot"/> Candlesticks</span><span>Timeframe: {interval}</span><span>Source: Binance public API</span></div>
           </div>
           <div className="right-stack">
-            <div className="panel signal-panel"><div className="panel-title"><div><h3>Setup assessment</h3><p>Rule-based snapshot · Not a prediction</p></div><span className="tiny-live">LIVE</span></div><div className={`signal-badge ${analysis.bias.toLowerCase()}`}>{analysis.bias==='LONG'?<TrendingUp size={19}/>:analysis.bias==='SHORT'?<TrendingDown size={19}/>:<Crosshair size={19}/>}<b>{analysis.bias}</b></div><div className="score-row"><span>Directional score</span><b>{analysis.score}/100</b></div><div className="score-track"><i style={{width:analysis.score+'%'}}/></div><p className="analysis-reason">{analysis.reason}</p><div className="signal-warning"><ShieldCheck size={15}/><span>Signal engine is preliminary. No backtested edge or verified win rate is claimed.</span></div><button className="outline-btn full" onClick={()=>setTab('Futures Analysis')}>View analysis details <ArrowUpRight size={15}/></button></div>
+            <div className="panel signal-panel"><div className="panel-title"><div><h3>Setup assessment</h3><p>Closed-candle rules · Data-gated</p></div><span className="tiny-live">{analysis.bias==="WAIT"?"BLOCKED":"CHECKED"}</span></div><div className={`signal-badge ${analysis.bias.toLowerCase()}`}>{analysis.bias==='LONG'?<TrendingUp size={19}/>:analysis.bias==='SHORT'?<TrendingDown size={19}/>:<Crosshair size={19}/>}<b>{analysis.bias}</b></div><div className="score-row"><span>Directional score</span><b>{analysis.score}/100</b></div><div className="score-track"><i style={{width:analysis.score+'%'}}/></div><p className="analysis-reason">{analysis.reason}</p><div className="signal-warning"><ShieldCheck size={15}/><span>Signal engine is preliminary. No backtested edge or verified win rate is claimed.</span></div><button className="outline-btn full" onClick={()=>setTab('Futures Analysis')}>View analysis details <ArrowUpRight size={15}/></button></div>
             <div className="panel metrics-panel"><div className="panel-title"><div><h3>Market metrics</h3><p>{active[2]} · 24 hour</p></div><BarChart3 size={17}/></div><div className="metric-row"><span>24h Volume (USDT)</span><b>{ticker?compact(+ticker.quoteVolume):'—'}</b></div><div className="metric-row"><span>24h High</span><b className="positive">{ticker?'$'+fmt(ticker.highPrice):'—'}</b></div><div className="metric-row"><span>24h Low</span><b className="negative">{ticker?'$'+fmt(ticker.lowPrice):'—'}</b></div><div className="metric-row"><span>24h Trades</span><b>{ticker?compact(+ticker.count):'—'}</b></div><div className="metric-row"><span>Market source</span><b className="source-label">Binance {market}</b></div>{market==='Futures'&&<><div className="metric-row"><span>Open interest</span><b>{futuresMetrics.openInterest?compact(+futuresMetrics.openInterest):'—'}</b></div><div className="metric-row"><span>Funding rate</span><b className={Number(futuresMetrics.fundingRate)>=0?'positive':'negative'}>{futuresMetrics.fundingRate!==null?fmt(Number(futuresMetrics.fundingRate)*100,4)+'%':'—'}</b></div></>}</div>
           </div>
         </section>
