@@ -708,9 +708,9 @@ function App() {
   const activeFeed = feedMeta[symbol] || {};
   const priceAge = activeFeed.priceAt ? feedClock-activeFeed.priceAt : Infinity;
   const candleAge = activeFeed.candleAt ? feedClock-activeFeed.candleAt : Infinity;
+  const validClosed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
   const latestClosedCandleAt=validClosed.at(-1)?.closeTime;
   const closedCandleAge=Number.isFinite(latestClosedCandleAt)?feedClock-latestClosedCandleAt:Infinity;
-  const validClosed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
   const expectedCandleMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[interval];
   const candleGaps=validClosed.slice(1).filter((c,i)=>c.time-validClosed[i].time!==expectedCandleMs/1000).length;
   const restReferenceFresh=Boolean(activeFeed.restAt&&feedClock-activeFeed.restAt<=60000&&Number(activeFeed.restPrice)>0);
