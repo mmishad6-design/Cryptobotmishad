@@ -437,6 +437,75 @@ function PublicDerivativesPanel({symbol}) {
   </section>;
 }
 
+
+function evaluateTimeframe(candles) {
+  const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5]}));
+  if(rows.length<60) throw new Error('Not enough completed candles');
+  const closes=rows.map(x=>x.close);
+  const ema=(period)=>{const alpha=2/(period+1);let value=closes.slice(0,period).reduce((a,b)=>a+b,0)/period;for(let i=period;i<closes.length;i++)value=closes[i]*alpha+value*(1-alpha);return value;};
+  const gains=[],losses=[];
+  for(let i=Math.max(1,closes.length-14);i<closes.length;i++){const d=closes[i]-closes[i-1];gains.push(Math.max(0,d));losses.push(Math.max(0,-d));}
+  const avgGain=gains.reduce((a,b)=>a+b,0)/gains.length,avgLoss=losses.reduce((a,b)=>a+b,0)/losses.length;
+  const rsi=avgLoss===0?100:100-(100/(1+avgGain/avgLoss));
+  const last=rows.at(-1),previous=rows.at(-2),volumeAvg=rows.slice(-21,-1).reduce((a,b)=>a+b.volume,0)/20;
+  const volumeRatio=volumeAvg>0?last.volume/volumeAvg:0;
+  const e20=ema(20),e50=ema(50);
+  const trend=last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED';
+  const momentum=(last.close-previous.close)/previous.close*100;
+  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length};
+}
+function MultiTimeframeSignal({symbol,market}) {
+  const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState('');
+  useEffect(()=>{
+    let live=true;
+    const run=async()=>{
+      setLoading(true);setError('');
+      try{
+        const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
+        const path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
+        const frames=['4h','1h','15m','5m'];
+        const all=await Promise.all(frames.map(async tf=>{
+          const response=await fetch(base+path+'?symbol='+symbol+'&interval='+tf+'&limit=100');
+          if(!response.ok)throw new Error(tf+' timeframe data unavailable ('+response.status+')');
+          return [tf,evaluateTimeframe(await response.json())];
+        }));
+        if(!live)return;
+        const data=Object.fromEntries(all),[h4,h1,m15,m5]=frames.map(tf=>data[tf]);
+        let decision='NO TRADE',score=0,reasons=[];
+        const longBias=h4.trend==='BULLISH'&&h1.trend==='BULLISH';
+        const shortBias=h4.trend==='BEARISH'&&h1.trend==='BEARISH';
+        if(longBias){score+=35;reasons.push('4H and 1H trends aligned bullish');}
+        else if(shortBias){score+=35;reasons.push('4H and 1H trends aligned bearish');}
+        else reasons.push('Higher-timeframe trend conflict');
+        if(longBias&&m15.trend==='BULLISH'&&m15.rsi>=50&&m15.rsi<=72){score+=30;reasons.push('15M bullish setup and RSI confirmation');}
+        else if(shortBias&&m15.trend==='BEARISH'&&m15.rsi>=28&&m15.rsi<=50){score+=30;reasons.push('15M bearish setup and RSI confirmation');}
+        else reasons.push('15M setup not confirmed');
+        if(longBias&&m5.trend==='BULLISH'&&m5.rsi>50){score+=20;reasons.push('5M bullish entry timing');}
+        else if(shortBias&&m5.trend==='BEARISH'&&m5.rsi<50){score+=20;reasons.push('5M bearish entry timing');}
+        else reasons.push('5M entry timing not confirmed');
+        const volumeOk=m15.volumeRatio>=0.8&&m5.volumeRatio>=0.8;
+        if(volumeOk){score+=15;reasons.push('15M and 5M volume at least 80% of recent average');}
+        else reasons.push('Volume participation is weak');
+        if(score>=85&&longBias&&m15.trend==='BULLISH'&&m5.trend==='BULLISH'&&volumeOk)decision='LONG';
+        if(score>=85&&shortBias&&m15.trend==='BEARISH'&&m5.trend==='BEARISH'&&volumeOk)decision='SHORT';
+        setResult({symbol,market,decision,score,data,reasons,updated:new Date(),status:'READY'});
+      }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,reasons:['One or more timeframe feeds failed.'],updated:new Date(),status:'BLOCKED'});setError(e.message||'Multi-timeframe analysis failed.');}}
+      finally{if(live)setLoading(false);}
+    };
+    run();const timer=window.setInterval(run,60000);
+    return()=>{live=false;clearInterval(timer);};
+  },[symbol,market]);
+  const rows=result?.data?['4h','1h','15m','5m'].map(tf=>[tf,result.data[tf]]):[];
+  return <section className="panel mtf-panel">
+    <div className="panel-title"><div><h3>Advanced multi-timeframe signal engine</h3><p>4H trend → 1H alignment → 15M setup → 5M timing · Refreshes every 60s</p></div><span className={'tiny-live '+(result?.status==='READY'?'':'data-status-warn')}>{loading?'SCANNING':result?.status||'WAITING'}</span></div>
+    <div className="mtf-decision"><div><span>ENGINE DECISION</span><b className={result?.decision==='LONG'?'positive':result?.decision==='SHORT'?'negative':''}>{result?.decision||'NO TRADE'}</b></div><div><span>CONFLUENCE SCORE</span><b>{result?.score??0}/100</b></div><div><span>LAST CHECK</span><b>{result?.updated?result.updated.toLocaleTimeString():'—'}</b></div></div>
+    <div className="mtf-table-wrap"><table className="mtf-table"><thead><tr><th>TIMEFRAME</th><th>TREND</th><th>RSI (14)</th><th>VOLUME / AVG</th><th>LAST CLOSE</th></tr></thead><tbody>{rows.map(([tf,x])=><tr key={tf}><td>{tf.toUpperCase()}</td><td className={x.trend==='BULLISH'?'positive':x.trend==='BEARISH'?'negative':''}>{x.trend}</td><td>{fmt(x.rsi,1)}</td><td>{fmt(x.volumeRatio,2)}x</td><td>{fmt(x.close,x.close<1?5:3)}</td></tr>)}</tbody></table></div>
+    {error&&<p className="public-data-error">{error}</p>}
+    <div className="mtf-reasons">{(result?.reasons||['Waiting for completed candles from all four timeframes.']).map((x,i)=><span key={i}>{x}</span>)}</div>
+    <p className="public-data-foot">Research-only rule set. EMA and RSI are calculated from completed candles; volume uses the last completed candle versus the prior 20-candle average. This is not a probability or a validated trading edge. Not yet connected to paper-order execution.</p>
+  </section>;
+}
+
 function App() {
   const [symbol,setSymbol] = useState('BTCUSDT');
   const [interval,setTimeframe] = useState('15m');
@@ -593,6 +662,7 @@ function App() {
             <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
           </div><p>Age is measured from browser receipt time. This check cannot guarantee zero exchange/network latency.</p>
         </section>
+        <MultiTimeframeSignal symbol={symbol} market={market}/>
         <section className="market-strip">
           <div className="market-stat"><span>BTC / USDT</span><b>{prices.BTCUSDT?'$'+fmt(prices.BTCUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.BTCUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.BTCUSDT?fmt(prices.BTCUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat"><span>ETH / USDT</span><b>{prices.ETHUSDT?'$'+fmt(prices.ETHUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.ETHUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.ETHUSDT?fmt(prices.ETHUSDT.priceChangePercent)+'%':'—'}</em></div>
