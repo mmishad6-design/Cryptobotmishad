@@ -112,3 +112,21 @@
 .regime-guide b{color:var(--text);font-size:10px;margin-bottom:2px}
 .regime-guide strong{color:var(--soft)}
 @media(max-width:700px){.regime-panel{padding:13px}.regime-counts{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+
+/* Market structure and liquidity workspace */
+.structure-panel{margin-top:16px;padding:20px}
+.structure-table{min-width:820px}
+.structure-table tbody tr{cursor:pointer}
+.structure-table tbody tr:hover,.structure-table tbody tr.structure-selected{background:var(--panel2)}
+.structure-detail{margin-top:14px;border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--panel2)}
+.structure-detail-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.structure-detail-head>div{display:flex;flex-direction:column;gap:4px}
+.structure-detail-head b{font-size:11px}
+.structure-detail-head small{font-size:9px;color:var(--muted)}
+.structure-levels{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding-top:12px}
+.structure-levels>div{display:flex;flex-direction:column;gap:7px;min-width:0}
+.structure-levels span{font-size:8px;letter-spacing:.05em;color:var(--muted)}
+.structure-levels b{font:600 11px 'DM Mono';overflow-wrap:anywhere}
+.structure-levels small{font-size:8px;color:var(--muted);overflow-wrap:anywhere}
+@media(max-width:700px){.structure-panel{padding:13px}.structure-levels{grid-template-columns:repeat(2,minmax(0,1fr))}.structure-detail{padding:11px}}
