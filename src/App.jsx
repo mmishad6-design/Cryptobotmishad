@@ -67,7 +67,7 @@ function BacktestPanel({symbol,market,defaultInterval}) {
     const sell=Math.max(0,last.volume-last.takerBuy),takerRatio=sell>0?last.takerBuy/sell:null;
     return {trend:last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED',rsi,volumeRatio,adx,atr,atrPct:last.close?atr/last.close*100:0,bos,choch,sweep,takerRatio,close:last.close};
   };
-  const simulate=(data,feeRate,slipRate)=>{
+  const simulate=(data,feeRate,slipRate,historyByFrame)=>{
     let equity=10000,peak=10000,maxDrawdown=0,position=null,trades=[],signals=0;
     const atrAt=i=>{let sum=0;for(let j=i-14;j<=i;j++){const prev=data[j-1]?.close??data[j].close;sum+=Math.max(data[j].high-data[j].low,Math.abs(data[j].high-prev),Math.abs(data[j].low-prev));}return sum/15;};
     const close=(rawExit,reason,time)=>{const p=position;if(!p)return;const exit=p.side==='LONG'?rawExit*(1-slipRate):rawExit*(1+slipRate),gross=(exit-p.entry)*p.qty*(p.side==='LONG'?1:-1),net=gross-p.entryFee-exit*p.qty*feeRate;equity+=net;trades.push({side:p.side,entry:p.entry,exit,qty:p.qty,pnl:net,reason,entryTime:p.entryTime,exitTime:time});position=null;};
@@ -110,8 +110,8 @@ function BacktestPanel({symbol,market,defaultInterval}) {
       const fetched=await Promise.all(frames.map(fetchFrame)),historyByFrame=Object.fromEntries(frames.map((f,i)=>[f,fetched[i]]));
       const data=historyByFrame['5m'];if(data.length<240)throw new Error('At least 240 completed 5m candles are required for multi-timeframe validation.');
       const feeRate=Math.max(0,Math.min(1,Number(fee)||0))/100,slipRate=Math.max(0,Math.min(1,Number(slippage)||0))/100,split=Math.floor(data.length*.7);
-      const training=simulate(data.slice(0,split),feeRate,slipRate),outOfSample=simulate(data.slice(split-60),feeRate,slipRate),folds=[],foldLength=Math.floor((data.length-split)/3);
-      for(let n=0;n<3;n++){const from=split+n*foldLength,to=n===2?data.length:Math.min(data.length,split+(n+1)*foldLength),foldData=data.slice(Math.max(0,from-60),to);if(foldData.length>=90)folds.push({label:'Fold '+(n+1),from:foldData[60]?.time??foldData[0].time,to:foldData.at(-1).time,...simulate(foldData,feeRate,slipRate)});}
+      const training=simulate(data.slice(0,split),feeRate,slipRate,historyByFrame),outOfSample=simulate(data.slice(split-60),feeRate,slipRate,historyByFrame),folds=[],foldLength=Math.floor((data.length-split)/3);
+      for(let n=0;n<3;n++){const from=split+n*foldLength,to=n===2?data.length:Math.min(data.length,split+(n+1)*foldLength),foldData=data.slice(Math.max(0,from-60),to);if(foldData.length>=90)folds.push({label:'Fold '+(n+1),from:foldData[60]?.time??foldData[0].time,to:foldData.at(-1).time,...simulate(foldData,feeRate,slipRate,historyByFrame)});}
       setResult({symbol,market,tf:'5m execution · 4H/1H/15M context',days,from:data[0].time,to:data.at(-1).time,candles:data.length,splitAt:data[split].time,training,outOfSample,folds,feeRate,slipRate,tradeList:outOfSample.trades.slice(-12).reverse(),coverage:{'4h':historyByFrame['4h'].length,'1h':historyByFrame['1h'].length,'15m':historyByFrame['15m'].length,'5m':historyByFrame['5m'].length},assumption:'Chronological 70/30 split. Each decision uses only candles whose close time is at or before the 5M decision candle close; entry is at the next 5M open. Three sequential OOS folds are reported. The same fixed MTF rule thresholds are used throughout; no test-set tuning.'});
     }catch(e){setError(e.message||'Multi-timeframe validation failed.');}finally{setRunning(false);}
   };
