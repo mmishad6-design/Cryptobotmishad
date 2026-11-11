@@ -176,7 +176,7 @@ function StrategyOptimizer({symbol,market}) {
         const batch=await r.json();if(!Array.isArray(batch)||!batch.length)break;
         raw=raw.concat(batch);cursor=Number(batch[batch.length-1][0])+ms;if(batch.length<1000)break;
       }
-      const data=raw.slice(0,5000).map(k=>({time:k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
+      const data=raw.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).slice(0,5000).map(k=>({time:k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
       if(data.length<180)throw new Error('At least 180 candles are required. Choose a longer history or timeframe.');
       const feeRate=Math.max(0,Math.min(1,Number(fee)||0))/100,slipRate=Math.max(0,Math.min(1,Number(slippage)||0))/100;
       const split=Math.floor(data.length*.7),starting=10000;
@@ -196,9 +196,10 @@ function StrategyOptimizer({symbol,market}) {
             const a=atr(i),entryRaw=next.open,entry=bias==='LONG'?entryRaw*(1+slipRate):entryRaw*(1-slipRate),distance=a*cfg.sl,risk=equity*.01;
             let qty=risk/distance;qty=Math.min(qty,equity*(market==='Futures'?3:1)/(entry*(1+feeRate)));
             const margin=entry*qty/(market==='Futures'?3:1),entryFee=entry*qty*feeRate;
-            if(Number.isFinite(qty)&&qty>0&&margin+entryFee<=equity)pos={side:bias,entry,qty,stop:bias==='LONG'?entry-distance:entry+distance,target:bias==='LONG'?entry+a*cfg.tp:entry-a*cfg.tp};
+            if(Number.isFinite(qty)&&qty>0&&margin+entryFee<=equity)pos={side:bias,entry,qty,stop:bias==='LONG'?entry-distance:entry+distance,target:bias==='LONG'?entry+a*cfg.tp:entry-a*cfg.tp,entryTime:next.time};
           }
-          const marked=equity+(pos?((c.close-pos.entry)*pos.qty*(pos.side==='LONG'?1:-1)-pos.entry*pos.qty*feeRate):0);
+          const positionActiveAtClose=pos&&pos.entryTime<=c.time;
+          const marked=equity+(positionActiveAtClose?((c.close-pos.entry)*pos.qty*(pos.side==='LONG'?1:-1)-pos.entry*pos.qty*feeRate):0);
           peak=Math.max(peak,marked);maxDD=Math.max(maxDD,(peak-marked)/peak*100);
         }
         if(pos)close(data[to-1].close,'END',data[to-1].time);
@@ -212,7 +213,7 @@ function StrategyOptimizer({symbol,market}) {
         return score(b)-score(a);
       });
       const ranked=tested.slice(0,8).map(x=>({...x,test:simulate(x,split,data.length)}));
-      const completed={id:Date.now(),createdAt:new Date().toISOString(),symbol,market,tf,days,candles:data.length,from:data[0].time,split:data[split].time,to:data[data.length-1].time,trainingCandles:split,testCandles:data.length-split,ranked,feeRate,slipRate};setResult(completed);setHistory(prev=>[completed,...prev.filter(x=>x.id!==completed.id)].slice(0,10));
+      const completed={id:Date.now(),createdAt:new Date().toISOString(),symbol,market,tf,days,candles:data.length,actualDays:(data.at(-1).time-data[0].time)/86400000,from:data[0].time,split:data[split].time,to:data[data.length-1].time,trainingCandles:split,testCandles:data.length-split,ranked,feeRate,slipRate};setResult(completed);setHistory(prev=>[completed,...prev.filter(x=>x.id!==completed.id)].slice(0,10));
     }catch(e){setError(e.message||'Optimization failed. Please retry.');}
     finally{setRunning(false);}
   };
@@ -227,7 +228,7 @@ function StrategyOptimizer({symbol,market}) {
     </div>
     {error&&<div className="backtest-error">{error}</div>}
     {result&&<>
-      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} candles · {result.ranked.length} candidates ranked</span></div>
+      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} completed candles · {fmt(result.actualDays,1)} days actual coverage · {result.ranked.length} candidates ranked</span></div>
       <div className="validation-split"><div><b>IN-SAMPLE · 70%</b><span>{result.trainingCandles} candles · used to rank settings</span></div><div><b>OUT-OF-SAMPLE · 30%</b><span>{result.testCandles} candles · unseen validation period</span></div></div>
       <div className="backtest-table-wrap"><table className="backtest-table optimizer-table"><thead><tr><th>Rank</th><th>Parameters (Fast / Slow)</th><th>SL × ATR</th><th>TP × ATR</th><th>Train return</th><th>Train DD</th><th>Test return</th><th>Test DD</th><th>Test win rate</th><th>Test trades</th><th>Test PF</th></tr></thead><tbody>{result.ranked.map((x,i)=><tr key={x.fast+'-'+x.slow+'-'+x.sl+'-'+x.tp}><td>{i+1}</td><td>SMA {x.fast}/{x.slow}</td><td>{x.sl}×</td><td>{x.tp}×</td><td className={x.train.returnPct>=0?'positive':'negative'}>{x.train.returnPct>=0?'+':''}{fmt(x.train.returnPct)}%</td><td>{fmt(x.train.maxDD)}%</td><td className={x.test.returnPct>=0?'positive':'negative'}>{x.test.returnPct>=0?'+':''}{fmt(x.test.returnPct)}%</td><td className='negative'>{fmt(x.test.maxDD)}%</td><td>{fmt(x.test.winRate)}%</td><td>{x.test.trades}</td><td>{x.test.profitFactor===null?'∞':fmt(x.test.profitFactor)}</td></tr>)}</tbody></table></div>
       <p className="backtest-assumption">Ranking uses training-period results only. The final 30% is evaluated after selecting candidates and is not used to rank them. Starting capital $10,000 per simulation; 1% risk budget per trade; Futures notional capped at 3×. Fees and slippage applied on entry/exit. Funding, liquidation, spread, partial fills and market impact are excluded. Up to 5,000 recent candles.</p>
@@ -251,7 +252,7 @@ function MultiAssetScanner({market}) {
      try{
       const res=await fetch(base+path+'?symbol='+job.a[0]+'&interval='+job.tf+'&limit=500');if(!res.ok)throw Error('HTTP '+res.status);
       const raw=await res.json();if(!Array.isArray(raw)||raw.length<120)throw Error('Not enough candles');
-      const d=raw.map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
+      const d=raw.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
       const avg=(i,len)=>d.slice(i-len+1,i+1).reduce((s,x)=>s+x.close,0)/len;
       const atr=i=>{let v=0;for(let j=i-14;j<=i;j++){let p=d[j-1]?.close??d[j].close;v+=Math.max(d[j].high-d[j].low,Math.abs(d[j].high-p),Math.abs(d[j].low-p));}return v/15;};
       let eq=10000,peak=10000,dd=0,pos=null,trades=[];
@@ -260,7 +261,7 @@ function MultiAssetScanner({market}) {
        const c=d[i],m20=avg(i,20),m50=avg(i,50),mom=(c.close-d[i-1].close)/d[i-1].close*100;
        let score=50+(c.close>m20?12:-12)+(m20>m50?15:-15)+(mom>.08?8:mom<-.08?-8:0),bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
        if(pos){let stop=pos.side==='LONG'?c.low<=pos.stop:c.high>=pos.stop,target=pos.side==='LONG'?c.high>=pos.target:c.low<=pos.target;if(stop)close(pos.stop);else if(target)close(pos.target);}
-       if(!pos&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){let a=atr(i),entry0=d[i+1].open,entry=bias==='LONG'?entry0*(1+slipRate):entry0*(1-slipRate),dist=a*1.5,qty=Math.min(eq*.01/dist,eq*(market==='Futures'?3:1)/(entry*(1+feeRate)));if(Number.isFinite(qty)&&qty>0)pos={side:bias,entry,qty,stop:bias==='LONG'?entry-dist:entry+dist,target:bias==='LONG'?entry+a*3:entry-a*3};}
+       if(!pos&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){let a=atr(i),entry0=d[i+1].open,entry=bias==='LONG'?entry0*(1+slipRate):entry0*(1-slipRate),dist=a*1.5,qty=Math.min(eq*.01/dist,eq*(market==='Futures'?3:1)/(entry*(1+feeRate)));if(Number.isFinite(qty)&&qty>0)pos={side:bias,entry,qty,stop:bias==='LONG'?entry-dist:entry+dist,target:bias==='LONG'?entry+a*3:entry-a*3,entryTime:d[i+1].time};}
        let marked=eq+(pos?(c.close-pos.entry)*pos.qty*(pos.side==='LONG'?1:-1)-pos.entry*pos.qty*feeRate:0);peak=Math.max(peak,marked);dd=Math.max(dd,(peak-marked)/peak*100);
       }
       if(pos)close(d[d.length-1].close);
