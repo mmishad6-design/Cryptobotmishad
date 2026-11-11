@@ -68,17 +68,19 @@ function App() {
 
   // Push-based 24h ticker feed: Binance WebSocket, with REST snapshot/fallback.
   useEffect(()=>{
-    let live=true,ws=null,reconnect=null,fallback=null,delay=1000;
+    let live=true,ws=null,reconnect=null,fallback=null,snapshotTimer=null,delay=1000;
     const endpoint=market==='Futures'?'https://fapi.binance.com/fapi/v1/ticker/24hr':'https://api.binance.com/api/v3/ticker/24hr';
-    const snapshot=async()=>{try{const r=await fetch(endpoint);if(!r.ok)throw new Error();const rows=await r.json();if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol))next[x.symbol]={...(prev[x.symbol]||{}),...x};});return next;});setUpdated(new Date());}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}};
+    const snapshot=async()=>{try{const r=await fetch(endpoint);if(!r.ok)throw new Error();const rows=await r.json();if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol))next[x.symbol]={...x,...(prev[x.symbol]?.lastPrice?{lastPrice:prev[x.symbol].lastPrice}:{})};});return next;});setUpdated(new Date());}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}};
     const startFallback=()=>{if(fallback===null){setFeedStatus('REST FALLBACK');snapshot();fallback=window.setInterval(snapshot,5000);}};
-    const connect=()=>{if(!live)return;setFeedStatus('CONNECTING');const url=market==='Futures'?'wss://fstream.binance.com/ws/!ticker@arr':'wss://stream.binance.com:9443/ws/!ticker@arr';try{ws=new WebSocket(url);}catch{startFallback();return;}
+    const connect=()=>{if(!live)return;setFeedStatus('CONNECTING');const host=market==='Futures'?'wss://fstream.binance.com/stream?streams=':'wss://stream.binance.com:9443/stream?streams=';
+      const streams=WATCH.map(w=>w[0].toLowerCase()+'@trade').join('/');
+      const url=host+streams;try{ws=new WebSocket(url);}catch{startFallback();return;}
       ws.onopen=()=>{delay=1000;if(fallback!==null){clearInterval(fallback);fallback=null;}setFeedStatus('LIVE');};
-      ws.onmessage=e=>{try{const data=JSON.parse(e.data),rows=Array.isArray(data)?data:[data];setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.s))next[x.s]={...(prev[x.s]||{}),symbol:x.s,lastPrice:x.c,priceChangePercent:x.P,priceChange:x.p,highPrice:x.h,lowPrice:x.l,quoteVolume:x.q,count:x.n};});return next;});setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
+      ws.onmessage=e=>{try{const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),symbol:x.s,lastPrice:x.p}}));setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;setFeedStatus('RECONNECTING');startFallback();reconnect=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
-    snapshot();connect();return()=>{live=false;if(reconnect)clearTimeout(reconnect);if(fallback!==null)clearInterval(fallback);try{ws?.close();}catch{}};
+    snapshot();snapshotTimer=window.setInterval(snapshot,30000);connect();return()=>{live=false;if(reconnect)clearTimeout(reconnect);if(fallback!==null)clearInterval(fallback);if(snapshotTimer!==null)clearInterval(snapshotTimer);try{ws?.close();}catch{}};
   },[market]);
   // Load candle history once, then stream the active candle in real time.
   useEffect(()=>{
