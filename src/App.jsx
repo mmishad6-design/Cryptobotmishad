@@ -439,7 +439,7 @@ function PublicDerivativesPanel({symbol}) {
 
 
 function evaluateTimeframe(candles) {
-  const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5]}));
+  const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
   if(rows.length<60) throw new Error('Not enough completed candles');
   const closes=rows.map(x=>x.close);
   const ema=(period)=>{const alpha=2/(period+1);let value=closes.slice(0,period).reduce((a,b)=>a+b,0)/period;for(let i=period;i<closes.length;i++)value=closes[i]*alpha+value*(1-alpha);return value;};
@@ -452,7 +452,46 @@ function evaluateTimeframe(candles) {
   const e20=ema(20),e50=ema(50);
   const trend=last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED';
   const momentum=(last.close-previous.close)/previous.close*100;
-  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length};
+
+  // Wilder-style smoothed directional movement and ATR, calculated only from closed candles.
+  const tr=[],plusDM=[],minusDM=[];
+  for(let i=1;i<rows.length;i++){
+    const cur=rows[i],prev=rows[i-1],up=cur.high-prev.high,down=prev.low-cur.low;
+    tr.push(Math.max(cur.high-cur.low,Math.abs(cur.high-prev.close),Math.abs(cur.low-prev.close)));
+    plusDM.push(up>down&&up>0?up:0);minusDM.push(down>up&&down>0?down:0);
+  }
+  const period=14;
+  let atr=tr.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  let p=plusDM.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  let m=minusDM.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  const dx=[];
+  for(let i=period;i<tr.length;i++){
+    atr=(atr*(period-1)+tr[i])/period;p=(p*(period-1)+plusDM[i])/period;m=(m*(period-1)+minusDM[i])/period;
+    const pdi=atr?p/atr*100:0,mdi=atr?m/atr*100:0;
+    dx.push(pdi+mdi?Math.abs(pdi-mdi)/(pdi+mdi)*100:0);
+  }
+  const adx=dx.length?dx.slice(-period).reduce((a,b)=>a+b,0)/Math.min(period,dx.length):0;
+  const atrPct=last.close?atr/last.close*100:0;
+
+  // Confirm swing pivots with three bars to the right; the newest completed candle is tested against prior pivots.
+  const pivots=[],radius=3;
+  for(let i=radius;i<rows.length-radius-1;i++){
+    let swingHigh=true,swingLow=true;
+    for(let j=i-radius;j<=i+radius;j++){if(j===i)continue;if(rows[j].high>=rows[i].high)swingHigh=false;if(rows[j].low<=rows[i].low)swingLow=false;}
+    if(swingHigh)pivots.push({type:'H',index:i,price:rows[i].high});
+    if(swingLow)pivots.push({type:'L',index:i,price:rows[i].low});
+  }
+  const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L');
+  const lastHigh=highs.at(-1),lastLow=lows.at(-1),priorHigh=highs.at(-2),priorLow=lows.at(-2);
+  const bullishStructure=!!lastHigh&&!!lastLow&&!!priorHigh&&!!priorLow&&lastHigh.price>priorHigh.price&&lastLow.price>priorLow.price;
+  const bearishStructure=!!lastHigh&&!!lastLow&&!!priorHigh&&!!priorLow&&lastHigh.price<priorHigh.price&&lastLow.price<priorLow.price;
+  const structure=bullishStructure?'BULLISH':bearishStructure?'BEARISH':'NEUTRAL';
+  const bos=lastHigh&&last.close>lastHigh.price?'BULLISH':lastLow&&last.close<lastLow.price?'BEARISH':'NONE';
+  const choch=bos==='BULLISH'&&bearishStructure?'BULLISH':bos==='BEARISH'&&bullishStructure?'BEARISH':'NONE';
+  const sweep=lastHigh&&last.high>lastHigh.price&&last.close<lastHigh.price?'HIGH-SIDE':lastLow&&last.low<lastLow.price&&last.close>lastLow.price?'LOW-SIDE':'NONE';
+  const takerSell=Math.max(0,last.volume-last.takerBuy);
+  const takerRatio=takerSell>0?last.takerBuy/takerSell:null;
+  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,structure,bos,choch,sweep,takerRatio};
 }
 function MultiTimeframeSignal({symbol,market}) {
   const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState('');
@@ -465,44 +504,66 @@ function MultiTimeframeSignal({symbol,market}) {
         const path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
         const frames=['4h','1h','15m','5m'];
         const all=await Promise.all(frames.map(async tf=>{
-          const response=await fetch(base+path+'?symbol='+symbol+'&interval='+tf+'&limit=100');
+          const response=await fetch(base+path+'?symbol='+symbol+'&interval='+tf+'&limit=120',{cache:'no-store'});
           if(!response.ok)throw new Error(tf+' timeframe data unavailable ('+response.status+')');
           return [tf,evaluateTimeframe(await response.json())];
         }));
+        const depthResponse=await fetch(base+(market==='Futures'?'/fapi/v1/depth':'/api/v3/depth')+'?symbol='+symbol+'&limit=20',{cache:'no-store'});
+        if(!depthResponse.ok)throw new Error('Order-book snapshot unavailable ('+depthResponse.status+')');
+        const book=await depthResponse.json();
+        const bidValue=(book.bids||[]).reduce((sum,x)=>sum+Number(x[0])*Number(x[1]),0);
+        const askValue=(book.asks||[]).reduce((sum,x)=>sum+Number(x[0])*Number(x[1]),0);
+        const depthTotal=bidValue+askValue;
+        const depthRatio=askValue>0?bidValue/askValue:null;
+        let externalTakerRatio=null;
+        if(market==='Futures'){
+          try{
+            const tr=await fetch('https://fapi.binance.com/futures/data/takerlongshortRatio?symbol='+symbol+'&period=5m&limit=1',{cache:'no-store'});
+            if(tr.ok){const values=await tr.json();if(values.length)externalTakerRatio=Number(values[0].buySellRatio);}
+          }catch{}
+        }
         if(!live)return;
         const data=Object.fromEntries(all),[h4,h1,m15,m5]=frames.map(tf=>data[tf]);
-        let decision='NO TRADE',score=0,reasons=[];
+        const takerRatio=Number.isFinite(externalTakerRatio)&&externalTakerRatio>0?externalTakerRatio:m5.takerRatio;
         const longBias=h4.trend==='BULLISH'&&h1.trend==='BULLISH';
         const shortBias=h4.trend==='BEARISH'&&h1.trend==='BEARISH';
-        if(longBias){score+=35;reasons.push('4H and 1H trends aligned bullish');}
-        else if(shortBias){score+=35;reasons.push('4H and 1H trends aligned bearish');}
-        else reasons.push('Higher-timeframe trend conflict');
-        if(longBias&&m15.trend==='BULLISH'&&m15.rsi>=50&&m15.rsi<=72){score+=30;reasons.push('15M bullish setup and RSI confirmation');}
-        else if(shortBias&&m15.trend==='BEARISH'&&m15.rsi>=28&&m15.rsi<=50){score+=30;reasons.push('15M bearish setup and RSI confirmation');}
-        else reasons.push('15M setup not confirmed');
-        if(longBias&&m5.trend==='BULLISH'&&m5.rsi>50){score+=20;reasons.push('5M bullish entry timing');}
-        else if(shortBias&&m5.trend==='BEARISH'&&m5.rsi<50){score+=20;reasons.push('5M bearish entry timing');}
-        else reasons.push('5M entry timing not confirmed');
+        const longSetup=longBias&&m15.trend==='BULLISH'&&m15.rsi>=50&&m15.rsi<=72&&m15.adx>=18;
+        const shortSetup=shortBias&&m15.trend==='BEARISH'&&m15.rsi>=28&&m15.rsi<=50&&m15.adx>=18;
+        const longStructure=m15.bos==='BULLISH'||m15.sweep==='LOW-SIDE'||m5.bos==='BULLISH'||m5.sweep==='LOW-SIDE';
+        const shortStructure=m15.bos==='BEARISH'||m15.sweep==='HIGH-SIDE'||m5.bos==='BEARISH'||m5.sweep==='HIGH-SIDE';
+        const longTiming=m5.trend==='BULLISH'&&m5.rsi>50&&m5.adx>=15;
+        const shortTiming=m5.trend==='BEARISH'&&m5.rsi<50&&m5.adx>=15;
         const volumeOk=m15.volumeRatio>=0.8&&m5.volumeRatio>=0.8;
-        if(volumeOk){score+=15;reasons.push('15M and 5M volume at least 80% of recent average');}
-        else reasons.push('Volume participation is weak');
-        if(score>=85&&longBias&&m15.trend==='BULLISH'&&m5.trend==='BULLISH'&&volumeOk)decision='LONG';
-        if(score>=85&&shortBias&&m15.trend==='BEARISH'&&m5.trend==='BEARISH'&&volumeOk)decision='SHORT';
-        setResult({symbol,market,decision,score,data,reasons,updated:new Date(),status:'READY'});
-      }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,reasons:['One or more timeframe feeds failed.'],updated:new Date(),status:'BLOCKED'});setError(e.message||'Multi-timeframe analysis failed.');}}
+        const flowLong=takerRatio!==null&&takerRatio>=1.05&&depthRatio!==null&&depthRatio>=1.02;
+        const flowShort=takerRatio!==null&&takerRatio<=0.95&&depthRatio!==null&&depthRatio<=0.98;
+        let score=0,decision='NO TRADE',reasons=[];
+        if(longBias||shortBias){score+=25;reasons.push('4H and 1H trend aligned '+(longBias?'bullish':'bearish'));}else reasons.push('Higher-timeframe trend conflict');
+        if(longSetup||shortSetup){score+=20;reasons.push('15M setup confirmed with ADX and RSI');}else reasons.push('15M ADX / RSI setup not confirmed');
+        if(longTiming||shortTiming){score+=15;reasons.push('5M entry momentum and trend aligned');}else reasons.push('5M entry timing not confirmed');
+        if((longBias&&longStructure)||(shortBias&&shortStructure)){score+=15;reasons.push('BOS or liquidity sweep supports the higher-timeframe direction');}else reasons.push('No aligned BOS / liquidity-sweep confirmation');
+        if(volumeOk){score+=10;reasons.push('15M and 5M volume participation acceptable');}else reasons.push('Volume participation weak');
+        if((longBias&&flowLong)||(shortBias&&flowShort)){score+=15;reasons.push('Taker flow and top-20 order-book imbalance aligned');}else reasons.push('Order-flow confirmation absent or conflicting');
+        const adxRegimeOk=h4.adx>=15&&h1.adx>=15&&m15.adx>=18;
+        const structureOk=(longBias&&longSetup&&longTiming&&longStructure&&flowLong)||(shortBias&&shortSetup&&shortTiming&&shortStructure&&flowShort);
+        if(score>=85&&volumeOk&&adxRegimeOk&&structureOk)decision=longBias?'LONG':'SHORT';
+        else reasons.push('Strict confirmation gate not satisfied — NO TRADE');
+        setResult({symbol,market,decision,score,data,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio},reasons,updated:new Date(),status:'READY'});
+      }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['Required timeframe or order-book data unavailable.'],updated:new Date(),status:'BLOCKED'});setError(e.message||'Multi-timeframe analysis failed.');}}
       finally{if(live)setLoading(false);}
     };
     run();const timer=window.setInterval(run,60000);
     return()=>{live=false;clearInterval(timer);};
   },[symbol,market]);
   const rows=result?.data?['4h','1h','15m','5m'].map(tf=>[tf,result.data[tf]]):[];
+  const ratio=n=>n==null||!Number.isFinite(n)?'—':n.toFixed(2)+'x';
   return <section className="panel mtf-panel">
-    <div className="panel-title"><div><h3>Advanced multi-timeframe signal engine</h3><p>4H trend → 1H alignment → 15M setup → 5M timing · Refreshes every 60s</p></div><span className={'tiny-live '+(result?.status==='READY'?'':'data-status-warn')}>{loading?'SCANNING':result?.status||'WAITING'}</span></div>
+    <div className="panel-title"><div><h3>Advanced multi-timeframe signal engine</h3><p>4H trend → 1H alignment → 15M setup → 5M timing · ADX / BOS / sweep / flow · Refreshes every 60s</p></div><span className={'tiny-live '+(result?.status==='READY'?'':'data-status-warn')}>{loading?'SCANNING':result?.status||'WAITING'}</span></div>
     <div className="mtf-decision"><div><span>ENGINE DECISION</span><b className={result?.decision==='LONG'?'positive':result?.decision==='SHORT'?'negative':''}>{result?.decision||'NO TRADE'}</b></div><div><span>CONFLUENCE SCORE</span><b>{result?.score??0}/100</b></div><div><span>LAST CHECK</span><b>{result?.updated?result.updated.toLocaleTimeString():'—'}</b></div></div>
-    <div className="mtf-table-wrap"><table className="mtf-table"><thead><tr><th>TIMEFRAME</th><th>TREND</th><th>RSI (14)</th><th>VOLUME / AVG</th><th>LAST CLOSE</th></tr></thead><tbody>{rows.map(([tf,x])=><tr key={tf}><td>{tf.toUpperCase()}</td><td className={x.trend==='BULLISH'?'positive':x.trend==='BEARISH'?'negative':''}>{x.trend}</td><td>{fmt(x.rsi,1)}</td><td>{fmt(x.volumeRatio,2)}x</td><td>{fmt(x.close,x.close<1?5:3)}</td></tr>)}</tbody></table></div>
+    <div className="mtf-table-wrap"><table className="mtf-table"><thead><tr><th>TIMEFRAME</th><th>TREND</th><th>ADX</th><th>STRUCTURE</th><th>BOS</th><th>SWEEP</th><th>RSI</th><th>VOL / AVG</th></tr></thead><tbody>{rows.map(([tf,x])=><tr key={tf}><td>{tf.toUpperCase()}</td><td className={x.trend==='BULLISH'?'positive':x.trend==='BEARISH'?'negative':''}>{x.trend}</td><td>{fmt(x.adx,1)}</td><td>{x.structure}</td><td>{x.bos==='NONE'?'—':x.bos}</td><td>{x.sweep==='NONE'?'—':x.sweep}</td><td>{fmt(x.rsi,1)}</td><td>{fmt(x.volumeRatio,2)}x</td></tr>)}</tbody></table></div>
+    {result?.flow&&<div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TAKER BUY / SELL</span><b>{ratio(result.flow.takerRatio)}</b><small>{result.flow.externalTakerRatio!==null?'Binance Futures 5m ratio':'Completed 5m candle estimate'}</small></div><div className="public-data-card"><span>TOP-20 DEPTH BID / ASK</span><b>{ratio(result.flow.depthRatio)}</b><small>Snapshot imbalance · not full order flow</small></div><div className="public-data-card"><span>ADX REGIME</span><b>{result.data['4h'].adx>=15&&result.data['1h'].adx>=15?'TREND-ELIGIBLE':'WEAK / MIXED'}</b><small>ADX is a strength filter, not direction</small></div></div>}
     {error&&<p className="public-data-error">{error}</p>}
-    <div className="mtf-reasons">{(result?.reasons||['Waiting for completed candles from all four timeframes.']).map((x,i)=><span key={i}>{x}</span>)}</div>
-    <p className="public-data-foot">Research-only rule set. EMA and RSI are calculated from completed candles; volume uses the last completed candle versus the prior 20-candle average. This is not a probability or a validated trading edge. Not yet connected to paper-order execution.</p>
+    <div className="mtf-reasons">{(result?.reasons||['Waiting for completed candles and order-book snapshot.']).map((x,i)=><span key={i}>{x}</span>)}</div>
+    <p className="public-data-foot">Research-only rule set. ADX uses Wilder-style smoothing; pivots require three right-side closed candles. Order book is a single top-20 snapshot, and taker ratios are aggregated estimates, not full order-flow or institutional positioning. No validated win rate or profitability is claimed. Not connected to paper-order execution.</p>
   </section>;
 }
 
