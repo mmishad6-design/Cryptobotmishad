@@ -40,53 +40,95 @@ function ChartPanel({symbol, interval, candles, loading, market}) {
 
 
 function BacktestPanel({symbol,market,defaultInterval}) {
-  const [tf,setTf]=useState(defaultInterval||'15m'),[days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02'),[running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
+  const [tf,setTf]=useState('5m'),[days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02'),[running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
+  const frames=['4h','1h','15m','5m'];
+  const intervalMs={'5m':300000,'15m':900000,'1h':3600000,'4h':14400000};
+  const toRows=(raw,ms)=>raw.filter(k=>Number(k[6])<Date.now()).map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
+  const evaluate=(rows)=>{
+    if(rows.length<60)return null;
+    const d=rows.slice(-120),closes=d.map(x=>x.close);
+    const ema=n=>{const a=2/(n+1);let v=closes.slice(0,n).reduce((s,x)=>s+x,0)/n;for(let i=n;i<closes.length;i++)v=closes[i]*a+v*(1-a);return v;};
+    const e20=ema(20),e50=ema(50),last=d.at(-1),prev=d.at(-2);
+    let gain=0,loss=0;for(let i=Math.max(1,d.length-14);i<d.length;i++){const change=closes[i]-closes[i-1];gain+=Math.max(0,change);loss+=Math.max(0,-change);}
+    const rsi=loss===0?100:100-100/(1+gain/Math.max(loss,1e-12));
+    const avgVol=d.slice(-21,-1).reduce((s,x)=>s+x.volume,0)/20,volumeRatio=avgVol?last.volume/avgVol:0;
+    const tr=[],pdm=[],mdm=[];
+    for(let i=1;i<d.length;i++){const c=d[i],p=d[i-1],up=c.high-p.high,down=p.low-c.low;tr.push(Math.max(c.high-c.low,Math.abs(c.high-p.close),Math.abs(c.low-p.close)));pdm.push(up>down&&up>0?up:0);mdm.push(down>up&&down>0?down:0);}
+    let atr=tr.slice(0,14).reduce((s,x)=>s+x,0)/14,p=pdm.slice(0,14).reduce((s,x)=>s+x,0)/14,m=mdm.slice(0,14).reduce((s,x)=>s+x,0)/14;const dx=[];
+    for(let i=14;i<tr.length;i++){atr=(atr*13+tr[i])/14;p=(p*13+pdm[i])/14;m=(m*13+mdm[i])/14;const plus=atr?p/atr*100:0,minus=atr?m/atr*100:0;dx.push(plus+minus?Math.abs(plus-minus)/(plus+minus)*100:0);}
+    const adx=dx.length?dx.slice(-14).reduce((s,x)=>s+x,0)/Math.min(14,dx.length):0;
+    const pivots=[],rad=3;
+    for(let i=rad;i<d.length-rad-1;i++){let hi=true,lo=true;for(let j=i-rad;j<=i+rad;j++){if(j===i)continue;if(d[j].high>=d[i].high)hi=false;if(d[j].low<=d[i].low)lo=false;}if(hi)pivots.push({type:'H',price:d[i].high});if(lo)pivots.push({type:'L',price:d[i].low});}
+    const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L'),lh=highs.at(-1),pl=lows.at(-1),ph=highs.at(-2),ll=lows.at(-2);
+    const bull=!!lh&&!!pl&&!!ph&&!!ll&&lh.price>ph.price&&pl.price>ll.price,bear=!!lh&&!!pl&&!!ph&&!!ll&&lh.price<ph.price&&pl.price<ll.price;
+    const bos=lh&&last.close>lh.price?'BULLISH':pl&&last.close<pl.price?'BEARISH':'NONE';
+    const choch=bos==='BULLISH'&&bear?'BULLISH':bos==='BEARISH'&&bull?'BEARISH':'NONE';
+    const sweep=lh&&last.high>lh.price&&last.close<lh.price?'HIGH-SIDE':pl&&last.low<pl.price&&last.close>pl.price?'LOW-SIDE':'NONE';
+    const sell=Math.max(0,last.volume-last.takerBuy),takerRatio=sell>0?last.takerBuy/sell:null;
+    return {trend:last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED',rsi,volumeRatio,adx,atr,atrPct:last.close?atr/last.close*100:0,bos,choch,sweep,takerRatio,close:last.close};
+  };
   const simulate=(data,feeRate,slipRate)=>{
-    let equity=10000,peak=10000,maxDrawdown=0,position=null,trades=[];
-    const avg=(end,n)=>data.slice(end-n+1,end+1).reduce((a,x)=>a+x.close,0)/n;
+    let equity=10000,peak=10000,maxDrawdown=0,position=null,trades=[],signals=0;
     const atrAt=i=>{let sum=0;for(let j=i-14;j<=i;j++){const prev=data[j-1]?.close??data[j].close;sum+=Math.max(data[j].high-data[j].low,Math.abs(data[j].high-prev),Math.abs(data[j].low-prev));}return sum/15;};
     const close=(rawExit,reason,time)=>{const p=position;if(!p)return;const exit=p.side==='LONG'?rawExit*(1-slipRate):rawExit*(1+slipRate),gross=(exit-p.entry)*p.qty*(p.side==='LONG'?1:-1),net=gross-p.entryFee-exit*p.qty*feeRate;equity+=net;trades.push({side:p.side,entry:p.entry,exit,qty:p.qty,pnl:net,reason,entryTime:p.entryTime,exitTime:time});position=null;};
-    for(let i=50;i<data.length-1;i++){
-      const c=data[i],next=data[i+1],ma20=avg(i,20),ma50=avg(i,50),momentum=(c.close-data[i-1].close)/data[i-1].close*100;
-      const score=50+(c.close>ma20?12:-12)+(ma20>ma50?15:-15)+(momentum>.08?8:momentum<-.08?-8:0),bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
+    for(let i=60;i<data.length-1;i++){
+      const c=data[i],availableAt=c.time+intervalMs['5m']-1;
+      const snap={};
+      for(const frame of frames){const rows=historyByFrame[frame];let lo=0,hi=rows.length;while(lo<hi){const mid=(lo+hi)>>1;if(rows[mid].closeTime<=availableAt)lo=mid+1;else hi=mid;}snap[frame]=evaluate(rows.slice(Math.max(0,lo-120),lo));}
+      const [h4,h1,m15,m5]=frames.map(f=>snap[f]);
       if(position){const stopHit=position.side==='LONG'?c.low<=position.stop:c.high>=position.stop,targetHit=position.side==='LONG'?c.high>=position.target:c.low<=position.target;if(stopHit)close(position.stop,'STOP LOSS',c.time);else if(targetHit)close(position.target,'TAKE PROFIT',c.time);}
+      let bias='WAIT';
+      if(h4&&h1&&m15&&m5){
+        const longBias=h4.trend==='BULLISH'&&h1.trend==='BULLISH',shortBias=h4.trend==='BEARISH'&&h1.trend==='BEARISH';
+        const longSetup=longBias&&m15.trend==='BULLISH'&&m15.rsi>=50&&m15.rsi<=72&&m15.adx>=18,shortSetup=shortBias&&m15.trend==='BEARISH'&&m15.rsi>=28&&m15.rsi<=50&&m15.adx>=18;
+        const longStructure=m15.bos==='BULLISH'||m15.choch==='BULLISH'||m15.sweep==='LOW-SIDE'||m5.bos==='BULLISH'||m5.choch==='BULLISH'||m5.sweep==='LOW-SIDE';
+        const shortStructure=m15.bos==='BEARISH'||m15.choch==='BEARISH'||m15.sweep==='HIGH-SIDE'||m5.bos==='BEARISH'||m5.choch==='BEARISH'||m5.sweep==='HIGH-SIDE';
+        const longTiming=m5.trend==='BULLISH'&&m5.rsi>50&&m5.adx>=15,shortTiming=m5.trend==='BEARISH'&&m5.rsi<50&&m5.adx>=15;
+        const volumeOk=m15.volumeRatio>=0.8&&m5.volumeRatio>=0.8;
+        const takerLong=m5.takerRatio!==null&&m5.takerRatio>=1.05,takerShort=m5.takerRatio!==null&&m5.takerRatio<=0.95;
+        const adxOk=h4.adx>=15&&h1.adx>=15&&m15.adx>=18;
+        if(longBias&&longSetup&&longTiming&&longStructure&&volumeOk&&adxOk&&takerLong)bias='LONG';
+        if(shortBias&&shortSetup&&shortTiming&&shortStructure&&volumeOk&&adxOk&&takerShort)bias='SHORT';
+      }
+      if(bias!=='WAIT')signals++;
       if(!position&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){
-        const atr=atrAt(i),rawEntry=next.open,entry=bias==='LONG'?rawEntry*(1+slipRate):rawEntry*(1-slipRate),distance=atr*1.5;
+        const atr=atrAt(i),rawEntry=data[i+1].open,entry=bias==='LONG'?rawEntry*(1+slipRate):rawEntry*(1-slipRate),distance=atr*1.5;
         const qty=Math.min(equity*.01/distance,(equity*(market==='Futures'?3:1))/(entry*(1+feeRate)));
-        if(Number.isFinite(qty)&&qty>0){const margin=entry*qty/(market==='Futures'?3:1),entryFee=entry*qty*feeRate;if(margin+entryFee<=equity)position={side:bias,entry,qty,stop:bias==='LONG'?entry-distance:entry+distance,target:bias==='LONG'?entry+atr*3:entry-atr*3,entryFee,entryTime:next.time};}
+        if(Number.isFinite(qty)&&qty>0){const margin=entry*qty/(market==='Futures'?3:1),entryFee=entry*qty*feeRate;if(margin+entryFee<=equity)position={side:bias,entry,qty,stop:bias==='LONG'?entry-distance:entry+distance,target:bias==='LONG'?entry+atr*3:entry-atr*3,entryFee,entryTime:data[i+1].time};}
       }
       const marked=equity+(position?((c.close-position.entry)*position.qty*(position.side==='LONG'?1:-1)-position.entryFee):0);peak=Math.max(peak,marked);maxDrawdown=Math.max(maxDrawdown,(peak-marked)/peak*100);
     }
-    if(position)close(data[data.length-1].close,'END OF TEST',data[data.length-1].time);
-    const wins=trades.filter(t=>t.pnl>0),losses=trades.filter(t=>t.pnl<0),grossProfit=wins.reduce((a,t)=>a+t.pnl,0),grossLoss=Math.abs(losses.reduce((a,t)=>a+t.pnl,0));
-    return {equity,net:equity-10000,returnPct:(equity-10000)/100,tradeCount:trades.length,wins:wins.length,losses:losses.length,winRate:trades.length?wins.length/trades.length*100:0,profitFactor:grossLoss?grossProfit/grossLoss:grossProfit>0?null:0,expectancy:trades.length?(equity-10000)/trades.length:0,maxDrawdown,trades};
+    if(position)close(data.at(-1).close,'END OF TEST',data.at(-1).time);
+    const wins=trades.filter(t=>t.pnl>0),losses=trades.filter(t=>t.pnl<0),gp=wins.reduce((s,t)=>s+t.pnl,0),gl=Math.abs(losses.reduce((s,t)=>s+t.pnl,0));
+    return {equity,net:equity-10000,returnPct:(equity-10000)/100,tradeCount:trades.length,wins:wins.length,losses:losses.length,winRate:trades.length?wins.length/trades.length*100:0,profitFactor:gl?gp/gl:gp>0?null:0,expectancy:trades.length?(equity-10000)/trades.length:0,maxDrawdown,signals,trades};
   };
   const run=async()=>{
     setRunning(true);setError('');setResult(null);
     try{
-      const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',endpoint=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines',now=Date.now(),startTime=now-Number(days)*86400000,intervalMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[tf];
-      let cursor=Math.max(startTime,now-5000*intervalMs),raw=[];
-      while(cursor<now&&raw.length<5000){const response=await fetch(base+endpoint+'?symbol='+symbol+'&interval='+tf+'&startTime='+cursor+'&endTime='+now+'&limit=1000',{cache:'no-store'});if(!response.ok)throw new Error('Binance historical data request failed ('+response.status+').');const batch=await response.json();if(!Array.isArray(batch)||!batch.length)break;raw=raw.concat(batch);cursor=Number(batch[batch.length-1][0])+intervalMs;if(batch.length<1000)break;}
-      const closed=raw.filter(k=>Number(k[6])<now).slice(0,5000);if(closed.length<180)throw new Error('Walk-forward validation needs at least 180 completed candles. Select a longer lookback or higher timeframe.');
-      const data=closed.map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]})),feeRate=Math.max(0,Math.min(1,Number(fee)||0))/100,slipRate=Math.max(0,Math.min(1,Number(slippage)||0))/100,split=Math.floor(data.length*.7);
-      const training=simulate(data.slice(0,split),feeRate,slipRate),outOfSample=simulate(data.slice(split-50),feeRate,slipRate),folds=[],testLength=Math.floor((data.length-split)/3);
-      for(let n=0;n<3;n++){const from=split+n*testLength,to=n===2?data.length:Math.min(data.length,split+(n+1)*testLength),foldData=data.slice(Math.max(0,from-50),to);if(foldData.length>=80)folds.push({label:'Fold '+(n+1),from:foldData[50]?.time??foldData[0].time,to:foldData.at(-1).time,...simulate(foldData,feeRate,slipRate)});}
-      setResult({symbol,market,tf,days,from:data[0].time,to:data.at(-1).time,candles:data.length,splitAt:data[split].time,training,outOfSample,folds,feeRate,slipRate,tradeList:outOfSample.trades.slice(-12).reverse(),assumption:'Chronological 70/30 split: first 70% is training, final 30% is unseen out-of-sample. Three sequential test folds use only their own prior 50 candles as indicator warm-up. Strategy rules and parameters are fixed; no parameter tuning is performed on the test period.'});
-    }catch(e){setError(e.message||'Walk-forward validation failed.');}finally{setRunning(false);}
+      const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',endpoint=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines',now=Date.now(),startTime=now-Number(days)*86400000;
+      const fetchFrame=async frame=>{const ms=intervalMs[frame];let cursor=Math.max(startTime,now-5000*ms),raw=[];while(cursor<now&&raw.length<5000){const response=await fetch(base+endpoint+'?symbol='+symbol+'&interval='+frame+'&startTime='+cursor+'&endTime='+now+'&limit=1000',{cache:'no-store'});if(!response.ok)throw new Error(frame+' historical data request failed ('+response.status+').');const batch=await response.json();if(!Array.isArray(batch)||!batch.length)break;raw=raw.concat(batch);cursor=Number(batch.at(-1)[0])+ms;if(batch.length<1000)break;}return toRows(raw.slice(-5000),ms);};
+      const fetched=await Promise.all(frames.map(fetchFrame)),historyByFrame=Object.fromEntries(frames.map((f,i)=>[f,fetched[i]]));
+      const data=historyByFrame['5m'];if(data.length<240)throw new Error('At least 240 completed 5m candles are required for multi-timeframe validation.');
+      const feeRate=Math.max(0,Math.min(1,Number(fee)||0))/100,slipRate=Math.max(0,Math.min(1,Number(slippage)||0))/100,split=Math.floor(data.length*.7);
+      const training=simulate(data.slice(0,split),feeRate,slipRate),outOfSample=simulate(data.slice(split-60),feeRate,slipRate),folds=[],foldLength=Math.floor((data.length-split)/3);
+      for(let n=0;n<3;n++){const from=split+n*foldLength,to=n===2?data.length:Math.min(data.length,split+(n+1)*foldLength),foldData=data.slice(Math.max(0,from-60),to);if(foldData.length>=90)folds.push({label:'Fold '+(n+1),from:foldData[60]?.time??foldData[0].time,to:foldData.at(-1).time,...simulate(foldData,feeRate,slipRate)});}
+      setResult({symbol,market,tf:'5m execution · 4H/1H/15M context',days,from:data[0].time,to:data.at(-1).time,candles:data.length,splitAt:data[split].time,training,outOfSample,folds,feeRate,slipRate,tradeList:outOfSample.trades.slice(-12).reverse(),coverage:{'4h':historyByFrame['4h'].length,'1h':historyByFrame['1h'].length,'15m':historyByFrame['15m'].length,'5m':historyByFrame['5m'].length},assumption:'Chronological 70/30 split. Each decision uses only candles whose close time is at or before the 5M decision candle close; entry is at the next 5M open. Three sequential OOS folds are reported. The same fixed MTF rule thresholds are used throughout; no test-set tuning.'});
+    }catch(e){setError(e.message||'Multi-timeframe validation failed.');}finally{setRunning(false);}
   };
   const metric=x=>x?((x.returnPct>=0?'+':'')+fmt(x.returnPct)+'% · '+x.tradeCount+' trades · '+fmt(x.winRate)+'% wins · PF '+(x.profitFactor===null?'∞':fmt(x.profitFactor))+' · DD '+fmt(x.maxDrawdown)+'%'):'—';
   return <section className="panel backtest-panel">
-    <div className="panel-title"><div><h3>Historical strategy validation</h3><p>Chronological 70/30 split · 3 sequential out-of-sample folds · fixed rules, no test-set tuning</p></div><span className="tiny-live">RESEARCH MODE</span></div>
+    <div className="panel-title"><div><h3>Advanced multi-timeframe validation</h3><p>4H trend → 1H alignment → 15M setup → 5M entry · chronological out-of-sample testing</p></div><span className="tiny-live">RESEARCH MODE</span></div>
     <div className="backtest-controls">
-      <label>MARKET TIMEFRAME<select value={tf} onChange={e=>setTf(e.target.value)}>{['1m','5m','15m','1h','4h','1d'].map(x=><option key={x}>{x}</option>)}</select></label>
+      <label>EXECUTION TIMEFRAME<select value={tf} onChange={e=>setTf(e.target.value)}><option value="5m">5m (required)</option></select></label>
       <label>HISTORY<select value={days} onChange={e=>setDays(e.target.value)}><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
       <label>TRADING FEE (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label>
       <label>SLIPPAGE (%)<input type="number" min="0" max="1" step="0.01" value={slippage} onChange={e=>setSlippage(e.target.value)}/></label>
-      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'Validating…':'Run validation'}</button>
+      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'Validating…':'Run MTF validation'}</button>
     </div>
     {error&&<div className="backtest-error">{error}</div>}
     {result&&<>
-      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} completed candles</span></div>
+      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} completed 5M candles</span></div>
+      <div className="backtest-meta"><span>4H: {result.coverage['4h']} · 1H: {result.coverage['1h']} · 15M: {result.coverage['15m']} · 5M: {result.coverage['5m']} candles</span><span>5M history is capped at 5,000 candles (~17.3 days)</span></div>
       <div className="backtest-metrics">
         <div><span>OUT-OF-SAMPLE RETURN</span><b className={result.outOfSample.returnPct>=0?'positive':'negative'}>{result.outOfSample.returnPct>=0?'+':''}{fmt(result.outOfSample.returnPct)}%</b></div>
         <div><span>OOS WIN RATE</span><b>{fmt(result.outOfSample.winRate)}%</b></div><div><span>OOS TRADES</span><b>{result.outOfSample.tradeCount}</b></div>
@@ -94,19 +136,19 @@ function BacktestPanel({symbol,market,defaultInterval}) {
         <div><span>OOS MAX DRAWDOWN</span><b className="negative">{fmt(result.outOfSample.maxDrawdown)}%</b></div>
         <div><span>OOS EXPECTANCY / TRADE</span><b className={result.outOfSample.expectancy>=0?'positive':'negative'}>&#36;{fmt(result.outOfSample.expectancy)}</b></div>
         <div><span>OOS ENDING EQUITY</span><b>&#36;{fmt(result.outOfSample.equity)}</b></div>
+        <div><span>OOS SIGNALS</span><b>{result.outOfSample.signals}</b></div>
         <div><span>TRAINING RETURN</span><b className={result.training.returnPct>=0?'positive':'negative'}>{result.training.returnPct>=0?'+':''}{fmt(result.training.returnPct)}%</b></div>
       </div>
       <div className="backtest-meta"><span>TRAIN: {new Date(result.from).toLocaleDateString()} – {new Date(result.splitAt).toLocaleDateString()}</span><span>UNSEEN TEST: {new Date(result.splitAt).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span></div>
       <div className="mtf-reasons"><span>Training: {metric(result.training)}</span><span>Out-of-sample: {metric(result.outOfSample)}</span></div>
       <h4 className="section-subtitle">Sequential out-of-sample folds</h4>
       <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>FOLD</th><th>TEST PERIOD</th><th>RETURN</th><th>TRADES</th><th>WIN RATE</th><th>PROFIT FACTOR</th><th>MAX DD</th></tr></thead><tbody>{result.folds.map(x=><tr key={x.label}><td>{x.label}</td><td>{new Date(x.from).toLocaleDateString()} – {new Date(x.to).toLocaleDateString()}</td><td className={x.returnPct>=0?'positive':'negative'}>{x.returnPct>=0?'+':''}{fmt(x.returnPct)}%</td><td>{x.tradeCount}</td><td>{fmt(x.winRate)}%</td><td>{x.profitFactor===null?'∞':fmt(x.profitFactor)}</td><td className="negative">{fmt(x.maxDrawdown)}%</td></tr>)}</tbody></table></div>
-      <p className="backtest-assumption">{result.assumption} Starting equity resets to $10,000 for each independent segment. Fee {fmt(Number(fee),3)}% and slippage {fmt(Number(slippage),3)}% are charged per side. Entries occur at the next candle open; if stop and target touch in the same candle, stop is assumed first. Futures uses a 3x notional cap. Funding, liquidation, spread, partial fills and market impact are not modelled. 5,000-candle maximum.</p>
-      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>OOS SIDE</th><th>ENTRY</th><th>EXIT</th><th>NET P&L</th><th>EXIT REASON</th></tr></thead><tbody>{result.tradeList.map((t,i)=><tr key={i}><td>{t.side}</td><td>{fmt(t.entry,t.entry<1?5:3)}</td><td>{fmt(t.exit,t.exit<1?5:3)}</td><td className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}{'&#36;'}{fmt(t.pnl)}</td><td>{t.reason}</td></tr>)}</tbody></table></div>
+      <p className="backtest-assumption">{result.assumption} Starting equity resets to $10,000 per segment. Fee {fmt(Number(fee),3)}% and slippage {fmt(Number(slippage),3)}% are charged per side. Stop/target both touched in one candle assumes stop first. ATR stop 1.5x / target 3x; risk 1% per trade; Futures notional cap 3x. Historical order-book snapshots are unavailable, so the live engine's top-20 depth confirmation is not tested; 5M candle taker-buy volume is used as a proxy. Funding, liquidation, spread, partial fills and market impact are not modelled. Results are research, not proof of future profitability.</p>
+      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>OOS SIDE</th><th>ENTRY</th><th>EXIT</th><th>NET P&L</th><th>EXIT REASON</th></tr></thead><tbody>{result.tradeList.map((t,i)=><tr key={i}><td>{t.side}</td><td>{fmt(t.entry,t.entry<1?5:3)}</td><td>{fmt(t.exit,t.exit<1?5:3)}</td><td className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}{String.fromCharCode(36)}{fmt(t.pnl)}</td><td>{t.reason}</td></tr>)}</tbody></table></div>
     </>}
-    <div className="backtest-disclaimer"><ShieldCheck size={14}/> Historical simulation only. Out-of-sample testing reduces in-sample overfitting but does not prove future profitability. This is a fixed baseline strategy, not the multi-timeframe signal engine yet.</div>
+    <div className="backtest-disclaimer"><ShieldCheck size={14}/> Historical MTF approximation. It avoids future-candle look-ahead and reports unseen test folds, but omits historical order-book depth and several real execution costs. No verified win rate or profitability is claimed.</div>
   </section>;
 }
-
 function StrategyOptimizer({symbol,market}) {
   const [tf,setTf]=useState('15m'),[days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02');
   const [running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
