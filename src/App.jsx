@@ -472,13 +472,13 @@ function App() {
   useEffect(()=>{
     let live=true,ws=null,reconnect=null,fallback=null,snapshotTimer=null,delay=1000;
     const endpoint=market==='Futures'?'https://fapi.binance.com/fapi/v1/ticker/24hr':'https://api.binance.com/api/v3/ticker/24hr';
-    const snapshot=async()=>{try{const r=await fetch(endpoint);if(!r.ok)throw new Error();const rows=await r.json();if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol))next[x.symbol]={...x,lastPrice:x.lastPrice};});return next;});setUpdated(new Date());setFeedMeta(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol))next[x.symbol]={...(prev[x.symbol]||{}),priceAt:Date.now(),priceSource:'REST'};});return next;});}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}};
+    const snapshot=async()=>{try{const r=await fetch(endpoint);if(!r.ok)throw new Error();const rows=await r.json();if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const meta=prev[x.symbol]||{};const wsFresh=meta.wsAt&&Date.now()-meta.wsAt<=15000;next[x.symbol]={...x,lastPrice:wsFresh?(prev[x.symbol]?.lastPrice||x.lastPrice):x.lastPrice};}});return next;});setUpdated(new Date());setFeedMeta(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const old=prev[x.symbol]||{},restPrice=Number(x.lastPrice),wsPrice=Number(prices[x.symbol]?.lastPrice||0),divergence=wsPrice>0&&restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null;next[x.symbol]={...old,priceAt:old.wsAt&&Date.now()-old.wsAt<=15000?old.wsAt:Date.now(),priceSource:old.wsAt&&Date.now()-old.wsAt<=15000?'WEBSOCKET':'REST',restAt:Date.now(),restPrice,divergencePct:divergence};}});return next;});}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}};
     const startFallback=()=>{if(fallback===null){setFeedStatus('REST FALLBACK');snapshot();fallback=window.setInterval(snapshot,5000);}};
     const connect=()=>{if(!live)return;setFeedStatus('CONNECTING');const host=market==='Futures'?'wss://fstream.binance.com/stream?streams=':'wss://stream.binance.com:9443/stream?streams=';
       const streams=WATCH.map(w=>w[0].toLowerCase()+'@trade').join('/');
       const url=host+streams;try{ws=new WebSocket(url);}catch{startFallback();return;}
       ws.onopen=()=>{delay=1000;if(fallback!==null){clearInterval(fallback);fallback=null;}setFeedStatus('LIVE');};
-      ws.onmessage=e=>{try{const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),symbol:x.s,lastPrice:x.p}}));setFeedMeta(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),priceAt:Date.now(),priceSource:'WEBSOCKET'}}));setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
+      ws.onmessage=e=>{try{const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),symbol:x.s,lastPrice:x.p}}));setFeedMeta(prev=>{const old=prev[x.s]||{},restPrice=Number(old.restPrice||0),wsPrice=Number(x.p);return {...prev,[x.s]:{...old,priceAt:Date.now(),wsAt:Date.now(),wsExchangeAt:Number(x.T||x.E||0),priceSource:'WEBSOCKET',divergencePct:restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null}};});setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;setFeedStatus('RECONNECTING');startFallback();reconnect=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
@@ -490,7 +490,7 @@ function App() {
     const history=async()=>{try{const r=await fetch(candleUrl);if(!r.ok)throw new Error();const rows=await r.json();if(live){setCandles(rows.filter(k=>Number(k[6])>Number(k[0])).map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})));setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'REST'}}));setLoading(false);}}catch{if(live){setLoading(false);setNotice('Could not load Binance candle data. Retrying.');}}};
     const connect=()=>{if(!live)return;const host=market==='Futures'?'wss://fstream.binance.com/ws/':'wss://stream.binance.com:9443/ws/';try{ws=new WebSocket(host+symbol.toLowerCase()+'@kline_'+interval);}catch{fallback();return;}
       ws.onopen=()=>{delay=1000;if(fallbackTimer){clearInterval(fallbackTimer);fallbackTimer=null;}};
-      ws.onmessage=e=>{try{const k=JSON.parse(e.data).k;if(!k||!live)return;const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c,closeTime:Number(k.T),isClosed:Boolean(k.x)};setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'WEBSOCKET'}}));setCandles(prev=>{if(!prev.length)return[c];const last=prev[prev.length-1];return last.time===c.time?[...prev.slice(0,-1),c]:[...prev,c].slice(-160);});}catch{}};
+      ws.onmessage=e=>{try{const k=JSON.parse(e.data).k;if(!k||!live)return;const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c,closeTime:Number(k.T),isClosed:Boolean(k.x),exchangeAt:Number(k.T)};setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'WEBSOCKET',candleExchangeAt:Number(k.T)}}));setCandles(prev=>{if(!prev.length)return[c];const last=prev[prev.length-1];return last.time===c.time?[...prev.slice(0,-1),c]:[...prev,c].slice(-160);});}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;fallback();retryTimer=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
@@ -512,11 +512,16 @@ function App() {
   const activeFeed = feedMeta[symbol] || {};
   const priceAge = activeFeed.priceAt ? feedClock-activeFeed.priceAt : Infinity;
   const candleAge = activeFeed.candleAt ? feedClock-activeFeed.candleAt : Infinity;
-  const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0)).length>=50 };
+  const validClosed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
+  const expectedCandleMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[interval];
+  const candleGaps=validClosed.slice(1).filter((c,i)=>c.time-validClosed[i].time!==expectedCandleMs).length;
+  const restReferenceFresh=Boolean(activeFeed.restAt&&feedClock-activeFeed.restAt<=60000&&Number(activeFeed.restPrice)>0);
+  const reconciliationOk=restReferenceFresh&&Number.isFinite(activeFeed.divergencePct)&&activeFeed.divergencePct<=0.5;
+  const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
   const analysis = useMemo(()=>{
     const closed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
-    const valid=signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&closed.length>=50;
-    if(!valid)return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,reason:'Signal blocked: market data is missing, stale, or has fewer than 50 completed candles.'};
+    const valid=signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.reconciliationOk&&signalHealth.candleGaps===0&&closed.length>=50;
+    if(!valid)return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,reason:'Signal blocked: stale data, REST/stream mismatch, missing candles, or fewer than 50 completed candles.'};
     const data=closed.slice(-160),closes=data.map(c=>c.close),avg=n=>closes.slice(-n).reduce((a,b)=>a+b,0)/n;
     const e20=avg(20),e50=avg(50),last=closes.at(-1),prev=closes.at(-2),momentum=(last-prev)/prev*100;
     let score=50;if(last>e20)score+=12;else score-=12;if(e20>e50)score+=15;else score-=15;if(momentum>0.08)score+=8;else if(momentum<-.08)score-=8;
@@ -525,7 +530,7 @@ function App() {
     const atr=ranges.reduce((a,b)=>a+b,0)/ranges.length,stop=bias==='LONG'?last-atr*1.5:bias==='SHORT'?last+atr*1.5:null,target=bias==='LONG'?last+atr*3:bias==='SHORT'?last-atr*3:null;
     const riskUsd=demoBalance*0.01,positionSize=stop?riskUsd/Math.abs(last-stop):0;
     return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,atr,stop,target,positionSize,riskUsd,reason:'Closed-candle check: price is '+(last>e20?'above':'below')+' the 20-period average; short-term trend is '+(e20>e50?'positive':'negative')+' versus the 50-period average.'};
-  },[candles,demoBalance,signalHealth.priceFresh,signalHealth.candleFresh,signalHealth.hasTicker,signalHealth.hasClosedCandles]);
+  },[candles,demoBalance,signalHealth.priceFresh,signalHealth.candleFresh,signalHealth.hasTicker,signalHealth.hasClosedCandles,signalHealth.reconciliationOk,signalHealth.candleGaps]);
   const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['Multi-Asset Scanner',Globe2],['Market Regime',Activity],['Market Structure',Layers3],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
   useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
@@ -582,6 +587,8 @@ function App() {
           <div className="integrity-grid">
             <div><span>PRICE FEED</span><b>{signalHealth.hasTicker?(signalHealth.priceFresh?"FRESH":"STALE"):"MISSING"}</b><small>{activeFeed.priceSource||"No source"} · {Number.isFinite(priceAge)?Math.max(0,Math.round(priceAge/1000))+"s ago":"—"}</small></div>
             <div><span>CANDLE FEED</span><b>{signalHealth.hasClosedCandles?(signalHealth.candleFresh?"FRESH":"STALE"):"INSUFFICIENT"}</b><small>{activeFeed.candleSource||"No source"} · {Number.isFinite(candleAge)?Math.max(0,Math.round(candleAge/1000))+"s ago":"—"}</small></div>
+            <div><span>REST / STREAM DELTA</span><b>{signalHealth.reconciliationOk? "MATCHED":"CHECK"}</b><small>{Number.isFinite(activeFeed.divergencePct)?fmt(activeFeed.divergencePct,4)+"% difference":"Awaiting REST reference"} · max 0.50%</small></div>
+            <div><span>CANDLE SEQUENCE</span><b>{signalHealth.candleGaps===0?"CONTIGUOUS":"GAP DETECTED"}</b><small>{signalHealth.candleGaps} missing interval(s)</small></div>
             <div><span>COMPLETED CANDLES</span><b>{candles.filter(c=>c.isClosed).length}</b><small>Open candle excluded from signal</small></div>
             <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
           </div><p>Age is measured from browser receipt time. This check cannot guarantee zero exchange/network latency.</p>
