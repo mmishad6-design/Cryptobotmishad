@@ -375,7 +375,6 @@ function MarketStructureScanner({market}) {
 
 function App() {
   const [symbol,setSymbol] = useState('BTCUSDT');
-  const [symbol,setSymbol] = useState('BTCUSDT');
   const [interval,setTimeframe] = useState('15m');
   const [market,setMarket] = useState('Futures');
   const [theme,setTheme] = useState('dark');
