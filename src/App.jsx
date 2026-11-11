@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
-import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
+import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
 
 const WATCH = [
   ['BTCUSDT','Bitcoin','BTC'],['ETHUSDT','Ethereum','ETH'],['BNBUSDT','BNB','BNB'],['SOLUSDT','Solana','SOL'],
@@ -36,6 +36,102 @@ function ChartPanel({symbol, interval, candles, loading, market}) {
     if (!didFit.current) { chartRef.current.chart.timeScale().fitContent(); didFit.current = true; }
   }, [candles]);
   return <div className="chart-wrap"><div className="chart-label">{loading ? 'Updating market data…' : `Binance ${market} · Public market data`} <span>•</span> {symbol.replace('USDT','')}/USDT</div><div className="chart-canvas" ref={host}/>{!candles?.length && <div className="chart-empty">Waiting for candle data</div>}</div>;
+}
+
+
+function BacktestPanel({symbol,market,defaultInterval}) {
+  const [tf,setTf]=useState(defaultInterval||'15m');
+  const [days,setDays]=useState('30');
+  const [fee,setFee]=useState('0.05');
+  const [slippage,setSlippage]=useState('0.02');
+  const [running,setRunning]=useState(false);
+  const [result,setResult]=useState(null);
+  const [error,setError]=useState('');
+  const run=async()=>{
+    setRunning(true);setError('');setResult(null);
+    try{
+      const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
+      const endpoint=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
+      const now=Date.now(),start=now-Number(days)*86400000;
+      const url=base+endpoint+'?symbol='+symbol+'&interval='+tf+'&startTime='+start+'&endTime='+now+'&limit=1000';
+      const response=await fetch(url);if(!response.ok)throw new Error('Binance historical data request failed ('+response.status+').');
+      const raw=await response.json();if(!Array.isArray(raw)||raw.length<70)throw new Error('Not enough historical candles returned. Choose a longer period or another timeframe.');
+      const data=raw.map(k=>({time:k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
+      const feeRate=Number(fee)/100,slipRate=Number(slippage)/100,starting=10000,leverage=market==='Futures'?3:1;
+      let equity=starting,peak=starting,maxDrawdown=0,position=null,tradeList=[];
+      const avg=(arr,end,n)=>{let sum=0;for(let j=end-n+1;j<=end;j++)sum+=arr[j].close;return sum/n;};
+      const atrAt=i=>{let sum=0,count=0;for(let j=i-14;j<=i;j++){const prev=data[j-1]?.close??data[j].close;sum+=Math.max(data[j].high-data[j].low,Math.abs(data[j].high-prev),Math.abs(data[j].low-prev));count++;}return sum/count;};
+      const closePosition=(rawExit,reason,time)=>{
+        const p=position;if(!p)return;
+        const exit=p.side==='LONG'?rawExit*(1-slipRate):rawExit*(1+slipRate);
+        const gross=(exit-p.entry)*p.qty*(p.side==='LONG'?1:-1);
+        const exitFee=exit*p.qty*feeRate,net=gross-p.entryFee-exitFee;
+        equity+=net;
+        tradeList.push({side:p.side,entry:p.entry,exit,qty:p.qty,pnl:net,reason,entryTime:new Date(p.entryTime).toISOString(),exitTime:new Date(time).toISOString()});
+        position=null;
+      };
+      for(let i=50;i<data.length-1;i++){
+        const c=data[i],next=data[i+1],closes=data.slice(0,i+1).map(x=>x.close);
+        const last=c.close,ma20=avg(data,i,20),ma50=avg(data,i,50),prev=data[i-1].close,momentum=(last-prev)/prev*100;
+        let score=50;if(last>ma20)score+=12;else score-=12;if(ma20>ma50)score+=15;else score-=15;if(momentum>0.08)score+=8;else if(momentum<-.08)score-=8;
+        const bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
+        if(position){
+          const stopHit=position.side==='LONG'?c.low<=position.stop:c.high>=position.stop;
+          const targetHit=position.side==='LONG'?c.high>=position.target:c.low<=position.target;
+          // Conservative same-candle assumption: if both levels are touched, count the stop first.
+          if(stopHit)closePosition(position.stop,'STOP LOSS',c.time);
+          else if(targetHit)closePosition(position.target,'TAKE PROFIT',c.time);
+        }
+        if(!position&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){
+          const atr=atrAt(i),rawEntry=next.open,entry=bias==='LONG'?rawEntry*(1+slipRate):rawEntry*(1-slipRate);
+          const stopDistance=atr*1.5,riskCash=equity*0.01;
+          let qty=riskCash/stopDistance;
+          qty=Math.min(qty,(equity*leverage)/(entry*(1+feeRate)));
+          if(Number.isFinite(qty)&&qty>0){
+            const margin=entry*qty/leverage,entryFee=entry*qty*feeRate;
+            if(margin+entryFee<=equity){
+              position={side:bias,entry,qty,stop:bias==='LONG'?entry-stopDistance:entry+stopDistance,target:bias==='LONG'?entry+atr*3:entry-atr*3,entryFee,entryTime:next.time};
+            }
+          }
+        }
+        const marked=equity+(position?((c.close-position.entry)*position.qty*(position.side==='LONG'?1:-1)-position.entryFee):0);
+        peak=Math.max(peak,marked);maxDrawdown=Math.max(maxDrawdown,(peak-marked)/peak*100);
+      }
+      if(position)closePosition(data[data.length-1].close,'END OF TEST',data[data.length-1].time);
+      const wins=tradeList.filter(t=>t.pnl>0),losses=tradeList.filter(t=>t.pnl<0);
+      const grossProfit=wins.reduce((a,t)=>a+t.pnl,0),grossLoss=Math.abs(losses.reduce((a,t)=>a+t.pnl,0));
+      const net=equity-starting,winRate=tradeList.length?wins.length/tradeList.length*100:0;
+      setResult({symbol,market,tf,days,from:data[0].time,to:data[data.length-1].time,candles:data.length,trades:tradeList.length,wins:wins.length,losses:losses.length,winRate,net,returnPct:net/starting*100,finalEquity:equity,maxDrawdown,profitFactor:grossLoss?grossProfit/grossLoss:grossProfit>0?null:0,expectancy:tradeList.length?net/tradeList.length:0,feeRate,slipRate,tradeList:tradeList.slice(-12).reverse(),assumption:'Signals use closed candles; entries occur at the next candle open. If SL and TP both touch in one candle, SL is assumed first.'});
+    }catch(e){setError(e.message||'Backtest failed. Please retry.');}
+    finally{setRunning(false);}
+  };
+  return <section className="panel backtest-panel">
+    <div className="panel-title"><div><h3>Historical strategy backtest</h3><p>Same SMA20/SMA50 + momentum rules · No future-candle lookahead</p></div><span className="tiny-live">RESEARCH MODE</span></div>
+    <div className="backtest-controls">
+      <label>MARKET TIMEFRAME<select value={tf} onChange={e=>setTf(e.target.value)}>{['1m','5m','15m','1h','4h','1d'].map(x=><option key={x}>{x}</option>)}</select></label>
+      <label>HISTORY<select value={days} onChange={e=>setDays(e.target.value)}><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
+      <label>TRADING FEE (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label>
+      <label>SLIPPAGE (%)<input type="number" min="0" max="1" step="0.01" value={slippage} onChange={e=>setSlippage(e.target.value)}/></label>
+      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'Running…':'Run backtest'}</button>
+    </div>
+    {error&&<div className="backtest-error">{error}</div>}
+    {result&&<>
+      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} candles</span></div>
+      <div className="backtest-metrics">
+        <div><span>NET P&L</span><b className={result.net>=0?'positive':'negative'}>{result.net>=0?'+':''}${fmt(result.net)}</b></div>
+        <div><span>RETURN</span><b className={result.returnPct>=0?'positive':'negative'}>{result.returnPct>=0?'+':''}{fmt(result.returnPct)}%</b></div>
+        <div><span>WIN RATE</span><b>{fmt(result.winRate)}%</b></div>
+        <div><span>TRADES</span><b>{result.trades}</b></div>
+        <div><span>PROFIT FACTOR</span><b>{result.profitFactor===null?'∞':fmt(result.profitFactor)}</b></div>
+        <div><span>MAX DRAWDOWN</span><b className="negative">{fmt(result.maxDrawdown)}%</b></div>
+        <div><span>EXPECTANCY / TRADE</span><b className={result.expectancy>=0?'positive':'negative'}>${fmt(result.expectancy)}</b></div>
+        <div><span>ENDING EQUITY</span><b>${fmt(result.finalEquity)}</b></div>
+      </div>
+      <p className="backtest-assumption">{result.assumption} Starting capital: $10,000. Fee {fmt(Number(fee),3)}% per side; slippage {fmt(Number(slippage),3)}% per side. Futures simulation uses 3x notional cap. Funding, liquidation, spread and partial fills are not modelled.</p>
+      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>Side</th><th>Entry</th><th>Exit</th><th>Net P&L</th><th>Exit reason</th></tr></thead><tbody>{result.tradeList.map((t,i)=><tr key={i}><td>{t.side}</td><td>{fmt(t.entry, t.entry<1?5:3)}</td><td>{fmt(t.exit,t.exit<1?5:3)}</td><td className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</td><td>{t.reason}</td></tr>)}</tbody></table></div>
+    </>}
+    <div className="backtest-disclaimer"><ShieldCheck size={14}/> Historical simulation only. Results are not forecasts, and a profitable backtest does not prove future profitability.</div>
+  </section>;
 }
 
 function App() {
@@ -126,7 +222,7 @@ function App() {
     const positionSize=stop?riskUsd/Math.abs(last-stop):0;
     return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,atr,stop,target,positionSize,riskUsd,reason:`Price is ${last>e20?'above':'below'} the 20-period average and the short-term trend is ${e20>e50?'positive':'negative'} versus the 50-period average.`};
   },[candles,demoBalance]);
-  const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['News & Events',Newspaper]];
+  const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
   useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
   const closeTrade=(id,exitPrice,reason='MANUAL')=>{
@@ -197,6 +293,7 @@ function App() {
             <div className="panel metrics-panel"><div className="panel-title"><div><h3>Market metrics</h3><p>{active[2]} · 24 hour</p></div><BarChart3 size={17}/></div><div className="metric-row"><span>24h Volume (USDT)</span><b>{ticker?compact(+ticker.quoteVolume):'—'}</b></div><div className="metric-row"><span>24h High</span><b className="positive">{ticker?'$'+fmt(ticker.highPrice):'—'}</b></div><div className="metric-row"><span>24h Low</span><b className="negative">{ticker?'$'+fmt(ticker.lowPrice):'—'}</b></div><div className="metric-row"><span>24h Trades</span><b>{ticker?compact(+ticker.count):'—'}</b></div><div className="metric-row"><span>Market source</span><b className="source-label">Binance {market}</b></div>{market==='Futures'&&<><div className="metric-row"><span>Open interest</span><b>{futuresMetrics.openInterest?compact(+futuresMetrics.openInterest):'—'}</b></div><div className="metric-row"><span>Funding rate</span><b className={Number(futuresMetrics.fundingRate)>=0?'positive':'negative'}>{futuresMetrics.fundingRate!==null?fmt(Number(futuresMetrics.fundingRate)*100,4)+'%':'—'}</b></div></>}</div>
           </div>
         </section>
+        {tab==='Backtesting'&&<BacktestPanel symbol={symbol} market={market} defaultInterval={interval}/>}
         {tab==='Futures Analysis'&&(
           <section className="panel risk-panel">
             <div className="panel-title">
