@@ -53,11 +53,20 @@ function BacktestPanel({symbol,market,defaultInterval}) {
       const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
       const endpoint=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
       const now=Date.now(),start=now-Number(days)*86400000;
-      const url=base+endpoint+'?symbol='+symbol+'&interval='+tf+'&startTime='+start+'&endTime='+now+'&limit=1000';
-      const response=await fetch(url);if(!response.ok)throw new Error('Binance historical data request failed ('+response.status+').');
-      const raw=await response.json();if(!Array.isArray(raw)||raw.length<70)throw new Error('Not enough historical candles returned. Choose a longer period or another timeframe.');
+      const intervalMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[tf];
+      // Binance paginates klines; fetch up to 5,000 recent bars within the selected lookback.
+      let cursor=Math.max(start,now-5000*intervalMs),raw=[];
+      while(cursor<now&&raw.length<5000){
+        const url=base+endpoint+'?symbol='+symbol+'&interval='+tf+'&startTime='+cursor+'&endTime='+now+'&limit=1000';
+        const response=await fetch(url);if(!response.ok)throw new Error('Binance historical data request failed ('+response.status+').');
+        const batch=await response.json();if(!Array.isArray(batch)||batch.length===0)break;
+        raw=raw.concat(batch);cursor=Number(batch[batch.length-1][0])+intervalMs;
+        if(batch.length<1000)break;
+      }
+      if(raw.length<70)throw new Error('Not enough historical candles returned. Choose a longer period or another timeframe.');
+      raw=raw.slice(0,5000);
       const data=raw.map(k=>({time:k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
-      const feeRate=Number(fee)/100,slipRate=Number(slippage)/100,starting=10000,leverage=market==='Futures'?3:1;
+      const feeRate=Math.max(0,Math.min(1,Number(fee)||0))/100,slipRate=Math.max(0,Math.min(1,Number(slippage)||0))/100,starting=10000,leverage=market==='Futures'?3:1;
       let equity=starting,peak=starting,maxDrawdown=0,position=null,tradeList=[];
       const avg=(arr,end,n)=>{let sum=0;for(let j=end-n+1;j<=end;j++)sum+=arr[j].close;return sum/n;};
       const atrAt=i=>{let sum=0,count=0;for(let j=i-14;j<=i;j++){const prev=data[j-1]?.close??data[j].close;sum+=Math.max(data[j].high-data[j].low,Math.abs(data[j].high-prev),Math.abs(data[j].low-prev));count++;}return sum/count;};
@@ -98,10 +107,11 @@ function BacktestPanel({symbol,market,defaultInterval}) {
         peak=Math.max(peak,marked);maxDrawdown=Math.max(maxDrawdown,(peak-marked)/peak*100);
       }
       if(position)closePosition(data[data.length-1].close,'END OF TEST',data[data.length-1].time);
+      peak=Math.max(peak,equity);maxDrawdown=Math.max(maxDrawdown,(peak-equity)/peak*100);
       const wins=tradeList.filter(t=>t.pnl>0),losses=tradeList.filter(t=>t.pnl<0);
       const grossProfit=wins.reduce((a,t)=>a+t.pnl,0),grossLoss=Math.abs(losses.reduce((a,t)=>a+t.pnl,0));
       const net=equity-starting,winRate=tradeList.length?wins.length/tradeList.length*100:0;
-      setResult({symbol,market,tf,days,from:data[0].time,to:data[data.length-1].time,candles:data.length,trades:tradeList.length,wins:wins.length,losses:losses.length,winRate,net,returnPct:net/starting*100,finalEquity:equity,maxDrawdown,profitFactor:grossLoss?grossProfit/grossLoss:grossProfit>0?null:0,expectancy:tradeList.length?net/tradeList.length:0,feeRate,slipRate,tradeList:tradeList.slice(-12).reverse(),assumption:'Signals use closed candles; entries occur at the next candle open. If SL and TP both touch in one candle, SL is assumed first.'});
+      setResult({symbol,market,tf,days,from:data[0].time,to:data[data.length-1].time,candles:data.length,trades:tradeList.length,wins:wins.length,losses:losses.length,winRate,net,returnPct:net/starting*100,finalEquity:equity,maxDrawdown,profitFactor:grossLoss?grossProfit/grossLoss:grossProfit>0?null:0,expectancy:tradeList.length?net/tradeList.length:0,feeRate,slipRate,tradeList:tradeList.slice(-12).reverse(),assumption:'Signals use closed candles; entries occur at the next candle open. If SL and TP both touch in one candle, SL is assumed first. Up to 5,000 recent candles are tested within the selected lookback.'});
     }catch(e){setError(e.message||'Backtest failed. Please retry.');}
     finally{setRunning(false);}
   };
