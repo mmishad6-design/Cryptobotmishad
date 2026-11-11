@@ -35,7 +35,9 @@ function ChartPanel({symbol, interval, candles, loading, market}) {
   }, []);
   useEffect(() => {
     if (!chartRef.current || !candles?.length) return;
-    const valid = candles.filter(c => Number.isFinite(c.time) && [c.open,c.high,c.low,c.close].every(v=>Number.isFinite(Number(v))&&Number(v)>0)).sort((a,b)=>a.time-b.time);
+    const unique = new Map();
+    candles.forEach(c=>{if(Number.isFinite(c.time)&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(Number(v))&&Number(v)>0))unique.set(c.time,c);});
+    const valid = [...unique.values()].sort((a,b)=>a.time-b.time);
     if (!valid.length) return;
     chartRef.current.series.setData(valid.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
     const makeEma = period => {
@@ -700,19 +702,55 @@ function App() {
     };
     snapshot();snapshotTimer=window.setInterval(snapshot,30000);connect();return()=>{live=false;if(reconnect)clearTimeout(reconnect);if(fallback!==null)clearInterval(fallback);if(snapshotTimer!==null)clearInterval(snapshotTimer);try{ws?.close();}catch{}};
   },[market]);
-  // Load candle history once, then stream the active candle in real time.
+  // Load fresh history whenever the selected chart market changes.
   useEffect(()=>{
     let live=true,ws=null,retryTimer=null,fallbackTimer=null,delay=1000;
-    const history=async()=>{try{const r=await fetch(candleUrl);if(!r.ok)throw new Error();const rows=await r.json();if(live){setCandles(rows.filter(k=>Number(k[6])>Number(k[0])).map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})));setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'REST'}}));setLoading(false);}}catch{if(live){setLoading(false);setNotice('Could not load Binance candle data. Retrying.');}}};
+    setCandles([]);setLoading(true);
+    const history=async()=>{try{const r=await fetch(candleUrl,{cache:'no-store'});if(!r.ok)throw new Error('Binance candle HTTP '+r.status);const rows=await r.json();if(!Array.isArray(rows))throw new Error('Invalid Binance candle response');if(live){const normalized=rows.map(k=>({time:Math.floor(Number(k[0])/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})).filter(c=>Number.isFinite(c.time)&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));setCandles(normalized.slice(-160));setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'REST'}}));setLoading(false);}}catch(e){if(live){setLoading(false);setNotice('চার্টের ক্যান্ডেল ডেটা লোড হয়নি: '+(e.message||'Binance সংযোগ সমস্যা')+'। আবার চেষ্টা করা হচ্ছে।');}}};
     const connect=()=>{if(!live)return;const host=market==='Futures'?'wss://fstream.binance.com/ws/':'wss://stream.binance.com:9443/ws/';try{ws=new WebSocket(host+symbol.toLowerCase()+'@kline_'+interval);}catch{fallback();return;}
       ws.onopen=()=>{delay=1000;if(fallbackTimer){clearInterval(fallbackTimer);fallbackTimer=null;}};
-      ws.onmessage=e=>{try{const k=JSON.parse(e.data).k;if(!k||!live)return;const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c,closeTime:Number(k.T),isClosed:Boolean(k.x),exchangeAt:Number(k.T)};setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'WEBSOCKET',candleExchangeAt:Number(k.T)}}));setCandles(prev=>{if(!prev.length)return[c];const last=prev[prev.length-1];return last.time===c.time?[...prev.slice(0,-1),c]:[...prev,c].slice(-160);});}catch{}};
+      ws.onmessage=e=>{try{const k=JSON.parse(e.data).k;if(!k||!live)return;const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c,closeTime:Number(k.T),isClosed:Boolean(k.x),exchangeAt:Number(k.T)};setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'WEBSOCKET',candleExchangeAt:Number(k.T)}}));setCandles(prev=>{const map=new Map(prev.map(x=>[x.time,x]));map.set(c.time,c);return [...map.values()].sort((x,y)=>x.time-y.time).slice(-160);});}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;fallback();retryTimer=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
     const fallback=()=>{if(fallbackTimer===null)fallbackTimer=window.setInterval(history,10000);};
-    setLoading(true);history();connect();return()=>{live=false;if(retryTimer)clearTimeout(retryTimer);if(fallbackTimer)clearInterval(fallbackTimer);try{ws?.close();}catch{}};
+    history();connect();return()=>{live=false;if(retryTimer)clearTimeout(retryTimer);if(fallbackTimer)clearInterval(fallbackTimer);try{ws?.close();}catch{}};
   },[candleUrl,market,symbol,interval]);
+
+  // Keep the in-progress chart candle aligned to each live trade.
+  // It remains unclosed and is excluded from all closed-candle signal calculations.
+  useEffect(()=>{
+    let live=true,ws=null,retry=null,delay=1000;
+    const intervalMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[interval];
+    const connect=()=>{
+      if(!live)return;
+      const host=market==='Futures'?'wss://fstream.binance.com/ws/':'wss://stream.binance.com:9443/ws/';
+      try{ws=new WebSocket(host+symbol.toLowerCase()+'@trade');}catch{retry=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);return;}
+      ws.onopen=()=>{delay=1000;};
+      ws.onmessage=e=>{
+        try{
+          const trade=JSON.parse(e.data),price=Number(trade.p),eventTime=Number(trade.T||trade.E);
+          if(!live||!Number.isFinite(price)||price<=0||!Number.isFinite(eventTime))return;
+          const bucketMs=Math.floor(eventTime/intervalMs)*intervalMs,bucket=Math.floor(bucketMs/1000);
+          setCandles(prev=>{
+            if(!prev.length)return prev;
+            const last=prev[prev.length-1];
+            if(bucket<last.time)return prev;
+            if(bucket===last.time){
+              const next={...last,high:Math.max(last.high,price),low:Math.min(last.low,price),close:price,isClosed:false,exchangeAt:eventTime};
+              return [...prev.slice(0,-1),next];
+            }
+            const next={time:bucket,open:price,high:price,low:price,close:price,closeTime:bucketMs+intervalMs-1,isClosed:false,exchangeAt:eventTime};
+            return [...prev,next].slice(-160);
+          });
+        }catch{}
+      };
+      ws.onerror=()=>{try{ws.close();}catch{}};
+      ws.onclose=()=>{if(!live)return;retry=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
+    };
+    connect();
+    return()=>{live=false;if(retry)clearTimeout(retry);try{ws?.close();}catch{}};
+  },[market,symbol,interval]);
 
   useEffect(()=>{
     let live=true;
