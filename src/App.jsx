@@ -11,7 +11,7 @@ const fmt = (n, digits=2) => Number.isFinite(Number(n)) ? Number(n).toLocaleStri
 const compact = n => n >= 1e9 ? (n/1e9).toFixed(2)+'B' : n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? (n/1e3).toFixed(2)+'K' : fmt(n);
 const intervals = ['1m','5m','15m','1h','4h','1d'];
 
-function ChartPanel({symbol, interval, candles, loading, market}) {
+function ChartPanel({symbol, interval, candles, loading, market, resetKey, onReset}) {
   const host = useRef(null);
   const chartRef = useRef(null);
   const didFit = useRef(false);
@@ -57,7 +57,16 @@ function ChartPanel({symbol, interval, candles, loading, market}) {
       lastKey.current=key;
     }
   }, [candles,symbol,interval,market]);
-  return <div className="chart-wrap"><div className="chart-label">{loading ? 'Updating market data…' : `Binance ${market} · Live kline stream`} <span>•</span> {symbol.replace('USDT','')}/USDT</div><div className="chart-canvas" ref={host}/>{!candles?.length && <div className="chart-empty">Waiting for candle data</div>}<div className="chart-indicator-legend"><span><i className="ema20-dot"/> EMA 20 · live candle</span><span><i className="ema50-dot"/> EMA 50 · live candle</span><small>চলমান ক্যান্ডেলসহ প্রতি WebSocket আপডেটে হিসাব</small></div></div>;
+  useEffect(() => {
+    if (!chartRef.current) return;
+    chartRef.current.chart.timeScale().fitContent();
+    chartRef.current.series.priceScale().applyOptions({ autoScale: true });
+    chartRef.current.ema20Series.priceScale().applyOptions({ autoScale: true });
+    chartRef.current.ema50Series.priceScale().applyOptions({ autoScale: true });
+    didFit.current = true;
+    lastKey.current = symbol+'_'+interval+'_'+market;
+  }, [resetKey, symbol, interval, market]);
+  return <div className="chart-wrap"><div className="chart-label"><span>{loading ? 'Updating market data…' : `Binance ${market} · Live kline stream`} <span>•</span> {symbol.replace('USDT','')}/USDT</span><button className="chart-reset-btn" onClick={() => { if (chartRef.current) { chartRef.current.chart.timeScale().fitContent(); chartRef.current.series.priceScale().applyOptions({ autoScale: true }); } onReset?.(); }} title="Reload candles and reset chart view"><RefreshCw size={13}/> Reset chart</button></div><div className="chart-canvas" ref={host}/>{!candles?.length && <div className="chart-empty">{loading ? 'Loading fresh candle history…' : 'Candle data unavailable — press Reset chart to retry'}</div>}<div className="chart-indicator-legend"><span><i className="ema20-dot"/> EMA 20 · live candle</span><span><i className="ema50-dot"/> EMA 50 · live candle</span><small>চলমান ক্যান্ডেলসহ প্রতি WebSocket আপডেটে হিসাব</small></div></div>;
 }
 
 function BacktestPanel({symbol,market,defaultInterval}) {
@@ -662,6 +671,7 @@ function App() {
   const [theme,setTheme] = useState('dark');
   const [prices,setPrices] = useState({});
   const [candles,setCandles] = useState([]);
+  const [chartResetKey,setChartResetKey] = useState(0);
   const [loading,setLoading] = useState(true);
   const [updated,setUpdated] = useState(null);
   const [query,setQuery] = useState('');
@@ -715,7 +725,7 @@ function App() {
     };
     const fallback=()=>{if(fallbackTimer===null)fallbackTimer=window.setInterval(history,10000);};
     history();connect();return()=>{live=false;if(retryTimer)clearTimeout(retryTimer);if(fallbackTimer)clearInterval(fallbackTimer);try{ws?.close();}catch{}};
-  },[candleUrl,market,symbol,interval]);
+  },[candleUrl,market,symbol,interval,chartResetKey]);
 
   // Keep the in-progress chart candle aligned to each live trade.
   // It remains unclosed and is excluded from all closed-candle signal calculations.
@@ -870,7 +880,7 @@ function App() {
           <div className="panel chart-panel">
             <div className="panel-head"><div className="asset-title"><div className="coin-icon">{active[2].slice(0,1)}</div><div><b>{active[1]} <span>{active[2]}/USDT</span></b><small>Binance · {market} market</small></div><ChevronDown size={14}/></div><div className="chart-tools">{intervals.map(i=><button key={i} className={interval===i?'chosen':''} onClick={()=>setTimeframe(i)}>{i}</button>)}<button className="tool-icon" onClick={()=>showNotice('চার্টে EMA 20 ও EMA 50 চালু আছে; দুটিই চলমান ক্যান্ডেলের সঙ্গে WebSocket আপডেটে পুনর্গণনা হয়।')}><SlidersHorizontal size={15}/></button></div></div>
             <div className="price-line"><div><strong>{price?'$'+fmt(price,price<1?5:2):'—'}</strong><span className={change>=0?'positive':'negative'}>{price?(change>=0?'+':'')+fmt(change)+'%':'Waiting for feed'} <small>24h</small></span></div><div className="range"><span>24H HIGH</span><b>{ticker?'$'+fmt(ticker.highPrice):'—'}</b><span>24H LOW</span><b>{ticker?'$'+fmt(ticker.lowPrice):'—'}</b></div></div>
-            <ChartPanel symbol={symbol} interval={interval} candles={candles} loading={loading} market={market}/>
+            <ChartPanel symbol={symbol} interval={interval} candles={candles} loading={loading} market={market} resetKey={chartResetKey} onReset={()=>setChartResetKey(v=>v+1)}/>
             <div className="chart-foot"><span><span className="legend-dot"/> Candlesticks</span><span>Timeframe: {interval}</span><span>Source: Binance public API</span></div>
           </div>
           <div className="right-stack">
