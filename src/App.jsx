@@ -11,7 +11,7 @@ const fmt = (n, digits=2) => Number.isFinite(Number(n)) ? Number(n).toLocaleStri
 const compact = n => n >= 1e9 ? (n/1e9).toFixed(2)+'B' : n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? (n/1e3).toFixed(2)+'K' : fmt(n);
 const intervals = ['1m','5m','15m','1h','4h','1d'];
 
-function ChartPanel({symbol, interval, candles, loading}) {
+function ChartPanel({symbol, interval, candles, loading, market}) {
   const host = useRef(null);
   const chartRef = useRef(null);
   useEffect(() => {
@@ -33,7 +33,7 @@ function ChartPanel({symbol, interval, candles, loading}) {
     chartRef.current.series.setData(candles);
     chartRef.current.chart.timeScale().fitContent();
   }, [candles]);
-  return <div className="chart-wrap"><div className="chart-label">{loading ? 'Updating market data…' : 'Binance Spot · Public market data'} <span>•</span> {symbol.replace('USDT','')}/USDT</div><div className="chart-canvas" ref={host}/>{!candles?.length && <div className="chart-empty">Waiting for candle data</div>}</div>;
+  return <div className="chart-wrap"><div className="chart-label">{loading ? 'Updating market data…' : `Binance ${market} · Public market data`} <span>•</span> {symbol.replace('USDT','')}/USDT</div><div className="chart-canvas" ref={host}/>{!candles?.length && <div className="chart-empty">Waiting for candle data</div>}</div>;
 }
 
 function App() {
@@ -58,13 +58,15 @@ function App() {
   const price = Number(ticker?.lastPrice || 0);
   const change = Number(ticker?.priceChangePercent || 0);
   const filtered = WATCH.filter(c => (c[0]+c[1]+c[2]).toLowerCase().includes(query.toLowerCase()));
-  const candleUrl = useMemo(()=>`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=160`,[symbol,interval]);
+  const apiBase = market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
+  const candleUrl = useMemo(()=>`${apiBase}${market==='Futures'?'/fapi/v1/klines':'/api/v3/klines'}?symbol=${symbol}&interval=${interval}&limit=160`,[symbol,interval,market]);
+  const [futuresMetrics,setFuturesMetrics] = useState({openInterest:null,fundingRate:null,updated:null});
 
   useEffect(()=>{
     let live=true;
     const load=async()=>{
       try {
-        const r=await fetch('https://api.binance.com/api/v3/ticker/24hr');
+        const r=await fetch(`${market==='Futures'?'https://fapi.binance.com/fapi/v1/ticker/24hr':'https://api.binance.com/api/v3/ticker/24hr'}`);
         if(!r.ok) throw new Error('Market endpoint unavailable');
         const data=await r.json();
         if(live){const next={}; data.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)) next[x.symbol]=x;});setPrices(next);setUpdated(new Date());}
@@ -72,7 +74,7 @@ function App() {
     };
     load(); const id=window.setInterval(load,15000);
     return ()=>{live=false;clearInterval(id);};
-  },[]);
+  },[market]);
   useEffect(()=>{
     let live=true; setLoading(true);
     fetch(candleUrl).then(r=>{if(!r.ok)throw new Error('Candle request failed');return r.json();})
@@ -81,8 +83,19 @@ function App() {
     return ()=>{live=false;};
   },[candleUrl]);
 
+  useEffect(()=>{
+    let live=true;
+    if(market!=='Futures'){setFuturesMetrics({openInterest:null,fundingRate:null,updated:null});return ()=>{live=false;};}
+    Promise.all([
+      fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`).then(r=>{if(!r.ok)throw new Error('Open interest unavailable');return r.json();}),
+      fetch(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${symbol}&limit=1`).then(r=>{if(!r.ok)throw new Error('Funding rate unavailable');return r.json();})
+    ]).then(([oi,funding])=>{if(live)setFuturesMetrics({openInterest:oi.openInterest,fundingRate:funding?.[0]?.fundingRate??null,updated:new Date()});})
+      .catch(()=>{if(live)setFuturesMetrics({openInterest:null,fundingRate:null,updated:new Date()});});
+    return ()=>{live=false;};
+  },[market,symbol]);
+
   const analysis = useMemo(()=>{
-    if(candles.length<30) return {bias:'WAIT',score:0,reason:'Waiting for enough candle history to evaluate market structure.'};
+    if(candles.length<50) return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,reason:'Waiting for at least 50 candles before evaluating the setup.'};
     const closes=candles.map(c=>c.close);
     const avg=n=>closes.slice(-n).reduce((a,b)=>a+b,0)/n;
     const e20=avg(20), e50=avg(50), last=closes.at(-1), prev=closes.at(-2);
@@ -92,8 +105,14 @@ function App() {
     if(e20>e50) score+=15; else score-=15;
     if(momentum>0.08) score+=8; else if(momentum<-.08) score-=8;
     const bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
-    return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,reason:`Price is ${last>e20?'above':'below'} the 20-period average and the short-term trend is ${e20>e50?'positive':'negative'} versus the 50-period average.`};
-  },[candles]);
+    const ranges=candles.slice(-15).map((c,i)=>{const prevClose=candles[candles.length-16+i]?.close??c.close;return Math.max(c.high-c.low,Math.abs(c.high-prevClose),Math.abs(c.low-prevClose));});
+    const atr=ranges.reduce((a,b)=>a+b,0)/ranges.length;
+    const stop=bias==='LONG'?last-atr*1.5:bias==='SHORT'?last+atr*1.5:null;
+    const target=bias==='LONG'?last+atr*3:bias==='SHORT'?last-atr*3:null;
+    const riskUsd=demoBalance*0.01;
+    const positionSize=stop?riskUsd/Math.abs(last-stop):0;
+    return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,atr,stop,target,positionSize,riskUsd,reason:`Price is ${last>e20?'above':'below'} the 20-period average and the short-term trend is ${e20>e50?'positive':'negative'} versus the 50-period average.`};
+  },[candles,demoBalance]);
   const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
   const addPaperTrade=()=>{
@@ -132,19 +151,50 @@ function App() {
           <div className="market-stat"><span>SOL / USDT</span><b>{prices.SOLUSDT?'$'+fmt(prices.SOLUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.SOLUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.SOLUSDT?fmt(prices.SOLUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat market-update"><span>DATA UPDATED</span><b>{updated?updated.toLocaleTimeString():'Connecting…'}</b><small><span className="pulse"/> Binance public API</small></div>
         </section>
-        <div className="section-row"><div><h2>Market workspace</h2><p>Live prices and multi-timeframe chart analysis</p></div><div className="market-toggle"><button className={market==='Spot'?'active':''} onClick={()=>setMarket('Spot')}>Spot</button><button className={market==='Futures'?'active':''} onClick={()=>setMarket('Futures')}>Futures</button></div></div>
+        <div className="section-row"><div><h2>Market workspace</h2><p>Live {market.toLowerCase()} prices and multi-timeframe chart analysis</p></div><div className="market-actions"><button className="sui-focus-btn" onClick={()=>setSymbol('SUIUSDT')}>SUI / USDT <span>FOCUS</span></button><div className="market-toggle"><button className={market==='Spot'?'active':''} onClick={()=>setMarket('Spot')}>Spot</button><button className={market==='Futures'?'active':''} onClick={()=>setMarket('Futures')}>Futures</button></div></div></div>
         <section className="workspace-grid">
           <div className="panel chart-panel">
             <div className="panel-head"><div className="asset-title"><div className="coin-icon">{active[2].slice(0,1)}</div><div><b>{active[1]} <span>{active[2]}/USDT</span></b><small>Binance · {market} market</small></div><ChevronDown size={14}/></div><div className="chart-tools">{intervals.map(i=><button key={i} className={interval===i?'chosen':''} onClick={()=>setTimeframe(i)}>{i}</button>)}<button className="tool-icon" onClick={()=>showNotice('Chart indicators are coming in the next build.')}><SlidersHorizontal size={15}/></button></div></div>
             <div className="price-line"><div><strong>{price?'$'+fmt(price,price<1?5:2):'—'}</strong><span className={change>=0?'positive':'negative'}>{price?(change>=0?'+':'')+fmt(change)+'%':'Waiting for feed'} <small>24h</small></span></div><div className="range"><span>24H HIGH</span><b>{ticker?'$'+fmt(ticker.highPrice):'—'}</b><span>24H LOW</span><b>{ticker?'$'+fmt(ticker.lowPrice):'—'}</b></div></div>
-            <ChartPanel symbol={symbol} interval={interval} candles={candles} loading={loading}/>
+            <ChartPanel symbol={symbol} interval={interval} candles={candles} loading={loading} market={market}/>
             <div className="chart-foot"><span><span className="legend-dot"/> Candlesticks</span><span>Timeframe: {interval}</span><span>Source: Binance public API</span></div>
           </div>
           <div className="right-stack">
             <div className="panel signal-panel"><div className="panel-title"><div><h3>Setup assessment</h3><p>Rule-based snapshot · Not a prediction</p></div><span className="tiny-live">LIVE</span></div><div className={`signal-badge ${analysis.bias.toLowerCase()}`}>{analysis.bias==='LONG'?<TrendingUp size={19}/>:analysis.bias==='SHORT'?<TrendingDown size={19}/>:<Crosshair size={19}/>}<b>{analysis.bias}</b></div><div className="score-row"><span>Directional score</span><b>{analysis.score}/100</b></div><div className="score-track"><i style={{width:analysis.score+'%'}}/></div><p className="analysis-reason">{analysis.reason}</p><div className="signal-warning"><ShieldCheck size={15}/><span>Signal engine is preliminary. No backtested edge or verified win rate is claimed.</span></div><button className="outline-btn full" onClick={()=>setTab('Futures Analysis')}>View analysis details <ArrowUpRight size={15}/></button></div>
-            <div className="panel metrics-panel"><div className="panel-title"><div><h3>Market metrics</h3><p>{active[2]} · 24 hour</p></div><BarChart3 size={17}/></div><div className="metric-row"><span>24h Volume (USDT)</span><b>{ticker?compact(+ticker.quoteVolume):'—'}</b></div><div className="metric-row"><span>24h High</span><b className="positive">{ticker?'$'+fmt(ticker.highPrice):'—'}</b></div><div className="metric-row"><span>24h Low</span><b className="negative">{ticker?'$'+fmt(ticker.lowPrice):'—'}</b></div><div className="metric-row"><span>24h Trades</span><b>{ticker?compact(+ticker.count):'—'}</b></div><div className="metric-row"><span>Market source</span><b className="source-label">Binance</b></div></div>
+            <div className="panel metrics-panel"><div className="panel-title"><div><h3>Market metrics</h3><p>{active[2]} · 24 hour</p></div><BarChart3 size={17}/></div><div className="metric-row"><span>24h Volume (USDT)</span><b>{ticker?compact(+ticker.quoteVolume):'—'}</b></div><div className="metric-row"><span>24h High</span><b className="positive">{ticker?'$'+fmt(ticker.highPrice):'—'}</b></div><div className="metric-row"><span>24h Low</span><b className="negative">{ticker?'$'+fmt(ticker.lowPrice):'—'}</b></div><div className="metric-row"><span>24h Trades</span><b>{ticker?compact(+ticker.count):'—'}</b></div><div className="metric-row"><span>Market source</span><b className="source-label">Binance {market}</b></div>{market==='Futures'&&<><div className="metric-row"><span>Open interest</span><b>{futuresMetrics.openInterest?compact(+futuresMetrics.openInterest):'—'}</b></div><div className="metric-row"><span>Funding rate</span><b className={Number(futuresMetrics.fundingRate)>=0?'positive':'negative'}>{futuresMetrics.fundingRate!==null?fmt(Number(futuresMetrics.fundingRate)*100,4)+'%':'—'}</b></div></>}</div>
           </div>
         </section>
+        {tab==='Futures Analysis'&&<section className="panel risk-panel"><div className="panel-title"><div><h3>Futures risk plan</h3><p>{active[2]}/USDT · {interval} timeframe · ATR-based levels</p></div><ShieldCheck size={18}/></div><div className="risk-grid"><div><span>SETUP</span><b className={analysis.bias==='LONG'?'positive':analysis.bias==='SHORT'?'negative':''}>{analysis.bias}</b></div><div><span>ENTRY REFERENCE</span><b>{price?'
+          <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>Selected liquid markets</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Prices update every 15 seconds · {filtered.length} assets shown</div></div>
+          <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USD</span><span>Starting balance: $10,000</span></div><div className="paper-stats"><div><span>OPEN TRADES</span><b>{paperTrades.filter(t=>t.status==='OPEN').length}</b></div><div><span>TOTAL TRADES</span><b>{paperTrades.length}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation and does not represent real execution or guaranteed results.</p></div>
+        </section>
+        {tab==='Paper Trading'&&<section className="panel journal-panel"><div className="panel-title"><div><h3>Paper trade journal</h3><p>Practice entries and review outcomes</p></div><button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button></div>{paperTrades.length===0?<div className="empty-state">No paper trades yet. A trade can only be opened when the setup assessment is LONG or SHORT.</div>:<div className="trade-list">{paperTrades.map(t=><div className="trade-row" key={t.id}><b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b><span>Entry: ${fmt(t.entry)}</span><span>{t.status==='OPEN'?'Open':`Exit: $${fmt(t.exit)}`}</span>{t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id)}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
+        <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
+      </div>
+    </main>
+  </div>;
+}
+export default App;+fmt(price,price<1?5:4):'—'}</b></div><div><span>STOP LOSS</span><b>{analysis.stop?'
+          <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>Selected liquid markets</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Prices update every 15 seconds · {filtered.length} assets shown</div></div>
+          <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USD</span><span>Starting balance: $10,000</span></div><div className="paper-stats"><div><span>OPEN TRADES</span><b>{paperTrades.filter(t=>t.status==='OPEN').length}</b></div><div><span>TOTAL TRADES</span><b>{paperTrades.length}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation and does not represent real execution or guaranteed results.</p></div>
+        </section>
+        {tab==='Paper Trading'&&<section className="panel journal-panel"><div className="panel-title"><div><h3>Paper trade journal</h3><p>Practice entries and review outcomes</p></div><button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button></div>{paperTrades.length===0?<div className="empty-state">No paper trades yet. A trade can only be opened when the setup assessment is LONG or SHORT.</div>:<div className="trade-list">{paperTrades.map(t=><div className="trade-row" key={t.id}><b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b><span>Entry: ${fmt(t.entry)}</span><span>{t.status==='OPEN'?'Open':`Exit: $${fmt(t.exit)}`}</span>{t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id)}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
+        <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
+      </div>
+    </main>
+  </div>;
+}
+export default App;+fmt(analysis.stop,price<1?5:4):'—'}</b></div><div><span>TAKE PROFIT (2R)</span><b>{analysis.target?'
+          <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>Selected liquid markets</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Prices update every 15 seconds · {filtered.length} assets shown</div></div>
+          <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USD</span><span>Starting balance: $10,000</span></div><div className="paper-stats"><div><span>OPEN TRADES</span><b>{paperTrades.filter(t=>t.status==='OPEN').length}</b></div><div><span>TOTAL TRADES</span><b>{paperTrades.length}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation and does not represent real execution or guaranteed results.</p></div>
+        </section>
+        {tab==='Paper Trading'&&<section className="panel journal-panel"><div className="panel-title"><div><h3>Paper trade journal</h3><p>Practice entries and review outcomes</p></div><button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button></div>{paperTrades.length===0?<div className="empty-state">No paper trades yet. A trade can only be opened when the setup assessment is LONG or SHORT.</div>:<div className="trade-list">{paperTrades.map(t=><div className="trade-row" key={t.id}><b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b><span>Entry: ${fmt(t.entry)}</span><span>{t.status==='OPEN'?'Open':`Exit: $${fmt(t.exit)}`}</span>{t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id)}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
+        <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
+      </div>
+    </main>
+  </div>;
+}
+export default App;+fmt(analysis.target,price<1?5:4):'—'}</b></div><div><span>RISK BUDGET (1%)</span><b>${fmt(analysis.riskUsd)}</b></div><div><span>EST. POSITION SIZE</span><b>{analysis.positionSize?fmt(analysis.positionSize,3)+' '+active[2]:'—'}</b></div><div><span>OPEN INTEREST</span><b>{futuresMetrics.openInterest?compact(+futuresMetrics.openInterest):'—'}</b></div><div><span>FUNDING RATE</span><b>{futuresMetrics.fundingRate!==null?fmt(+futuresMetrics.fundingRate*100,4)+'%':'—'}</b></div></div><p className="risk-note">Risk sizing uses a simulated $10,000 account and a 1% risk budget. Stop and target are volatility-based estimates, not guaranteed execution prices. Funding/open interest are informational; verify liquidity and slippage before any manual trade.</p><div className="signal-warning"><ShieldCheck size={15}/><span>Not a validated strategy. No win probability is claimed. If the setup says WAIT, do not force a trade.</span></div></section>}
         <section className="lower-grid">
           <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>Selected liquid markets</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Prices update every 15 seconds · {filtered.length} assets shown</div></div>
           <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USD</span><span>Starting balance: $10,000</span></div><div className="paper-stats"><div><span>OPEN TRADES</span><b>{paperTrades.filter(t=>t.status==='OPEN').length}</b></div><div><span>TOTAL TRADES</span><b>{paperTrades.length}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation and does not represent real execution or guaranteed results.</p></div>
