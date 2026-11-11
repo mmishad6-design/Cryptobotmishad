@@ -537,9 +537,6 @@ function App() {
         {tab==='Multi-Asset Scanner'&&<MultiAssetScanner market={market}/>}
         {tab==='Market Regime'&&<MarketRegimeScanner market={market}/>}
         {tab==='Market Structure'&&<MarketStructureScanner market={market}/ >}
-        {tab==='Multi-Asset Scanner'&&<MultiAssetScanner market={market}/>}
-        {tab==='Market Regime'&&<MarketRegimeScanner market={market}/>}
-        {tab==='Market Structure'&&<MarketStructureScanner market={market}/ >}
         {tab==='Futures Analysis'&&(
           <section className="panel risk-panel">
             <div className="panel-title">
