@@ -96,3 +96,19 @@
 .scanner-bias.short{color:#f06b79;background:rgba(240,107,121,.12)}
 .scanner-bias.wait{color:var(--muted);background:var(--panel2)}
 @media(max-width:700px){.multi-scanner-panel{padding:13px}.scanner-controls{align-items:stretch;gap:9px}.scanner-controls label{flex:1}.scanner-controls input{width:100%}.scanner-controls>.primary-btn{width:100%}.scanner-summary{align-items:flex-start;flex-direction:column}}
+
+
+/* Market regime detection workspace */
+.regime-panel{margin-top:16px;padding:20px}
+.regime-counts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}
+.regime-counts>div{display:flex;flex-direction:column;gap:8px;padding:13px;background:var(--panel2);border:1px solid var(--line);border-radius:7px;min-width:0}
+.regime-counts span{font-size:8px;color:var(--muted);letter-spacing:.05em}
+.regime-counts b{font:600 19px 'DM Mono';color:var(--text)}
+.regime-table{min-width:780px}
+.regime-table td:first-child{display:flex;flex-direction:column;gap:3px}
+.regime-table td:first-child small{font-size:9px;color:var(--muted)}
+.scanner-bias.mixed{color:#b8a7ff;background:rgba(150,125,255,.12)}
+.regime-guide{display:grid;gap:7px;margin:14px 0;padding:13px;border:1px solid var(--line);border-radius:7px;background:var(--panel2);font-size:9px;color:var(--muted);line-height:1.5}
+.regime-guide b{color:var(--text);font-size:10px;margin-bottom:2px}
+.regime-guide strong{color:var(--soft)}
+@media(max-width:700px){.regime-panel{padding:13px}.regime-counts{grid-template-columns:repeat(2,minmax(0,1fr))}}
