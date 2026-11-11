@@ -53,3 +53,21 @@
 .optimizer-table{min-width:900px}
 @media(max-width:900px){.optimizer-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.optimizer-controls .primary-btn{width:100%}}
 @media(max-width:520px){.optimizer-panel{padding:13px}.validation-split{grid-template-columns:1fr}.optimizer-controls{gap:8px}}
+
+
+/* Strategy Lab run archive and export controls */
+.optimizer-result-actions,.optimizer-history-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.optimizer-result-actions{margin:12px 0;color:var(--muted);font-size:10px}
+.optimizer-result-actions .secondary-btn{white-space:nowrap}
+.optimizer-history{margin-top:18px;border-top:1px solid var(--line);padding-top:16px}
+.optimizer-history-head{margin-bottom:10px}
+.optimizer-history-head h4{margin:0 0 4px;font-size:12px}
+.optimizer-history-head p{margin:0;color:var(--muted);font-size:10px}
+.optimizer-history-list{display:grid;gap:7px}
+.optimizer-history-item{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;text-align:left;padding:11px 12px;background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--text);cursor:pointer}
+.optimizer-history-item.active{border-color:var(--accent)}
+.optimizer-history-item>span{display:flex;flex-direction:column;gap:4px;min-width:0}
+.optimizer-history-item>span:last-child{text-align:right}
+.optimizer-history-item b{font-size:10px}
+.optimizer-history-item small{font-size:9px;color:var(--muted)}
+@media(max-width:520px){.optimizer-result-actions{align-items:flex-start;flex-direction:column}.optimizer-history-item{align-items:flex-start}.optimizer-history-item>span:last-child{text-align:right}}
