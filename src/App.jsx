@@ -465,6 +465,8 @@ function App() {
   const [futuresMetrics,setFuturesMetrics] = useState({openInterest:null,fundingRate:null,updated:null});
   const [feedStatus,setFeedStatus] = useState('CONNECTING');
   const [feedMeta,setFeedMeta] = useState({});
+  const [feedClock,setFeedClock] = useState(Date.now());
+  useEffect(()=>{const id=window.setInterval(()=>setFeedClock(Date.now()),5000);return ()=>window.clearInterval(id);},[]);
 
   // Push-based 24h ticker feed: Binance WebSocket, with REST snapshot/fallback.
   useEffect(()=>{
@@ -508,8 +510,8 @@ function App() {
   },[market,symbol]);
 
   const activeFeed = feedMeta[symbol] || {};
-  const priceAge = activeFeed.priceAt ? Date.now()-activeFeed.priceAt : Infinity;
-  const candleAge = activeFeed.candleAt ? Date.now()-activeFeed.candleAt : Infinity;
+  const priceAge = activeFeed.priceAt ? feedClock-activeFeed.priceAt : Infinity;
+  const candleAge = activeFeed.candleAt ? feedClock-activeFeed.candleAt : Infinity;
   const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0)).length>=50 };
   const analysis = useMemo(()=>{
     const closed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
