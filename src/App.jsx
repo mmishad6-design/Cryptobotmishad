@@ -38,7 +38,7 @@ function ChartPanel({symbol, interval, candles, loading}) {
 
 function App() {
   const [symbol,setSymbol] = useState('BTCUSDT');
-  const [interval,setInterval] = useState('15m');
+  const [interval,setTimeframe] = useState('15m');
   const [market,setMarket] = useState('Futures');
   const [theme,setTheme] = useState('dark');
   const [prices,setPrices] = useState({});
@@ -70,7 +70,7 @@ function App() {
         if(live){const next={}; data.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)) next[x.symbol]=x;});setPrices(next);setUpdated(new Date());}
       } catch { if(live) setNotice('Market feed temporarily unavailable. Retrying automatically.'); }
     };
-    load(); const id=setInterval(load,15000);
+    load(); const id=window.setInterval(load,15000);
     return ()=>{live=false;clearInterval(id);};
   },[]);
   useEffect(()=>{
@@ -135,7 +135,7 @@ function App() {
         <div className="section-row"><div><h2>Market workspace</h2><p>Live prices and multi-timeframe chart analysis</p></div><div className="market-toggle"><button className={market==='Spot'?'active':''} onClick={()=>setMarket('Spot')}>Spot</button><button className={market==='Futures'?'active':''} onClick={()=>setMarket('Futures')}>Futures</button></div></div>
         <section className="workspace-grid">
           <div className="panel chart-panel">
-            <div className="panel-head"><div className="asset-title"><div className="coin-icon">{active[2].slice(0,1)}</div><div><b>{active[1]} <span>{active[2]}/USDT</span></b><small>Binance · {market} market</small></div><ChevronDown size={14}/></div><div className="chart-tools">{intervals.map(i=><button key={i} className={interval===i?'chosen':''} onClick={()=>setInterval(i)}>{i}</button>)}<button className="tool-icon" onClick={()=>showNotice('Chart indicators are coming in the next build.')}><SlidersHorizontal size={15}/></button></div></div>
+            <div className="panel-head"><div className="asset-title"><div className="coin-icon">{active[2].slice(0,1)}</div><div><b>{active[1]} <span>{active[2]}/USDT</span></b><small>Binance · {market} market</small></div><ChevronDown size={14}/></div><div className="chart-tools">{intervals.map(i=><button key={i} className={interval===i?'chosen':''} onClick={()=>setTimeframe(i)}>{i}</button>)}<button className="tool-icon" onClick={()=>showNotice('Chart indicators are coming in the next build.')}><SlidersHorizontal size={15}/></button></div></div>
             <div className="price-line"><div><strong>{price?'$'+fmt(price,price<1?5:2):'—'}</strong><span className={change>=0?'positive':'negative'}>{price?(change>=0?'+':'')+fmt(change)+'%':'Waiting for feed'} <small>24h</small></span></div><div className="range"><span>24H HIGH</span><b>{ticker?'$'+fmt(ticker.highPrice):'—'}</b><span>24H LOW</span><b>{ticker?'$'+fmt(ticker.lowPrice):'—'}</b></div></div>
             <ChartPanel symbol={symbol} interval={interval} candles={candles} loading={loading}/>
             <div className="chart-foot"><span><span className="legend-dot"/> Candlesticks</span><span>Timeframe: {interval}</span><span>Source: Binance public API</span></div>
