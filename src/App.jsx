@@ -246,16 +246,4 @@ function App() {
     </main>
   </div>;
 }
-export default App;+fmt(prices[t.symbol]?.lastPrice||t.entry):'Exit: {t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(prices[t.symbol]?.lastPrice||t.entry),'MANUAL')}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
-        <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
-      </div>
-    </main>
-  </div>;
-}
-export default App;+fmt(t.exit)}</span><span>SL: ${fmt(t.stop)} · TP: ${fmt(t.target)}</span>{t.status==='OPEN'?<button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(prices[t.symbol]?.lastPrice||t.entry),'MANUAL')}>Close at market</button>:<b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)}</b>}</div>)}</div>}</section>}
-        <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
-      </div>
-    </main>
-  </div>;
-}
 export default App;
