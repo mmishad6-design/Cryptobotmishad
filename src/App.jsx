@@ -262,7 +262,7 @@ function MultiAssetScanner({market}) {
        let score=50+(c.close>m20?12:-12)+(m20>m50?15:-15)+(mom>.08?8:mom<-.08?-8:0),bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
        if(pos){let stop=pos.side==='LONG'?c.low<=pos.stop:c.high>=pos.stop,target=pos.side==='LONG'?c.high>=pos.target:c.low<=pos.target;if(stop)close(pos.stop);else if(target)close(pos.target);}
        if(!pos&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){let a=atr(i),entry0=d[i+1].open,entry=bias==='LONG'?entry0*(1+slipRate):entry0*(1-slipRate),dist=a*1.5,qty=Math.min(eq*.01/dist,eq*(market==='Futures'?3:1)/(entry*(1+feeRate)));if(Number.isFinite(qty)&&qty>0)pos={side:bias,entry,qty,stop:bias==='LONG'?entry-dist:entry+dist,target:bias==='LONG'?entry+a*3:entry-a*3,entryTime:d[i+1].time};}
-       let marked=eq+(pos?(c.close-pos.entry)*pos.qty*(pos.side==='LONG'?1:-1)-pos.entry*pos.qty*feeRate:0);peak=Math.max(peak,marked);dd=Math.max(dd,(peak-marked)/peak*100);
+       const positionActiveAtClose=pos&&pos.entryTime<=c.time;let marked=eq+(positionActiveAtClose?(c.close-pos.entry)*pos.qty*(pos.side==='LONG'?1:-1)-pos.entry*pos.qty*feeRate:0);peak=Math.max(peak,marked);dd=Math.max(dd,(peak-marked)/peak*100);
       }
       if(pos)close(d[d.length-1].close);
       const wins=trades.filter(x=>x>0),losses=trades.filter(x=>x<0),gp=wins.reduce((s,x)=>s+x,0),gl=Math.abs(losses.reduce((s,x)=>s+x,0)),last=d.length-1,m20=avg(last,20),m50=avg(last,50),mom=(d[last].close-d[last-1].close)/d[last-1].close*100,score=50+(d[last].close>m20?12:-12)+(m20>m50?15:-15)+(mom>.08?8:mom<-.08?-8:0);
