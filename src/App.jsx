@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
-import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
+import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Download, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, Trash2, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
 
 const WATCH = [
   ['BTCUSDT','Bitcoin','BTC'],['ETHUSDT','Ethereum','ETH'],['BNBUSDT','BNB','BNB'],['SOLUSDT','Solana','SOL'],
@@ -148,6 +148,9 @@ function BacktestPanel({symbol,market,defaultInterval}) {
 function StrategyOptimizer({symbol,market}) {
   const [tf,setTf]=useState('15m'),[days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02');
   const [running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
+  const [history,setHistory]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.strategyRuns')||'[]');}catch{return [];}});
+  useEffect(()=>{try{localStorage.setItem('cryptobot.strategyRuns',JSON.stringify(history.slice(0,10)));}catch{}},[history]);
+  const exportCsv=()=>{if(!result)return;const rows=[['Rank','Symbol','Market','Timeframe','Fast SMA','Slow SMA','Stop ATR','Target ATR','Train Return %','Train Max Drawdown %','Test Return %','Test Max Drawdown %','Test Win Rate %','Test Trades','Test Profit Factor'],...result.ranked.map((x,i)=>[i+1,result.symbol,result.market,result.tf,x.fast,x.slow,x.sl,x.tp,x.train.returnPct,x.train.maxDD,x.test.returnPct,x.test.maxDD,x.test.winRate,x.test.trades,x.test.profitFactor===null?'Infinity':x.test.profitFactor])];const csv=rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\\r\\n');const blob=new Blob(['\\ufeff'+csv],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='cryptobot-strategy-'+result.symbol+'-'+result.tf+'-'+Date.now()+'.csv';a.click();URL.revokeObjectURL(url);};
   const run=async()=>{
     setRunning(true);setError('');setResult(null);
     try{
@@ -198,7 +201,7 @@ function StrategyOptimizer({symbol,market}) {
         return score(b)-score(a);
       });
       const ranked=tested.slice(0,8).map(x=>({...x,test:simulate(x,split,data.length)}));
-      setResult({symbol,market,tf,days,candles:data.length,from:data[0].time,split:data[split].time,to:data[data.length-1].time,trainingCandles:split,testCandles:data.length-split,ranked,feeRate,slipRate});
+      const completed={id:Date.now(),createdAt:new Date().toISOString(),symbol,market,tf,days,candles:data.length,from:data[0].time,split:data[split].time,to:data[data.length-1].time,trainingCandles:split,testCandles:data.length-split,ranked,feeRate,slipRate};setResult(completed);setHistory(prev=>[completed,...prev.filter(x=>x.id!==completed.id)].slice(0,10));
     }catch(e){setError(e.message||'Optimization failed. Please retry.');}
     finally{setRunning(false);}
   };
@@ -218,7 +221,7 @@ function StrategyOptimizer({symbol,market}) {
       <div className="backtest-table-wrap"><table className="backtest-table optimizer-table"><thead><tr><th>Rank</th><th>Parameters (Fast / Slow)</th><th>SL × ATR</th><th>TP × ATR</th><th>Train return</th><th>Train DD</th><th>Test return</th><th>Test DD</th><th>Test win rate</th><th>Test trades</th><th>Test PF</th></tr></thead><tbody>{result.ranked.map((x,i)=><tr key={x.fast+'-'+x.slow+'-'+x.sl+'-'+x.tp}><td>{i+1}</td><td>SMA {x.fast}/{x.slow}</td><td>{x.sl}×</td><td>{x.tp}×</td><td className={x.train.returnPct>=0?'positive':'negative'}>{x.train.returnPct>=0?'+':''}{fmt(x.train.returnPct)}%</td><td>{fmt(x.train.maxDD)}%</td><td className={x.test.returnPct>=0?'positive':'negative'}>{x.test.returnPct>=0?'+':''}{fmt(x.test.returnPct)}%</td><td className='negative'>{fmt(x.test.maxDD)}%</td><td>{fmt(x.test.winRate)}%</td><td>{x.test.trades}</td><td>{x.test.profitFactor===null?'∞':fmt(x.test.profitFactor)}</td></tr>)}</tbody></table></div>
       <p className="backtest-assumption">Ranking uses training-period results only. The final 30% is evaluated after selecting candidates and is not used to rank them. Starting capital $10,000 per simulation; 1% risk budget per trade; Futures notional capped at 3×. Fees and slippage applied on entry/exit. Funding, liquidation, spread, partial fills and market impact are excluded. Up to 5,000 recent candles.</p>
     </>}
-    <div className="backtest-disclaimer"><ShieldCheck size={14}/> This is a parameter sensitivity experiment, not proof of a trading edge. Small samples and historical regimes can mislead; compare out-of-sample results and drawdown before drawing conclusions.</div>
+    {history.length>0&&<div className="optimizer-history"><div className="optimizer-history-head"><div><h4>Saved optimization runs</h4><p>Stored locally in this browser · latest 10 runs</p></div><button className="icon-btn" title="Clear saved runs" onClick={()=>{if(window.confirm('Clear all saved Strategy Lab runs from this browser?'))setHistory([]);}}><Trash2 size={15}/></button></div><div className="optimizer-history-list">{history.map(item=><button key={item.id} className={`optimizer-history-item ${result?.id===item.id?'active':''}`} onClick={()=>setResult(item)}><span><b>{item.symbol.replace('USDT','')}/USDT · {item.market}</b><small>{item.tf} · {new Date(item.createdAt).toLocaleString()}</small></span><span><b className={(item.ranked[0]?.test.returnPct??0)>=0?'positive':'negative'}>{item.ranked[0]?((item.ranked[0].test.returnPct>=0?'+':'')+fmt(item.ranked[0].test.returnPct)+'%'):'—'}</b><small>Top candidate OOS return</small></span></button>)}</div></div>}\n    <div className="backtest-disclaimer"><ShieldCheck size={14}/> This is a parameter sensitivity experiment, not proof of a trading edge. Small samples and historical regimes can mislead; compare out-of-sample results and drawdown before drawing conclusions.</div>
   </section>;
 }
 
