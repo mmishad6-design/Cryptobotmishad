@@ -849,7 +849,7 @@ function App() {
     const side=analysis.bias,leverage=market==='Futures'?3:1;
     const stop=side==='LONG'?price-analysis.atr*1.5:price+analysis.atr*1.5;
     const target=side==='LONG'?price+analysis.atr*3:price-analysis.atr*3;
-    const riskQuantity=analysis.riskUsd/Math.abs(price-stop),affordableQuantity=demoBalance/(price/leverage+price*0.0005);
+    const riskQuantity=analysis.positionSize,affordableQuantity=demoBalance/(price/leverage+price*0.0005);
     const quantity=Math.min(riskQuantity,affordableQuantity);
     if(!Number.isFinite(quantity)||quantity<=0){showNotice('Insufficient demo balance for this position.');return;}
     const margin=price*quantity/leverage,entryFee=price*quantity*0.0005;
