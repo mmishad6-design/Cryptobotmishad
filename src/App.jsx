@@ -447,7 +447,7 @@ function MarketStructureScanner({market}) {
  const up=hh.length>1&&ll.length>1&&hh.at(-1).price>hh.at(-2).price&&ll.at(-1).price>ll.at(-2).price,down=hh.length>1&&ll.length>1&&hh.at(-1).price<hh.at(-2).price&&ll.at(-1).price<ll.at(-2).price;
  const structure=up?'BULLISH STRUCTURE':down?'BEARISH STRUCTURE':'NEUTRAL',bull=!!ph&&last.close>ph.price,bear=!!pl&&last.close<pl.price,bos=bull?'BULLISH BOS':bear?'BEARISH BOS':'—',choch=bull&&down?'BULLISH CHoCH':bear&&up?'BEARISH CHoCH':'—';
  const sweep=ph&&last.high>ph.price&&last.close<ph.price?'HIGH-SIDE SWEEP':pl&&last.low<pl.price&&last.close>pl.price?'LOW-SIDE SWEEP':'NONE';
- const near=(xs)=>xs.filter(x=>x.i>=d.length-100).sort((x,y)=>Math.abs(x.price-last.close)-Math.abs(y.price-last.close))[0]?.price??null;
+ const near=(xs)=>xs.filter(x=>x.index>=d.length-100).sort((x,y)=>Math.abs(x.price-last.close)-Math.abs(y.price-last.close))[0]?.price??null;
  let fvg=null;for(let i=Math.max(2,d.length-80);i<d.length-1;i++){if(d[i].low>d[i-2].high)fvg={type:'BULLISH FVG',low:d[i-2].high,high:d[i].low};if(d[i].high<d[i-2].low)fvg={type:'BEARISH FVG',low:d[i].high,high:d[i-2].low};}
  let ob=null;if(bos!=='—'){for(let i=d.length-2;i>=Math.max(0,d.length-25);i--){if((bull&&d[i].close<d[i].open)||(bear&&d[i].close>d[i].open)){ob={type:bull?'BULLISH OB':'BEARISH OB',low:d[i].low,high:d[i].high};break;}}}
  return {symbol:a[0],ticker:a[2],name:a[1],price:last.close,structure,bos,choch,sweep,support:near(lows),resistance:near(highs),fvg,ob,candles:d.length,time:last.time};
