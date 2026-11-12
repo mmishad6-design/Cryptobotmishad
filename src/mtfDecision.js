@@ -104,10 +104,12 @@ export function evaluateMtfDecision({
     ...(Number.isFinite(feeRate) ? { feeRate } : {}),
     ...(Number.isFinite(slippageRate) ? { slippageRate } : {}),
   }) : null;
+  const marketAllowsSide = !(market === 'Spot' && candidateSide === 'SHORT');
   const riskOk = Boolean(riskPlan?.ok);
+  if (!marketAllowsSide) reasons.push('NO TRADE: Spot market is long-only; SHORT signals are disabled.');
   if (candidateSide && !riskOk) reasons.push('NO TRADE: risk validation failed — ' + (riskPlan?.reason || 'no valid risk plan') + '.');
 
-  const decision = score >= 85 && volumeOk && adxOk && structureOk && riskOk
+  const decision = score >= 85 && volumeOk && adxOk && structureOk && riskOk && marketAllowsSide
     ? candidateSide : 'NO TRADE';
   if (decision === 'NO TRADE') {
     if (score < 85) reasons.push('NO TRADE: confluence score ' + score + '/100 is below 85.');
@@ -120,7 +122,7 @@ export function evaluateMtfDecision({
     gates: {
       data: true, trend: longBias || shortBias, setup: sideSetup,
       timing: sideTiming, structure: sideStructure, volume: volumeOk,
-      adx: adxOk, flow: sideFlow, risk: riskOk,
+      adx: adxOk, flow: sideFlow, risk: riskOk, market: marketAllowsSide,
     },
     diagnostics: { takerRatio, depthRatio: Number.isFinite(depthRatio) ? depthRatio : null, flowMode },
   };
