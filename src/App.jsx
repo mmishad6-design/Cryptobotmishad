@@ -518,6 +518,33 @@ function PublicDerivativesPanel({symbol}) {
 }
 
 
+function validateSignalRiskPlan({side,entry,atr,market='Futures',accountBalance=null,feeRate=0.0005,slippageRate=0.0002,minNetRR=1.5}) {
+  const fail=reason=>({ok:false,reason,entry:Number(entry)||null,stop:null,target:null,quantity:0,riskUsd:0,netRR:null});
+  if(!['LONG','SHORT'].includes(side))return fail('No directional setup');
+  if(!Number.isFinite(entry)||entry<=0)return fail('Entry price is invalid');
+  if(!Number.isFinite(atr)||atr<=0)return fail('ATR is missing or invalid');
+  if(!Number.isFinite(feeRate)||feeRate<0||!Number.isFinite(slippageRate)||slippageRate<0)return fail('Trading cost assumptions are invalid');
+  const stopDistance=atr*1.5,rewardDistance=atr*3;
+  const stop=side==='LONG'?entry-stopDistance:entry+stopDistance;
+  const target=side==='LONG'?entry+rewardDistance:entry-rewardDistance;
+  if(!Number.isFinite(stop)||!Number.isFinite(target)||stop<=0||target<=0)return fail('Stop or target price is invalid');
+  if(side==='LONG'&&!(stop<entry&&target>entry))return fail('LONG stop/target placement is invalid');
+  if(side==='SHORT'&&!(stop>entry&&target<entry))return fail('SHORT stop/target placement is invalid');
+  const roundTripCost=entry*(feeRate*2+slippageRate*2);
+  const netReward=rewardDistance-roundTripCost,netRisk=stopDistance+roundTripCost;
+  const netRR=netRisk>0?netReward/netRisk:0;
+  if(!Number.isFinite(netRR)||netReward<=0||netRR<minNetRR)return {...fail('Cost-adjusted reward/risk is below '+minNetRR.toFixed(2)+'R'),stop,target,netRR};
+  let quantity=0,riskUsd=0;
+  if(Number.isFinite(accountBalance)&&accountBalance>0){
+    const riskBudget=accountBalance*0.01;
+    const maxNotional=accountBalance*(market==='Futures'?3:1);
+    quantity=Math.min(riskBudget/stopDistance,maxNotional/entry);
+    riskUsd=quantity*stopDistance;
+    if(!Number.isFinite(quantity)||quantity<=0||riskUsd<=0||riskUsd>riskBudget*1.000001)return {...fail('Position sizing failed the 1% risk budget'),stop,target,netRR};
+  }
+  return {ok:true,reason:'Risk plan valid',entry,stop,target,stopDistance,rewardDistance,roundTripCost,netRR,quantity,riskUsd,riskBudgetPct:1,maxNotional:accountBalance>0?accountBalance*(market==='Futures'?3:1):null};
+}
+
 function evaluateTimeframe(candles,timeframe) {
   const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
   if(rows.length<60) throw new Error('Not enough completed candles');
@@ -611,9 +638,13 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
         const adxRegimeOk=h4.adx>=15&&h1.adx>=15&&m15.adx>=18;
         if(!adxRegimeOk)reasons.push('NO TRADE কারণ: ট্রেন্ডের শক্তি (ADX) যথেষ্ট নয়। ৪ ঘণ্টা '+fmt(h4.adx,1)+', ১ ঘণ্টা '+fmt(h1.adx,1)+', ১৫ মিনিট '+fmt(m15.adx,1)+'; যথাক্রমে ১৫, ১৫ ও ১৮ বা বেশি প্রয়োজন।');
         const structureOk=(longBias&&longSetup&&longTiming&&longStructure&&flowLong)||(shortBias&&shortSetup&&shortTiming&&shortStructure&&flowShort);
-        if(score>=85&&volumeOk&&adxRegimeOk&&structureOk){decision=longBias?'LONG':'SHORT';reasons.push('সিগন্যালের সিদ্ধান্ত: '+(decision==='LONG'?'LONG — সব বাধ্যতামূলক শর্ত পূরণ হয়েছে এবং বড় টাইমফ্রেম ঊর্ধ্বমুখী।':'SHORT — সব বাধ্যতামূলক শর্ত পূরণ হয়েছে এবং বড় টাইমফ্রেম নিম্নমুখী।')+' কনফ্লুয়েন্স স্কোর '+score+'/100।');}
+        const candidateSide=longBias?'LONG':shortBias?'SHORT':null;
+        const riskPlan=candidateSide?validateSignalRiskPlan({side:candidateSide,entry:m5.close,atr:m5.atr,market}):null;
+        const riskGatePassed=Boolean(riskPlan?.ok);
+        if(candidateSide&&!riskGatePassed)reasons.push('NO TRADE কারণ: Risk Validation Gate ব্যর্থ — '+(riskPlan?.reason||'ঝুঁকি পরিকল্পনা যাচাই হয়নি')+'.');
+        if(score>=85&&volumeOk&&adxRegimeOk&&structureOk&&riskGatePassed){decision=candidateSide;reasons.push('সিগন্যালের সিদ্ধান্ত: '+(decision==='LONG'?'LONG — সব বাধ্যতামূলক শর্ত ও Risk Validation পূরণ হয়েছে।':'SHORT — সব বাধ্যতামূলক শর্ত ও Risk Validation পূরণ হয়েছে।')+' কনফ্লুয়েন্স স্কোর '+score+'/100; cost-adjusted R:R '+riskPlan.netRR.toFixed(2)+'R।');}
         else {if(score<85)reasons.push('NO TRADE কারণ: কনফ্লুয়েন্স স্কোর '+score+'/100; সিগন্যালের জন্য কমপক্ষে ৮৫/১০০ প্রয়োজন।');if(!structureOk)reasons.push('NO TRADE কারণ: দিক, সেটআপ, এন্ট্রি টাইমিং, স্ট্রাকচার ও অর্ডার-ফ্লোর সব বাধ্যতামূলক শর্ত একসঙ্গে পূরণ হয়নি।');}
-        setResult({symbol,market,decision,score,data,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio},reasons,updated:new Date(),status:'READY'});
+        setResult({symbol,market,decision,score,data,riskPlan,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio},reasons,updated:new Date(),status:'READY'});
         setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const entry=m5.close,atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,entryType:'COMPLETED_5M_CLOSE_REFERENCE',stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
       }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['NO TRADE: প্রয়োজনীয় টাইমফ্রেমের ক্যান্ডেল অথবা order-book ডেটা পাওয়া যায়নি। সংযোগ, Binance API বা rate limit সমস্যার কারণে বিশ্লেষণ সম্পূর্ণ হয়নি। বিস্তারিত: '+(e.message||'অজানা ডেটা সমস্যা')],updated:new Date(),status:'BLOCKED'});setError('বিশ্লেষণ সম্পন্ন হয়নি: '+(e.message||'Binance ডেটা পাওয়া যায়নি।'));}}
       finally{if(live)setLoading(false);}
@@ -817,9 +848,10 @@ function App() {
      if(!m5||!Number.isFinite(m5.atr)||m5.atr<=0)blockers.push('৫ মিনিটের ATR পাওয়া যায়নি');
      if(blockers.length)return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,ready:false,reason:'NO TRADE — '+blockers.join('। ')+'.'};
      const bias=mtfSignal.decision==='LONG'||mtfSignal.decision==='SHORT'?mtfSignal.decision:'WAIT';
-     const atr=m5.atr,entry=price,stop=bias==='LONG'?entry-atr*1.5:bias==='SHORT'?entry+atr*1.5:null,target=bias==='LONG'?entry+atr*3:bias==='SHORT'?entry-atr*3:null;
-     const riskUsd=demoBalance*0.01,positionSize=stop?riskUsd/Math.abs(entry-stop):0;
-     return {bias,score:mtfSignal.score??0,atr,stop,target,positionSize,riskUsd,ready:true,reason:(mtfSignal.reasons||['MTF analysis completed.']).join(' ')};
+     if(bias==='WAIT')return {bias,score:mtfSignal.score??0,atr:m5.atr,stop:null,target:null,positionSize:0,riskUsd:0,ready:true,reason:(mtfSignal.reasons||['NO TRADE']).join(' ')};
+     const riskPlan=validateSignalRiskPlan({side:bias,entry:price,atr:m5.atr,market,accountBalance:demoBalance});
+     if(!riskPlan.ok)return {bias:'WAIT',score:0,atr:m5.atr,stop:null,target:null,positionSize:0,riskUsd:0,ready:false,reason:'NO TRADE — Risk Validation Gate: '+riskPlan.reason+'.'};
+     return {bias,score:mtfSignal.score??0,atr:m5.atr,stop:riskPlan.stop,target:riskPlan.target,positionSize:riskPlan.quantity,riskUsd:riskPlan.riskUsd,netRR:riskPlan.netRR,ready:true,reason:(mtfSignal.reasons||['MTF analysis completed.']).join(' ')};
   },[mtfSignal,symbol,market,feedClock,price,demoBalance,signalHealth.hasTicker,signalHealth.priceFresh,signalHealth.reconciliationOk]);
   const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['Multi-Asset Scanner',Globe2],['Market Regime',Activity],['Market Structure',Layers3],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
