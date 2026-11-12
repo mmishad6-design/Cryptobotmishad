@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { validateSignalRiskPlan } from './riskValidation.js';
 import { evaluateMtfDecision } from './mtfDecision.js';
 import { applyAdverseSlippage, calculateTradePnl, resolveIntrabarExit } from './tradeExecution.js';
+import { selectClosedCandlesAsOf } from './historicalData.js';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Download, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, Trash2, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
 
@@ -145,21 +146,26 @@ function BacktestPanel({symbol,market,defaultInterval}) {
     for(let i=60;i<data.length-1;i++){
       const c=data[i],availableAt=c.time+intervalMs['5m']-1;
       const snap={};
-      for(const frame of frames){const rows=historyByFrame[frame];let lo=0,hi=rows.length;while(lo<hi){const mid=(lo+hi)>>1;if(rows[mid].closeTime<=availableAt)lo=mid+1;else hi=mid;}snap[frame]=evaluate(rows.slice(Math.max(0,lo-120),lo));}
+      for(const frame of frames){const rows=historyByFrame[frame];snap[frame]=evaluate(selectClosedCandlesAsOf(rows,availableAt,120));}
       const [h4,h1,m15,m5]=frames.map(f=>snap[f]);
       if(position){const intrabarExit=resolveIntrabarExit({side:position.side,high:c.high,low:c.low,stop:position.stop,target:position.target});if(intrabarExit)close(intrabarExit.price,intrabarExit.reason,c.time);}
       let bias='WAIT',riskPlan=null;
       if(h4&&h1&&m15&&m5){
-        const rawEntry=data[i+1].open;
-        const simulatedSide=h4.trend==='BEARISH'&&h1.trend==='BEARISH'?'SHORT':'LONG';
-        const simulatedEntry=applyAdverseSlippage(rawEntry,simulatedSide,'ENTRY',slipRate);
+        // Signal eligibility is decided using information available at the 5m close only.
+        // The next candle open is used later solely as the simulated execution fill.
         const evaluated=evaluateMtfDecision({
           data:snap, flow:{takerRatio:m5.takerRatio}, flowMode:'historical',
-          entry:simulatedEntry, market, accountBalance:equity, feeRate, slippageRate:slipRate,
+          entry:m5.close, market, accountBalance:equity, feeRate, slippageRate:slipRate,
           thresholds:{adx15:cfg.adx15,adxTrend:cfg.adxTrend,rsiLong:cfg.rsiLong,rsiShort:cfg.rsiShort,volume:cfg.volume,taker:cfg.taker},
         });
-        bias=evaluated.decision==='NO TRADE'?'WAIT':evaluated.decision;
-        riskPlan=evaluated.riskPlan;
+        if(evaluated.decision!=='NO TRADE'){
+          const simulatedEntry=applyAdverseSlippage(data[i+1].open,evaluated.decision,'ENTRY',slipRate);
+          riskPlan=validateSignalRiskPlan({
+            side:evaluated.decision, entry:simulatedEntry, atr:m5.atr, market,
+            accountBalance:equity, feeRate, slippageRate:slipRate,
+          });
+          bias=riskPlan?.ok?evaluated.decision:'WAIT';
+        }
       }
       if(bias!=='WAIT')signals++;
       if(!position&&bias!=='WAIT'&&riskPlan?.ok&&(market==='Futures'||bias==='LONG')){
