@@ -828,7 +828,7 @@ function App() {
     const side=analysis.bias,leverage=market==='Futures'?3:1,feeRate=0.0005,slippageRate=0.0002,entry=applyAdverseSlippage(price,side,'ENTRY',slippageRate);
     const stop=side==='LONG'?entry-analysis.atr*1.5:entry+analysis.atr*1.5;
     const target=side==='LONG'?entry+analysis.atr*3:entry-analysis.atr*3;
-    const riskQuantity=analysis.positionSize,affordableQuantity=demoBalance/(entry/leverage+entry*feeRate);
+    const paperRiskPlan=validateSignalRiskPlan({side,entry,atr:analysis.atr,market,accountBalance:demoBalance,feeRate,slippageRate});if(!paperRiskPlan.ok){showNotice('Paper trade blocked by cost-aware risk sizing: '+paperRiskPlan.reason);return;}const riskQuantity=Math.min(analysis.positionSize||paperRiskPlan.quantity,paperRiskPlan.quantity),affordableQuantity=demoBalance/(entry/leverage+entry*feeRate);
     const quantity=Math.min(riskQuantity,affordableQuantity);
     if(!Number.isFinite(quantity)||quantity<=0){showNotice('Insufficient demo balance for this position.');return;}
     const margin=entry*quantity/leverage,entryFee=entry*quantity*feeRate;
@@ -845,7 +845,7 @@ function App() {
     });
   },[prices,paperTrades]);
 
-  const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN').reduce((sum,t)=>{const live=Number(prices[t.symbol]?.lastPrice||t.entry),gross=(live-t.entry)*t.quantity*(t.side==='LONG'?1:-1),estimatedExitFee=live*t.quantity*Number(t.feeRate||0.0005);return sum+gross-Number(t.entryFee||0)-estimatedExitFee;},0);
+  const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN').reduce((sum,t)=>{const live=Number(prices[t.symbol]?.lastPrice||t.entry),exitFill=applyAdverseSlippage(live,t.side,'EXIT',Number(t.slippageRate??0.0002)),accounting=calculateTradePnl({side:t.side,entry:t.entry,exit:exitFill,quantity:t.quantity,feeRate:Number(t.feeRate??0.0005),entryFee:Number(t.entryFee||0)});return sum+(accounting.ok?accounting.netPnl:0);},0);
   return <div className={`app ${theme}`}>
     <aside className={`sidebar ${mobileNav?'open':''}`}>
       <div className="brand"><div className="brand-mark"><Activity size={19}/></div><div><b>Crypto<span>Bot</span></b><small>TRADING TERMINAL</small></div><button className="icon-btn mobile-close" onClick={()=>setMobileNav(false)}><X size={17}/></button></div>
