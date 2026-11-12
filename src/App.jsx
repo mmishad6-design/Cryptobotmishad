@@ -162,12 +162,13 @@ function BacktestPanel({symbol,market,defaultInterval}) {
       }
       if(bias!=='WAIT')signals++;
       if(!position&&bias!=='WAIT'&&riskPlan?.ok&&(market==='Futures'||bias==='LONG')){
-        const entry=riskPlan.entry,qty=riskPlan.quantity,atr=atrAt(i);
+        const entry=riskPlan.entry,qty=riskPlan.quantity;
         const margin=entry*qty/(market==='Futures'?3:1),entryFee=entry*qty*feeRate;
         if(Number.isFinite(qty)&&qty>0&&margin+entryFee<=equity)position={side:bias,entry,qty,stop:riskPlan.stop,target:riskPlan.target,entryFee,entryTime:data[i+1].time};
       }
       const positionActiveAtClose=position&&position.entryTime<=c.time;
-      const marked=equity+(positionActiveAtClose?((c.close-position.entry)*position.qty*(position.side==='LONG'?1:-1)-position.entryFee):0);peak=Math.max(peak,marked);maxDrawdown=Math.max(maxDrawdown,(peak-marked)/peak*100);
+      const estimatedExitCost=positionActiveAtClose?c.close*position.qty*(feeRate+slipRate):0;
+      const marked=equity+(positionActiveAtClose?((c.close-position.entry)*position.qty*(position.side==='LONG'?1:-1)-position.entryFee-estimatedExitCost):0);peak=Math.max(peak,marked);maxDrawdown=Math.max(maxDrawdown,(peak-marked)/peak*100);
     }
     if(position)close(data.at(-1).close,'END OF TEST',data.at(-1).time);
     const wins=trades.filter(t=>t.pnl>0),losses=trades.filter(t=>t.pnl<0),gp=wins.reduce((s,t)=>s+t.pnl,0),gl=Math.abs(losses.reduce((s,t)=>s+t.pnl,0));
