@@ -187,3 +187,13 @@ Before connecting Supabase or enabling workflows, verify the current free-tier q
 - Live MTF inputs are filtered to candles whose Binance close time is earlier than the current clock. Historical MTF inputs are selected as-of the 5M decision timestamp before the evaluator is called. Thus the pivot helper cannot inspect a candle beyond either caller's supplied closed-candle snapshot.
 - Added four deterministic tests covering insufficient right-side bars, equal-high/low invalidation, confirmation-index bounds, and invalid inputs.
 - Remaining nuance: the scanner intentionally removes the newest Binance kline before analysis as an additional conservative guard. This may delay its latest update by one candle, but does not introduce look-ahead.
+
+## Phase 7 — BOS / CHoCH event semantics
+
+- Replaced the prior level-state check (close currently above/below a swing) with a one-candle crossing event: previous completed close must be on/inside the level and the latest completed close must finish beyond it.
+- A close that remains beyond an already-broken level no longer emits another BOS/CHoCH on every refresh.
+- Structure direction is derived from the last two confirmed swing highs and lows. A bullish break against bearish structure is classified as bullish CHoCH; a bearish break against bullish structure is bearish CHoCH. A break aligned with structure, or with neutral structure, is BOS.
+- Wick-only excursions that close back inside the swing level are classified as liquidity sweeps, not BOS.
+- The shared event helper is now used by timeframe evaluation, live MTF signal frames, and the market-structure scanner. Historical MTF backtest therefore receives the same event semantics through timeframe evaluation.
+- Added six deterministic tests for bullish/bearish BOS/CHoCH, one-shot event behavior, wick-only sweep, and invalid inputs.
+- Limitations: this is a simplified swing-structure model. It does not model every discretionary market-structure convention, internal/external liquidity hierarchy, or volume-confirmed displacement. CHoCH is an early structural warning, not proof of a reversal.
