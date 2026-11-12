@@ -168,3 +168,12 @@ Before connecting Supabase or enabling workflows, verify the current free-tier q
 - Stop-first priority remains in force when both stop and target are touched in the same candle.
 - Added deterministic tests for LONG/SHORT stop gaps, normal stop touches, favorable target gaps, and same-candle collision behavior.
 - This improves one important execution assumption but does not model queue priority, spread, market impact, exchange trigger rules, or intrabar tick paths.
+
+## Phase 5 — Walk-forward boundary audit
+
+- The chronological 70/30 split remains fixed: candidate profiles are ranked only on the first 70%; the selected profile is frozen before the unseen 30% is evaluated.
+- The unseen 30% is now partitioned by a pure helper into three non-overlapping sequential OOS test ranges.
+- Each OOS range receives only the 60 immediately preceding 5M candles as indicator warm-up. The simulator's first decision occurs after those warm-up rows, so they are excluded from fold metrics.
+- The fold helper has deterministic tests proving contiguous, non-overlapping test ranges and prior-only warm-up.
+- Important terminology correction: these three folds reuse the same profile selected on the original training segment. They are sequential OOS slices, not a re-optimizing/expanding-window walk-forward test. The UI and report now state this explicitly rather than overstating validation strength.
+- Remaining audit item: inspect all indicator and market-structure functions for confirmation delays and ensure no pivot is used before its right-side candles have closed.
