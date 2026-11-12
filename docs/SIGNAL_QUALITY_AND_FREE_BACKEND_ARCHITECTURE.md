@@ -197,3 +197,5 @@ Before connecting Supabase or enabling workflows, verify the current free-tier q
 - The shared event helper is now used by timeframe evaluation, live MTF signal frames, and the market-structure scanner. Historical MTF backtest therefore receives the same event semantics through timeframe evaluation.
 - Added six deterministic tests for bullish/bearish BOS/CHoCH, one-shot event behavior, wick-only sweep, and invalid inputs.
 - Limitations: this is a simplified swing-structure model. It does not model every discretionary market-structure convention, internal/external liquidity hierarchy, or volume-confirmed displacement. CHoCH is an early structural warning, not proof of a reversal.
+
+- Additional guard: a pivot must have been confirmed before the event candle begins (`confirmationIndex < latestIndex`). The current candle cannot both confirm a swing and use that same swing as a prior break level.
