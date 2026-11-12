@@ -44,11 +44,13 @@ const calculateWilderIndicators = (rows, period=14) => {
   return {rsi,atr,adx,plusDI:latest.plus,minusDI:latest.minus};
 };
 const wilderATRAt = (rows,endIndex,period=14) => {
-  if(endIndex<period||!Array.isArray(rows))return null;
+  if(!Array.isArray(rows)||endIndex<period)return null;
+  const sample=rows.slice(Math.max(0,endIndex-119),endIndex+1);
+  if(sample.length<period+1)return null;
   let atr=0;
-  for(let i=1;i<=period;i++){const c=rows[i],p=rows[i-1];atr+=Math.max(c.high-c.low,Math.abs(c.high-p.close),Math.abs(c.low-p.close));}
+  for(let i=1;i<=period;i++){const c=sample[i],p=sample[i-1];atr+=Math.max(c.high-c.low,Math.abs(c.high-p.close),Math.abs(c.low-p.close));}
   atr/=period;
-  for(let i=period+1;i<=endIndex;i++){const c=rows[i],p=rows[i-1],tr=Math.max(c.high-c.low,Math.abs(c.high-p.close),Math.abs(c.low-p.close));atr=(atr*(period-1)+tr)/period;}
+  for(let i=period+1;i<sample.length;i++){const c=sample[i],p=sample[i-1],tr=Math.max(c.high-c.low,Math.abs(c.high-p.close),Math.abs(c.low-p.close));atr=(atr*(period-1)+tr)/period;}
   return atr;
 };
 const intervals = ['1m','5m','15m','1h','4h','1d'];
