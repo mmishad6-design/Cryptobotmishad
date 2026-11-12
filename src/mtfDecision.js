@@ -98,7 +98,7 @@ export function evaluateMtfDecision({
   }
   if (!adxOk) reasons.push('NO TRADE: ADX strength gate failed (4H/1H >= 15 and 15M >= 18).');
 
-  const riskEntry = Number.isFinite(entry) && entry > 0 ? entry : m5.close;
+  const riskEntry = entry === undefined || entry === null ? m5.close : entry;
   const riskPlan = candidateSide ? validateSignalRiskPlan({
     side: candidateSide, entry: riskEntry, atr: m5.atr, market, accountBalance,
     ...(Number.isFinite(feeRate) ? { feeRate } : {}),
