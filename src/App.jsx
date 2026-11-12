@@ -150,10 +150,11 @@ function BacktestPanel({symbol,market,defaultInterval}) {
       let bias='WAIT',riskPlan=null;
       if(h4&&h1&&m15&&m5){
         const rawEntry=data[i+1].open;
-        const simulatedEntry=bias==='SHORT'?rawEntry*(1-slipRate):rawEntry*(1+slipRate);
+        const simulatedSide=h4.trend==='BEARISH'&&h1.trend==='BEARISH'?'SHORT':'LONG';
+        const simulatedEntry=simulatedSide==='SHORT'?rawEntry*(1-slipRate):rawEntry*(1+slipRate);
         const evaluated=evaluateMtfDecision({
           data:snap, flow:{takerRatio:m5.takerRatio}, flowMode:'historical',
-          entry:simulatedEntry, market, feeRate, slippageRate:slipRate,
+          entry:simulatedEntry, market, accountBalance:equity, feeRate, slippageRate:slipRate,
           thresholds:{adx15:cfg.adx15,adxTrend:cfg.adxTrend,rsiLong:cfg.rsiLong,rsiShort:cfg.rsiShort,volume:cfg.volume,taker:cfg.taker},
         });
         bias=evaluated.decision==='NO TRADE'?'WAIT':evaluated.decision;
