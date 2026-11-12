@@ -69,6 +69,27 @@ test('blocks risk plan with invalid entry or ATR', () => {
   assert.equal(invalidAtr.decision,'NO TRADE');
 });
 
+test('historical position sizing respects equity risk budget and notional cap', () => {
+  const result=evaluateMtfDecision({
+    data:bullishData(),flow:{takerRatio:1.2},flowMode:'historical',entry:100,
+    market:'Futures',accountBalance:10000,feeRate:0.0005,slippageRate:0.0002,
+  });
+  assert.equal(result.decision,'LONG');
+  assert.ok(result.riskPlan.quantity>0);
+  assert.ok(result.riskPlan.riskUsd<=100);
+  assert.ok(result.riskPlan.quantity*result.riskPlan.entry<=30000);
+});
+
+test('training profile thresholds are applied by the shared engine', () => {
+  const data=bullishData();
+  data['15m'].rsi=51;
+  const strict=evaluateMtfDecision({
+    data,flow:{takerRatio:1.2,depthRatio:1.1},entry:100,
+    thresholds:{rsiLong:55},
+  });
+  assert.equal(strict.decision,'NO TRADE');
+});
+
 test('historical mode blocks missing or opposing taker proxy', () => {
   const result=evaluateMtfDecision({data:bullishData(),flow:{takerRatio:0.8},flowMode:'historical',entry:100});
   assert.equal(result.decision,'NO TRADE');
