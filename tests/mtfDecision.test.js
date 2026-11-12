@@ -43,6 +43,12 @@ test('SHORT requires bearish alignment and bearish taker flow', () => {
   assert.equal(result.decision,'SHORT');
 });
 
+test('Spot market never emits SHORT signals', () => {
+  const result=evaluateMtfDecision({data:bearishData(),flow:{takerRatio:0.8,depthRatio:0.9},entry:100,market:'Spot'});
+  assert.equal(result.decision,'NO TRADE');
+  assert.equal(result.gates.market,false);
+});
+
 test('blocks conflicting higher-timeframe trend', () => {
   const data=bullishData(); data['1h']=makeFrame('BEARISH');
   const result=evaluateMtfDecision({data,flow:{takerRatio:1.2,depthRatio:1.1},entry:100});
