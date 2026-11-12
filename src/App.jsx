@@ -964,12 +964,12 @@ function App() {
                 {paperTrades.map(t=>(
                   <div className="trade-row" key={t.id}>
                     <b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b>
-                    <span>Entry: \${fmt(t.entry)}</span>
+                    <span>Entry: ${fmt(t.entry)}</span>
                     <span>{t.status==='OPEN'?('Live: $'+fmt(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry)):('Exit: $'+fmt(t.exit))}</span>
-                    <span>SL: \${fmt(t.stop)} · TP: \${fmt(t.target)} · {t.market} · {t.leverage}x</span>
+                    <span>SL: ${fmt(t.stop)} · TP: ${fmt(t.target)} · {t.market} · {t.leverage}x</span>
                     {t.status==='OPEN'
                       ? <button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry),'MANUAL')}>Close at market</button>
-                      : <b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}\${fmt(t.pnl)} <small>{t.exitReason||'CLOSED'}</small></b>}
+                      : <b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)} <small>{t.exitReason||'CLOSED'}</small></b>}
                   </div>
                 ))}
               </div>
