@@ -126,3 +126,14 @@ Before connecting Supabase or enabling workflows, verify the current free-tier q
 - No exchange API keys or private trading permissions.
 - No paid data feeds, paid hosting, or hidden subscription dependency.
 - No claims of guaranteed accuracy, guaranteed profit, or validated win probability without adequate out-of-sample and live evidence.
+
+
+## Phase 2 — Shared live and historical decision engine
+
+- The directional decision rules now live in `src/mtfDecision.js` and are called by both the live MTF signal component and the MTF historical simulator.
+- Shared mandatory gates: 4H/1H trend alignment, 15M RSI/ADX setup, 5M RSI/ADX timing, BOS/CHoCH/sweep structure, 15M+5M volume, directional taker flow, cost-aware risk validation, and Spot long-only enforcement.
+- Training profiles pass frozen thresholds into the same decision function; the out-of-sample period does not tune those thresholds.
+- Historical simulation uses the candle-derived taker buy/sell ratio as a proxy. Historical top-20 order-book depth snapshots are not available from the current dataset, so historical mode does not pretend to validate the live depth gate. This limitation must remain visible in reports.
+- The simulator validates the next-candle simulated entry with the selected fee and slippage assumptions, then sizes quantity from the same 1% risk-budget validator used by the live dashboard.
+- Automated unit tests cover shared live/historical behavior, missing data, market direction, threshold gates, and risk sizing. Passing tests/build does not establish trading edge or profitability.
+- The Strategy Lab's separate SMA parameter experiment and the Multi-Asset Scanner remain distinct research tools; they are not yet the same MTF strategy.
