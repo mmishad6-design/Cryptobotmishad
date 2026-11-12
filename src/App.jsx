@@ -536,8 +536,9 @@ function evaluateTimeframe(candles,timeframe) {
   const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-61),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
   return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio};
 }
-function MultiTimeframeSignal({symbol,market}) {
+function MultiTimeframeSignal({symbol,market,onSignal}) {
   const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
+  useEffect(()=>{onSignal?.(result);},[result,onSignal]);
   useEffect(()=>{
     let live=true;
     const run=async()=>{
@@ -682,6 +683,7 @@ function App() {
   const [paperTrades,setPaperTrades] = useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.paperTrades')||'[]');}catch{return [];}});
   const closingIds=useRef(new Set());
   const [notice,setNotice] = useState('');
+  const [mtfSignal,setMtfSignal] = useState(null);
 
   const active = WATCH.find(c=>c[0]===symbol) || WATCH[0];
   const ticker = prices[symbol];
@@ -785,25 +787,22 @@ function App() {
   const reconciliationOk=restReferenceFresh&&Number.isFinite(activeFeed.divergencePct)&&activeFeed.divergencePct<=0.5;
   const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000&&closedCandleAge<=expectedCandleMs+30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
   const analysis = useMemo(()=>{
-     const closed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
+     const matches=mtfSignal?.symbol===symbol&&mtfSignal?.market===market;
+     const signalAge=mtfSignal?.updated instanceof Date?feedClock-mtfSignal.updated.getTime():Infinity;
+     const m5=mtfSignal?.data?.['5m'];
      const blockers=[];
-     if(!signalHealth.hasTicker)blockers.push('লাইভ প্রাইস পাওয়া যাচ্ছে না');
-     else if(!signalHealth.priceFresh)blockers.push('লাইভ প্রাইস ৩০ সেকেন্ডের বেশি পুরোনো');
-     if(!signalHealth.hasClosedCandles||closed.length<50)blockers.push('কমপক্ষে ৫০টি সম্পূর্ণ ক্যান্ডেল পাওয়া যায়নি');
-     if(!signalHealth.candleFresh)blockers.push('ক্যান্ডেল ডেটা পুরোনো বা সর্বশেষ ক্যান্ডেল আপডেট হয়নি');
-     if(!signalHealth.reconciliationOk)blockers.push('REST ও WebSocket প্রাইস ০.৫০% সীমার মধ্যে মেলেনি বা REST reference পাওয়া যায়নি');
-     if(signalHealth.candleGaps!==0)blockers.push('ক্যান্ডেল সিরিজে '+signalHealth.candleGaps+'টি gap আছে');
-     if(blockers.length)return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,reason:'NO TRADE — '+blockers.join('। ')+'. ডেটা ঠিক না হওয়া পর্যন্ত কোনো এন্ট্রি নেওয়া হবে না।'};
-     const data=closed.slice(-160),closes=data.map(c=>c.close),avg=n=>closes.slice(-n).reduce((a,b)=>a+b,0)/n;
-     const e20=avg(20),e50=avg(50),last=closes.at(-1),prev=closes.at(-2),momentum=(last-prev)/prev*100;
-     let score=50;if(last>e20)score+=12;else score-=12;if(e20>e50)score+=15;else score-=15;if(momentum>0.08)score+=8;else if(momentum<-.08)score-=8;
-     const bias=score>=65?'LONG':score<=35?'SHORT':'WAIT';
-     const ranges=data.slice(-15).map((c,i)=>{const p=data[data.length-16+i]?.close??c.close;return Math.max(c.high-c.low,Math.abs(c.high-p),Math.abs(c.low-p));});
-     const atr=ranges.reduce((a,b)=>a+b,0)/ranges.length,stop=bias==='LONG'?last-atr*1.5:bias==='SHORT'?last+atr*1.5:null,target=bias==='LONG'?last+atr*3:bias==='SHORT'?last-atr*3:null;
-     const riskUsd=demoBalance*0.01,positionSize=stop?riskUsd/Math.abs(last-stop):0;
-     const reason='বন্ধ ক্যান্ডেলের হিসাব: সর্বশেষ দাম EMA20-এর '+(last>e20?'ওপরে':'নিচে')+'; EMA20 '+(e20>e50?'EMA50-এর ওপরে':'EMA50-এর নিচে')+'। মোমেন্টাম '+fmt(momentum,3)+'%। '+(bias==='LONG'?'LONG কারণ: দাম EMA20-এর ওপরে, EMA20 EMA50-এর ওপরে এবং মোমেন্টাম +০.০৮%-এর বেশি; স্কোর '+score+'/100।':bias==='SHORT'?'SHORT কারণ: দাম EMA20-এর নিচে, EMA20 EMA50-এর নিচে এবং মোমেন্টাম −০.০৮%-এর কম; স্কোর '+score+'/100।':'NO TRADE কারণ: LONG-এর জন্য স্কোর কমপক্ষে ৬৫ এবং SHORT-এর জন্য সর্বোচ্চ ৩৫ দরকার। বর্তমান স্কোর '+score+'/100; শর্তগুলো একই দিকে একমত নয়।');
-     return {bias,score:Math.max(0,Math.min(100,score)),e20,e50,momentum,atr,stop,target,positionSize,riskUsd,reason};
-   },[candles,demoBalance,signalHealth.priceFresh,signalHealth.candleFresh,signalHealth.hasTicker,signalHealth.hasClosedCandles,signalHealth.reconciliationOk,signalHealth.candleGaps]);
+     if(!matches)blockers.push('বর্তমান কয়েন/মার্কেটের MTF বিশ্লেষণ এখনো পাওয়া যায়নি');
+     else if(mtfSignal.status!=='READY')blockers.push('MTF Signal Engine-এর ডেটা যাচাই সম্পূর্ণ হয়নি');
+     if(!Number.isFinite(signalAge)||signalAge>90000)blockers.push('MTF সিগন্যাল ৯০ সেকেন্ডের বেশি পুরোনো');
+     if(!signalHealth.hasTicker||!signalHealth.priceFresh)blockers.push('লাইভ ট্রেডিং প্রাইস অনুপস্থিত বা ৩০ সেকেন্ডের বেশি পুরোনো');
+     if(!signalHealth.reconciliationOk)blockers.push('লাইভ REST ও WebSocket প্রাইস যাচাই মেলেনি');
+     if(!m5||!Number.isFinite(m5.atr)||m5.atr<=0)blockers.push('৫ মিনিটের ATR পাওয়া যায়নি');
+     if(blockers.length)return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,ready:false,reason:'NO TRADE — '+blockers.join('। ')+'.'};
+     const bias=mtfSignal.decision==='LONG'||mtfSignal.decision==='SHORT'?mtfSignal.decision:'WAIT';
+     const atr=m5.atr,entry=price,stop=bias==='LONG'?entry-atr*1.5:bias==='SHORT'?entry+atr*1.5:null,target=bias==='LONG'?entry+atr*3:bias==='SHORT'?entry-atr*3:null;
+     const riskUsd=demoBalance*0.01,positionSize=stop?riskUsd/Math.abs(entry-stop):0;
+     return {bias,score:mtfSignal.score??0,atr,stop,target,positionSize,riskUsd,ready:true,reason:(mtfSignal.reasons||['MTF analysis completed.']).join(' ')};
+  },[mtfSignal,symbol,market,feedClock,price,demoBalance,signalHealth.hasTicker,signalHealth.priceFresh,signalHealth.reconciliationOk]);
   const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['Multi-Asset Scanner',Globe2],['Market Regime',Activity],['Market Structure',Layers3],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
   useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
@@ -816,7 +815,7 @@ function App() {
     closingIds.current.delete(id);
   };
   const addPaperTrade=()=>{
-    if(!signalHealth.priceFresh||!signalHealth.candleFresh||!signalHealth.hasTicker||!signalHealth.hasClosedCandles||!signalHealth.reconciliationOk||signalHealth.candleGaps!==0){showNotice('Paper trade blocked: market data integrity is not fully valid. Wait for fresh, reconciled data with continuous completed candles.');return;}
+    if(!analysis.ready||analysis.bias==='WAIT'||!analysis.atr){showNotice('Paper trade blocked: the current MTF signal or live price is not valid. Wait for a fresh, fully checked LONG/SHORT setup.');return;}
     if(!price){showNotice('Market price is not available yet.');return;}
     if(analysis.bias==='WAIT'||!analysis.atr){showNotice('No trade opened: setup is WAIT or ATR data is unavailable.');return;}
     if(paperTrades.some(t=>t.status==='OPEN'&&t.market!==market)){showNotice('Close open paper positions in the other market before opening a new one.');return;}
@@ -867,7 +866,7 @@ function App() {
             <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
           </div><p>Age is measured from browser receipt time. This check cannot guarantee zero exchange/network latency.</p>
         </section>
-        <MultiTimeframeSignal symbol={symbol} market={market}/>
+        <MultiTimeframeSignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
         <section className="market-strip">
           <div className="market-stat"><span>BTC / USDT</span><b>{prices.BTCUSDT?'$'+fmt(prices.BTCUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.BTCUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.BTCUSDT?fmt(prices.BTCUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat"><span>ETH / USDT</span><b>{prices.ETHUSDT?'$'+fmt(prices.ETHUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.ETHUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.ETHUSDT?fmt(prices.ETHUSDT.priceChangePercent)+'%':'—'}</em></div>
