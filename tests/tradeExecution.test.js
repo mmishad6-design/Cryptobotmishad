@@ -2,27 +2,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyAdverseSlippage, calculateTradePnl, resolveIntrabarExit } from '../src/tradeExecution.js';
 
+const approx = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-10, `expected ${actual} to be close to ${expected}`);
+
 test('slippage moves fills against both LONG and SHORT positions', () => {
-  assert.equal(applyAdverseSlippage(100, 'LONG', 'ENTRY', 0.001), 100.1);
-  assert.equal(applyAdverseSlippage(100, 'LONG', 'EXIT', 0.001), 99.9);
-  assert.equal(applyAdverseSlippage(100, 'SHORT', 'ENTRY', 0.001), 99.9);
-  assert.equal(applyAdverseSlippage(100, 'SHORT', 'EXIT', 0.001), 100.1);
+  approx(applyAdverseSlippage(100, 'LONG', 'ENTRY', 0.001), 100.1);
+  approx(applyAdverseSlippage(100, 'LONG', 'EXIT', 0.001), 99.9);
+  approx(applyAdverseSlippage(100, 'SHORT', 'ENTRY', 0.001), 99.9);
+  approx(applyAdverseSlippage(100, 'SHORT', 'EXIT', 0.001), 100.1);
 });
 
 test('trade accounting deducts entry and exit fees for LONG and SHORT', () => {
   const long = calculateTradePnl({ side:'LONG', entry:100, exit:110, quantity:2, feeRate:0.001 });
-  assert.equal(long.grossPnl, 20);
-  assert.equal(long.entryFee, 0.2);
-  assert.equal(long.exitFee, 0.22);
-  assert.equal(long.netPnl, 19.58);
+  approx(long.grossPnl, 20);
+  approx(long.entryFee, 0.2);
+  approx(long.exitFee, 0.22);
+  approx(long.netPnl, 19.58);
   const short = calculateTradePnl({ side:'SHORT', entry:100, exit:90, quantity:2, feeRate:0.001 });
-  assert.equal(short.netPnl, 19.62);
+  approx(short.netPnl, 19.62);
 });
 
 test('explicit entry fee is not charged twice', () => {
   const pnl = calculateTradePnl({ side:'LONG', entry:100, exit:100, quantity:1, feeRate:0.001, entryFee:0.2 });
-  assert.equal(pnl.entryFee, 0.2);
-  assert.equal(pnl.netPnl, -0.3);
+  approx(pnl.entryFee, 0.2);
+  approx(pnl.netPnl, -0.3);
 });
 
 test('same-candle stop and target collision resolves conservatively to stop first', () => {
