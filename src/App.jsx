@@ -148,7 +148,7 @@ function BacktestPanel({symbol,market,defaultInterval}) {
       const snap={};
       for(const frame of frames){const rows=historyByFrame[frame];snap[frame]=evaluate(selectClosedCandlesAsOf(rows,availableAt,120));}
       const [h4,h1,m15,m5]=frames.map(f=>snap[f]);
-      if(position){const intrabarExit=resolveIntrabarExit({side:position.side,high:c.high,low:c.low,stop:position.stop,target:position.target});if(intrabarExit)close(intrabarExit.price,intrabarExit.reason,c.time);}
+      if(position){const intrabarExit=resolveIntrabarExit({side:position.side,open:c.open,high:c.high,low:c.low,stop:position.stop,target:position.target});if(intrabarExit)close(intrabarExit.price,intrabarExit.reason,c.time);}
       let bias='WAIT',riskPlan=null;
       if(h4&&h1&&m15&&m5){
         // Signal eligibility is decided using information available at the 5m close only.
