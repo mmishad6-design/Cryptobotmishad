@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { validateSignalRiskPlan } from './riskValidation.js';
 import { evaluateMtfDecision } from './mtfDecision.js';
+import { calculateCandleFlow, calculateOrderBookDepth } from './flowMetrics.js';
 import { applyAdverseSlippage, calculateTradePnl, resolveIntrabarExit } from './tradeExecution.js';
 import { selectClosedCandlesAsOf } from './historicalData.js';
 import { createSequentialOosFolds } from './walkForward.js';
@@ -124,18 +125,18 @@ function BacktestPanel({symbol,market,defaultInterval}) {
   const [tf,setTf]=useState('5m'),[days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02'),[running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
   const frames=['4h','1h','15m','5m'];
   const intervalMs={'5m':300000,'15m':900000,'1h':3600000,'4h':14400000};
-  const toRows=(raw,ms)=>{const unique=new Map();for(const k of raw){if(Number(k[6])<Date.now())unique.set(Number(k[0]),{time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)});}return [...unique.values()].sort((a,b)=>a.time-b.time);};
+  const toRows=(raw,ms)=>{const unique=new Map();for(const k of raw){if(Number(k[6])<Date.now())unique.set(Number(k[0]),{time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:k[9]===undefined?null:Number(k[9])});}return [...unique.values()].sort((a,b)=>a.time-b.time);};
   const evaluate=(rows)=>{
     if(rows.length<60)return null;
     const d=rows.slice(-120),closes=d.map(x=>x.close);
     const ema=n=>{const a=2/(n+1);let v=closes.slice(0,n).reduce((s,x)=>s+x,0)/n;for(let i=n;i<closes.length;i++)v=closes[i]*a+v*(1-a);return v;};
     const e20=ema(20),e50=ema(50),last=d.at(-1),prev=d.at(-2);
     const indicators=calculateWilderIndicators(d,14),rsi=indicators.rsi,atr=indicators.atr,adx=indicators.adx;
-    const avgVol=d.slice(-21,-1).reduce((s,x)=>s+x.volume,0)/20,volumeRatio=avgVol?last.volume/avgVol:0;
+    const flowMetrics=calculateCandleFlow(d,20),volumeRatio=flowMetrics.volumeRatio;
     const pivots=findConfirmedSwingPivots(d,3);
     const {bos,choch,sweep}=evaluateStructureEvent(d,pivots);
-    const sell=Math.max(0,last.volume-last.takerBuy),takerRatio=sell>0?last.takerBuy/sell:null;
-    return {trend:last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED',rsi,volumeRatio,adx,atr,atrPct:last.close?atr/last.close*100:0,bos,choch,sweep,takerRatio,close:last.close};
+    const takerRatio=flowMetrics.takerRatio;
+    return {trend:last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED',rsi,volumeRatio,adx,atr,atrPct:last.close?atr/last.close*100:0,bos,choch,sweep,takerRatio,close:last.close,flowValid:flowMetrics.valid};
   };
   const simulate=(data,feeRate,slipRate,historyByFrame,cfg={adx15:18,adxTrend:15,rsiLong:50,rsiShort:50,volume:0.8,taker:1.05})=>{
     let equity=10000,peak=10000,maxDrawdown=0,position=null,trades=[],signals=0;
@@ -539,8 +540,8 @@ function evaluateTimeframe(candles,timeframe) {
   const closes=rows.map(x=>x.close);
   const ema=(period)=>{const alpha=2/(period+1);let value=closes.slice(0,period).reduce((a,b)=>a+b,0)/period;for(let i=period;i<closes.length;i++)value=closes[i]*alpha+value*(1-alpha);return value;};
   const indicators=calculateWilderIndicators(rows,14),rsi=indicators.rsi;
-  const last=rows.at(-1),previous=rows.at(-2),volumeAvg=rows.slice(-21,-1).reduce((a,b)=>a+b.volume,0)/20;
-  const volumeRatio=volumeAvg>0?last.volume/volumeAvg:0;
+  const last=rows.at(-1),previous=rows.at(-2),flowMetrics=calculateCandleFlow(rows,20);
+  const volumeRatio=flowMetrics.volumeRatio;
   const e20=ema(20),e50=ema(50);
   const trend=last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED';
   const momentum=(last.close-previous.close)/previous.close*100;
@@ -552,10 +553,9 @@ function evaluateTimeframe(candles,timeframe) {
    const pivots=findConfirmedSwingPivots(rows,3);
   const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L');
   const {structure,bos,choch,sweep}=evaluateStructureEvent(rows,pivots);
-  const takerSell=Math.max(0,last.volume-last.takerBuy);
-  const takerRatio=takerSell>0?last.takerBuy/takerSell:null;
+  const takerRatio=flowMetrics.takerRatio;
   const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-61),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
-  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio};
+  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio,flowValid:flowMetrics.valid};
 }
 function MultiTimeframeSignal({symbol,market,onSignal}) {
   const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
@@ -573,13 +573,14 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
           if(!response.ok)throw new Error(tf+' timeframe data unavailable ('+response.status+')');
           return [tf,evaluateTimeframe(await response.json(),tf)];
         }));
+        const depthRequestedAt=Date.now();
         const depthResponse=await fetch(base+(market==='Futures'?'/fapi/v1/depth':'/api/v3/depth')+'?symbol='+symbol+'&limit=20',{cache:'no-store'});
-        if(!depthResponse.ok)throw new Error('Order-book snapshot unavailable ('+depthResponse.status+')');
+        if(!depthResponse.ok)throw new Error('Order-book snapshot unavailable ('+depthResponse.status+').');
         const book=await depthResponse.json();
-        const bidValue=(book.bids||[]).reduce((sum,x)=>sum+Number(x[0])*Number(x[1]),0);
-        const askValue=(book.asks||[]).reduce((sum,x)=>sum+Number(x[0])*Number(x[1]),0);
-        const depthTotal=bidValue+askValue;
-        const depthRatio=askValue>0?bidValue/askValue:null;
+        const depthReceivedAt=Date.now();
+        const depth=calculateOrderBookDepth(book,{requestedAt:depthRequestedAt,receivedAt:depthReceivedAt,maxRequestMs:8000});
+        if(!depth.ok)throw new Error('Order-book snapshot rejected: '+depth.reason);
+        const {bidValue,askValue,depthRatio}=depth;
         let externalTakerRatio=null;
         if(market==='Futures'){
           try{
@@ -592,12 +593,13 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
         const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000};
         const staleFrames=frames.filter(tf=>!data[tf]||!Number.isFinite(data[tf].closeTime)||Date.now()-data[tf].closeTime>frameMs[tf]+120000||data[tf].candleGaps>0);
         if(staleFrames.length){setResult({symbol,market,decision:'NO TRADE',score:0,data,flow:null,reasons:['সিগন্যাল বন্ধ রাখা হয়েছে: '+staleFrames.map(x=>x.toUpperCase()).join(', ')+' টাইমফ্রেমের ক্যান্ডেল পুরোনো অথবা মাঝখানে ক্যান্ডেল অনুপস্থিত। Binance থেকে ধারাবাহিক সম্পূর্ণ ক্যান্ডেল না আসা পর্যন্ত অপেক্ষা করতে হবে।'],updated:new Date(),status:'BLOCKED'});return;}
-        const takerRatio=Number.isFinite(externalTakerRatio)&&externalTakerRatio>0?externalTakerRatio:m5.takerRatio;
+        // Use the last fully closed 5m kline for signal authorization; the Futures aggregate ratio may be an incomplete interval.
+        const takerRatio=m5.takerRatio;
         const evaluated=evaluateMtfDecision({
           data, flow:{takerRatio,depthRatio}, flowMode:'live', entry:m5.close, market,
         });
         const {decision,score,reasons,riskPlan,gates}=evaluated;
-        setResult({symbol,market,decision,score,data,riskPlan,gates,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio},reasons,updated:new Date(),status:'READY'});
+        setResult({symbol,market,decision,score,data,riskPlan,gates,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio,depthRequestMs:depth.requestDurationMs},reasons,updated:new Date(),status:'READY'});
         setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const referenceEntry=m5.close,entry=applyAdverseSlippage(referenceEntry,decision,'ENTRY',0.0002),atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,referenceEntry,entryType:'COMPLETED_5M_CLOSE_WITH_ESTIMATED_SLIPPAGE',feeRate:0.0005,slippageRate:0.0002,stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
       }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['NO TRADE: প্রয়োজনীয় টাইমফ্রেমের ক্যান্ডেল অথবা order-book ডেটা পাওয়া যায়নি। সংযোগ, Binance API বা rate limit সমস্যার কারণে বিশ্লেষণ সম্পূর্ণ হয়নি। বিস্তারিত: '+(e.message||'অজানা ডেটা সমস্যা')],updated:new Date(),status:'BLOCKED'});setError('বিশ্লেষণ সম্পন্ন হয়নি: '+(e.message||'Binance ডেটা পাওয়া যায়নি।'));}}
       finally{if(live)setLoading(false);}
@@ -658,7 +660,7 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
     <div className="panel-title"><div><h3>Advanced multi-timeframe signal engine</h3><p>4H trend → 1H alignment → 15M setup → 5M timing · ADX / BOS / sweep / flow · Refreshes every 60s</p></div><span className={'tiny-live '+(result?.status==='READY'?'':'data-status-warn')}>{loading?'SCANNING':result?.status||'WAITING'}</span></div>
     <div className="mtf-decision"><div><span>ENGINE DECISION</span><b className={result?.decision==='LONG'?'positive':result?.decision==='SHORT'?'negative':''}>{result?.decision||'NO TRADE'}</b></div><div><span>CONFLUENCE SCORE</span><b>{result?.score??0}/100</b></div><div><span>LAST CHECK</span><b>{result?.updated?result.updated.toLocaleTimeString():'—'}</b></div></div>
     <div className="mtf-table-wrap"><table className="mtf-table"><thead><tr><th>TIMEFRAME</th><th>TREND</th><th>ADX</th><th>STRUCTURE</th><th>BOS</th><th>CHoCH</th><th>SWEEP</th><th>RSI</th><th>VOL / AVG</th></tr></thead><tbody>{rows.map(([tf,x])=><tr key={tf}><td>{tf.toUpperCase()}</td><td className={x.trend==='BULLISH'?'positive':x.trend==='BEARISH'?'negative':''}>{x.trend}</td><td>{fmt(x.adx,1)}</td><td>{x.structure}</td><td>{x.bos==='NONE'?'—':x.bos}</td><td>{x.choch==='NONE'?'—':x.choch}</td><td>{x.sweep==='NONE'?'—':x.sweep}</td><td>{fmt(x.rsi,1)}</td><td>{fmt(x.volumeRatio,2)}x</td></tr>)}</tbody></table></div>
-    {result?.flow&&<div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TAKER BUY / SELL</span><b>{ratio(result.flow.takerRatio)}</b><small>{result.flow.externalTakerRatio!==null?'Binance Futures 5m ratio':'Completed 5m candle estimate'}</small></div><div className="public-data-card"><span>TOP-20 DEPTH BID / ASK</span><b>{ratio(result.flow.depthRatio)}</b><small>Snapshot imbalance · not full order flow</small></div><div className="public-data-card"><span>ADX REGIME</span><b>{result.data['4h'].adx>=15&&result.data['1h'].adx>=15?'TREND-ELIGIBLE':'WEAK / MIXED'}</b><small>ADX is a strength filter, not direction</small></div></div>}
+    {result?.flow&&<div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TAKER BUY / SELL</span><b>{ratio(result.flow.takerRatio)}</b><small>Completed 5m kline · taker-buy base volume</small></div><div className="public-data-card"><span>TOP-20 DEPTH BID / ASK</span><b>{ratio(result.flow.depthRatio)}</b><small>Top-20 snapshot · {result.flow.depthRequestMs}ms request · not full order flow</small></div><div className="public-data-card"><span>ADX REGIME</span><b>{result.data['4h'].adx>=15&&result.data['1h'].adx>=15?'TREND-ELIGIBLE':'WEAK / MIXED'}</b><small>ADX is a strength filter, not direction</small></div></div>}
     {error&&<p className="public-data-error">{error}</p>}
     <div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TRACKED LIVE SIGNALS</span><b>{tracked.length}</b><small>Saved in this browser</small></div><div className="public-data-card"><span>CLOSED SIGNAL WIN RATE</span><b>{closedTracked.length?fmt(trackedWins/closedTracked.length*100,1)+'%':'—'}</b><small>{closedTracked.length} resolved · {tracked.filter(x=>x.status==='REVIEW').length} need review</small></div><div className="public-data-card"><span>NET TRACKED RETURN</span><b className={trackedNet>=0?'positive':'negative'}>{closedTracked.length?(trackedNet>=0?'+':'')+fmt(trackedNet,2)+'%':'—'}</b><small>Equal-weight price return proxy</small></div></div>
     {tracked.length>0&&<div className="mtf-reasons">{tracked.slice(0,8).map(x=><span key={x.id}>{x.symbol} {x.side} · {x.status==='PENDING'?'PENDING '+x.bars+'/12':x.status==='REVIEW'?x.reason:x.reason+' · '+(x.netPct>=0?'+':'')+fmt(x.netPct,2)+'%'}</span>)}</div>}
