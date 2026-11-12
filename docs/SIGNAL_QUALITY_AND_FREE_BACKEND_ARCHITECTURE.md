@@ -159,3 +159,12 @@ Before connecting Supabase or enabling workflows, verify the current free-tier q
 - The next 5M candle open is used only after a direction has been decided, as the simulated execution fill with adverse slippage. The cost-aware risk plan is then revalidated at that simulated fill; if the actual fill makes the plan invalid, the trade is skipped.
 - Added deterministic tests for as-of candle selection, including the boundary where a candle closes exactly at the decision timestamp.
 - This removes a specific future-open leakage path. It does not by itself prove the entire backtest is free of all bias: higher-timeframe candle alignment, walk-forward boundaries, intrabar gap fills, and execution realism still require further review.
+
+## Phase 4 — Conservative stop-gap execution
+
+- Historical intrabar exit resolution now receives the candle open as well as high/low.
+- If price gaps through a stop, the simulated stop-market exit uses the worse candle open rather than the unavailable stop price; normal stop touches still use the stop level.
+- Favorable gaps through a take-profit limit remain conservatively capped at the target price.
+- Stop-first priority remains in force when both stop and target are touched in the same candle.
+- Added deterministic tests for LONG/SHORT stop gaps, normal stop touches, favorable target gaps, and same-candle collision behavior.
+- This improves one important execution assumption but does not model queue priority, spread, market impact, exchange trigger rules, or intrabar tick paths.
