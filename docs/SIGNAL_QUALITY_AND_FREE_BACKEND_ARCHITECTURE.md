@@ -150,3 +150,12 @@ Before connecting Supabase or enabling workflows, verify the current free-tier q
 - The simulator validates the next-candle simulated entry with the selected fee and slippage assumptions, then sizes quantity from the same 1% risk-budget validator used by the live dashboard.
 - Automated unit tests cover shared live/historical behavior, missing data, market direction, threshold gates, and risk sizing. Passing tests/build does not establish trading edge or profitability.
 - The Strategy Lab's separate SMA parameter experiment and the Multi-Asset Scanner remain distinct research tools; they are not yet the same MTF strategy.
+
+
+## Phase 3 — Historical look-ahead audit
+
+- Historical MTF candle snapshots are now selected by an explicit as-of timestamp: only rows whose candle close time is at or before the 5M decision candle close can enter the indicator snapshot.
+- Signal eligibility is evaluated using the completed 5M close and the already-closed 4H/1H/15M context. The simulator no longer supplies the following 5M candle's open to the signal decision/risk gate.
+- The next 5M candle open is used only after a direction has been decided, as the simulated execution fill with adverse slippage. The cost-aware risk plan is then revalidated at that simulated fill; if the actual fill makes the plan invalid, the trade is skipped.
+- Added deterministic tests for as-of candle selection, including the boundary where a candle closes exactly at the decision timestamp.
+- This removes a specific future-open leakage path. It does not by itself prove the entire backtest is free of all bias: higher-timeframe candle alignment, walk-forward boundaries, intrabar gap fills, and execution realism still require further review.
