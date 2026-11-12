@@ -6,11 +6,12 @@ const candles = (highs, lows = highs.map(x => x - 10)) =>
   highs.map((high, i) => ({ high, low: lows[i] }));
 
 test('pivot is not returned until all three right-side candles exist', () => {
-  const rows = candles([1, 2, 5, 3, 2, 1]);
-  assert.deepEqual(findConfirmedSwingPivots(rows.slice(0, 5), 3), []);
+  // Three candles on both sides are required for a radius-3 swing pivot.
+  const rows = candles([0, 1, 2, 5, 3, 2, 1]);
+  assert.deepEqual(findConfirmedSwingPivots(rows.slice(0, 6), 3), []);
   const pivots = findConfirmedSwingPivots(rows, 3);
   assert.deepEqual(pivots.filter(x => x.type === 'H'), [
-    { type: 'H', index: 2, confirmationIndex: 5, price: 5 },
+    { type: 'H', index: 3, confirmationIndex: 6, price: 5 },
   ]);
 });
 
