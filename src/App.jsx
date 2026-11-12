@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { validateSignalRiskPlan } from './riskValidation.js';
 import { evaluateMtfDecision } from './mtfDecision.js';
+import { applyAdverseSlippage, calculateTradePnl, resolveIntrabarExit } from './tradeExecution.js';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Download, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, Trash2, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
 
@@ -140,18 +141,18 @@ function BacktestPanel({symbol,market,defaultInterval}) {
   const simulate=(data,feeRate,slipRate,historyByFrame,cfg={adx15:18,adxTrend:15,rsiLong:50,rsiShort:50,volume:0.8,taker:1.05})=>{
     let equity=10000,peak=10000,maxDrawdown=0,position=null,trades=[],signals=0;
     const atrAt=i=>wilderATRAt(data,i,14);
-    const close=(rawExit,reason,time)=>{const p=position;if(!p)return;const exit=p.side==='LONG'?rawExit*(1-slipRate):rawExit*(1+slipRate),gross=(exit-p.entry)*p.qty*(p.side==='LONG'?1:-1),net=gross-p.entryFee-exit*p.qty*feeRate;equity+=net;trades.push({side:p.side,entry:p.entry,exit,qty:p.qty,pnl:net,reason,entryTime:p.entryTime,exitTime:time});position=null;};
+    const close=(rawExit,reason,time)=>{const p=position;if(!p)return;const exit=applyAdverseSlippage(rawExit,p.side,'EXIT',slipRate);const accounting=calculateTradePnl({side:p.side,entry:p.entry,exit,quantity:p.qty,feeRate,entryFee:p.entryFee});if(!accounting.ok)return;equity+=accounting.netPnl;trades.push({side:p.side,entry:p.entry,exit,qty:p.qty,pnl:accounting.netPnl,grossPnl:accounting.grossPnl,entryFee:accounting.entryFee,exitFee:accounting.exitFee,reason,entryTime:p.entryTime,exitTime:time});position=null;};
     for(let i=60;i<data.length-1;i++){
       const c=data[i],availableAt=c.time+intervalMs['5m']-1;
       const snap={};
       for(const frame of frames){const rows=historyByFrame[frame];let lo=0,hi=rows.length;while(lo<hi){const mid=(lo+hi)>>1;if(rows[mid].closeTime<=availableAt)lo=mid+1;else hi=mid;}snap[frame]=evaluate(rows.slice(Math.max(0,lo-120),lo));}
       const [h4,h1,m15,m5]=frames.map(f=>snap[f]);
-      if(position){const stopHit=position.side==='LONG'?c.low<=position.stop:c.high>=position.stop,targetHit=position.side==='LONG'?c.high>=position.target:c.low<=position.target;if(stopHit)close(position.stop,'STOP LOSS',c.time);else if(targetHit)close(position.target,'TAKE PROFIT',c.time);}
+      if(position){const intrabarExit=resolveIntrabarExit({side:position.side,high:c.high,low:c.low,stop:position.stop,target:position.target});if(intrabarExit)close(intrabarExit.price,intrabarExit.reason,c.time);}
       let bias='WAIT',riskPlan=null;
       if(h4&&h1&&m15&&m5){
         const rawEntry=data[i+1].open;
         const simulatedSide=h4.trend==='BEARISH'&&h1.trend==='BEARISH'?'SHORT':'LONG';
-        const simulatedEntry=simulatedSide==='SHORT'?rawEntry*(1-slipRate):rawEntry*(1+slipRate);
+        const simulatedEntry=applyAdverseSlippage(rawEntry,simulatedSide,'ENTRY',slipRate);
         const evaluated=evaluateMtfDecision({
           data:snap, flow:{takerRatio:m5.takerRatio}, flowMode:'historical',
           entry:simulatedEntry, market, accountBalance:equity, feeRate, slippageRate:slipRate,
@@ -600,7 +601,7 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
         });
         const {decision,score,reasons,riskPlan,gates}=evaluated;
         setResult({symbol,market,decision,score,data,riskPlan,gates,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio},reasons,updated:new Date(),status:'READY'});
-        setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const entry=m5.close,atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,entryType:'COMPLETED_5M_CLOSE_REFERENCE',stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
+        setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const referenceEntry=m5.close,entry=applyAdverseSlippage(referenceEntry,decision,'ENTRY',0.0002),atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,referenceEntry,entryType:'COMPLETED_5M_CLOSE_WITH_ESTIMATED_SLIPPAGE',feeRate:0.0005,slippageRate:0.0002,stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
       }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['NO TRADE: প্রয়োজনীয় টাইমফ্রেমের ক্যান্ডেল অথবা order-book ডেটা পাওয়া যায়নি। সংযোগ, Binance API বা rate limit সমস্যার কারণে বিশ্লেষণ সম্পূর্ণ হয়নি। বিস্তারিত: '+(e.message||'অজানা ডেটা সমস্যা')],updated:new Date(),status:'BLOCKED'});setError('বিশ্লেষণ সম্পন্ন হয়নি: '+(e.message||'Binance ডেটা পাওয়া যায়নি।'));}}
       finally{if(live)setLoading(false);}
     };
@@ -643,9 +644,9 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
             }
             if(review){changed=true;return {...sig,bars,status:'REVIEW',reason:'DATA GAP — outcome not scored',reviewedAt:Date.now()};}
             if(!exit){if(bars!==sig.bars){changed=true;return {...sig,bars};}return sig;}
-            const gross=(exit-sig.entry)/sig.entry*(sig.side==='LONG'?1:-1)*100,net=gross-0.14;
+            const exitFill=applyAdverseSlippage(exit,sig.side,'EXIT',Number(sig.slippageRate??0.0002));const accounting=calculateTradePnl({side:sig.side,entry:sig.entry,exit:exitFill,quantity:1,feeRate:Number(sig.feeRate??0.0005)});if(!accounting.ok){changed=true;return {...sig,bars,status:'REVIEW',reason:'INVALID TRADE ACCOUNTING — outcome not scored',reviewedAt:Date.now()};}const gross=accounting.grossPnl/sig.entry*100,net=accounting.netPnl/sig.entry*100;
             changed=true;
-            return {...sig,bars,exit,reason,grossPct:gross,netPct:net,status:'CLOSED',closedAt:Date.now()};
+            return {...sig,bars,exit:exitFill,rawExit:exit,reason,grossPct:gross,netPct:net,entryFeePct:accounting.entryFee/sig.entry*100,exitFeePct:accounting.exitFee/sig.entry*100,status:'CLOSED',closedAt:Date.now()};
           });
           if(changed){try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;}
           return prev;
@@ -813,10 +814,9 @@ function App() {
   useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
   const closeTrade=(id,exitPrice,reason='MANUAL')=>{
     const t=paperTrades.find(x=>x.id===id);if(!t||t.status!=='OPEN')return;
-    const gross=(exitPrice-t.entry)*t.quantity*(t.side==='LONG'?1:-1),exitFee=exitPrice*t.quantity*0.0005,entryFee=Number(t.entryFee||0);
-    const netPnl=gross-entryFee-exitFee;
-    setDemoBalance(b=>b+(t.margin||t.entry*t.quantity/(t.leverage||1))+gross-exitFee);
-    setPaperTrades(rows=>rows.map(x=>x.id===id?{...x,status:'CLOSED',exit:exitPrice,pnl:netPnl,grossPnl:gross,exitFee,closedAt:Date.now(),exitReason:reason}:x));
+    const feeRate=Number(t.feeRate??0.0005),slippageRate=Number(t.slippageRate??0.0002),filledExit=applyAdverseSlippage(exitPrice,t.side,'EXIT',slippageRate),accounting=calculateTradePnl({side:t.side,entry:t.entry,exit:filledExit,quantity:t.quantity,feeRate,entryFee:Number(t.entryFee||0)});if(!accounting.ok)return;
+    setDemoBalance(b=>b+(t.margin||t.entry*t.quantity/(t.leverage||1))+accounting.grossPnl-accounting.exitFee);
+    setPaperTrades(rows=>rows.map(x=>x.id===id?{...x,status:'CLOSED',exit:filledExit,rawExit:exitPrice,pnl:accounting.netPnl,grossPnl:accounting.grossPnl,entryFee:accounting.entryFee,exitFee:accounting.exitFee,closedAt:Date.now(),exitReason:reason}:x));
     closingIds.current.delete(id);
   };
   const addPaperTrade=()=>{
@@ -825,15 +825,15 @@ function App() {
     if(analysis.bias==='WAIT'||!analysis.atr){showNotice('No trade opened: setup is WAIT or ATR data is unavailable.');return;}
     if(paperTrades.some(t=>t.status==='OPEN'&&t.market!==market)){showNotice('Close open paper positions in the other market before opening a new one.');return;}
     if(market==='Spot'&&analysis.bias==='SHORT'){showNotice('Spot mode cannot open short positions. Switch to Futures or wait for a LONG setup.');return;}
-    const side=analysis.bias,leverage=market==='Futures'?3:1;
-    const stop=side==='LONG'?price-analysis.atr*1.5:price+analysis.atr*1.5;
-    const target=side==='LONG'?price+analysis.atr*3:price-analysis.atr*3;
-    const riskQuantity=analysis.positionSize,affordableQuantity=demoBalance/(price/leverage+price*0.0005);
+    const side=analysis.bias,leverage=market==='Futures'?3:1,feeRate=0.0005,slippageRate=0.0002,entry=applyAdverseSlippage(price,side,'ENTRY',slippageRate);
+    const stop=side==='LONG'?entry-analysis.atr*1.5:entry+analysis.atr*1.5;
+    const target=side==='LONG'?entry+analysis.atr*3:entry-analysis.atr*3;
+    const riskQuantity=analysis.positionSize,affordableQuantity=demoBalance/(entry/leverage+entry*feeRate);
     const quantity=Math.min(riskQuantity,affordableQuantity);
     if(!Number.isFinite(quantity)||quantity<=0){showNotice('Insufficient demo balance for this position.');return;}
-    const margin=price*quantity/leverage,entryFee=price*quantity*0.0005;
+    const margin=entry*quantity/leverage,entryFee=entry*quantity*feeRate;
     if(margin+entryFee>demoBalance){showNotice('Insufficient demo balance.');return;}
-    const trade={id:Date.now()+'_'+symbol,symbol,side,market,entry:price,quantity,stop,target,leverage,margin,entryFee,status:'OPEN',time:new Date().toLocaleString(),openedAt:Date.now(),feeRate:0.0005};
+    const trade={id:Date.now()+'_'+symbol,symbol,side,market,entry,referenceEntry:price,quantity,stop,target,leverage,margin,entryFee,status:'OPEN',time:new Date().toLocaleString(),openedAt:Date.now(),feeRate,slippageRate};
     setPaperTrades(rows=>[trade,...rows]);setDemoBalance(b=>b-margin-entryFee);
     showNotice('Paper '+side+' opened with '+leverage+'x leverage and a 1% risk cap.');
   };
