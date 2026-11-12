@@ -76,6 +76,19 @@ Required validation:
 
 Live/paper outcomes must be tracked separately from historical backtests. Do not combine them into one performance number.
 
+## 3A. Shared execution and outcome accounting
+
+The live signal tracker, paper trading, and historical MTF backtest use shared helpers in `src/tradeExecution.js` for adverse fill slippage, fee-aware P&L, and conservative same-candle exit resolution.
+
+- LONG entry and SHORT exit fills move upward by the configured slippage; SHORT entry and LONG exit fills move downward.
+- Net P&L includes both entry and exit fees. An already-charged entry fee can be supplied so it is not charged twice.
+- If both stop and target are touched in one historical candle, the stop is selected first because intrabar ordering is unknown.
+- Live signal tracking uses a completed 5M close as a reference, then applies an estimated adverse entry fill; it is not an exchange fill.
+- Paper trading uses the observed live price as a reference, estimates adverse entry/exit slippage, and remains browser-local.
+- Historical MTF backtesting enters at the next 5M candle open with adverse slippage. Its historical flow input remains a candle-derived proxy and does not include historical order-book snapshots.
+
+The current default assumptions (0.05% fee per side and 0.02% slippage per side) are configurable/provisional estimates, not verified fills or guaranteed Binance fee tiers. Actual fees vary by account, product, VIP level, promotions, and execution. Spread, market impact, partial fills, funding, and liquidation are not fully modelled. Therefore paper/backtest results remain approximations and must not be treated as expected live returns.
+
 ## 4. Free-tier, single-user backend proposal
 
 Target components:
