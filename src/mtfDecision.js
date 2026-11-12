@@ -10,6 +10,7 @@ export function evaluateMtfDecision({
   market = 'Futures',
   feeRate,
   slippageRate,
+  thresholds = {},
 } = {}) {
   const fail = reason => ({
     decision: 'NO TRADE', score: 0, reasons: [reason],
@@ -31,23 +32,29 @@ export function evaluateMtfDecision({
   const depthRatio = flow.depthRatio;
   const longBias = h4.trend === 'BULLISH' && h1.trend === 'BULLISH';
   const shortBias = h4.trend === 'BEARISH' && h1.trend === 'BEARISH';
-  const longSetup = longBias && m15.trend === 'BULLISH' && m15.rsi >= 50 && m15.rsi <= 72 && m15.adx >= 18;
-  const shortSetup = shortBias && m15.trend === 'BEARISH' && m15.rsi >= 28 && m15.rsi <= 50 && m15.adx >= 18;
+  const rsiLong = Number.isFinite(thresholds.rsiLong) ? thresholds.rsiLong : 50;
+  const rsiShort = Number.isFinite(thresholds.rsiShort) ? thresholds.rsiShort : 50;
+  const adx15Min = Number.isFinite(thresholds.adx15) ? thresholds.adx15 : 18;
+  const adxTrendMin = Number.isFinite(thresholds.adxTrend) ? thresholds.adxTrend : 15;
+  const volumeMin = Number.isFinite(thresholds.volume) ? thresholds.volume : 0.8;
+  const takerMin = Number.isFinite(thresholds.taker) ? thresholds.taker : 1.05;
+  const longSetup = longBias && m15.trend === 'BULLISH' && m15.rsi >= rsiLong && m15.rsi <= 72 && m15.adx >= adx15Min;
+  const shortSetup = shortBias && m15.trend === 'BEARISH' && m15.rsi >= 28 && m15.rsi <= rsiShort && m15.adx >= adx15Min;
   const longStructure = ['BULLISH'].includes(m15.bos) || m15.choch === 'BULLISH' || m15.sweep === 'LOW-SIDE' ||
     m5.bos === 'BULLISH' || m5.choch === 'BULLISH' || m5.sweep === 'LOW-SIDE';
   const shortStructure = m15.bos === 'BEARISH' || m15.choch === 'BEARISH' || m15.sweep === 'HIGH-SIDE' ||
     m5.bos === 'BEARISH' || m5.choch === 'BEARISH' || m5.sweep === 'HIGH-SIDE';
-  const longTiming = m5.trend === 'BULLISH' && m5.rsi > 50 && m5.adx >= 15;
-  const shortTiming = m5.trend === 'BEARISH' && m5.rsi < 50 && m5.adx >= 15;
-  const volumeOk = m15.volumeRatio >= 0.8 && m5.volumeRatio >= 0.8;
-  const takerLong = Number.isFinite(takerRatio) && takerRatio >= 1.05;
-  const takerShort = Number.isFinite(takerRatio) && takerRatio <= 0.95;
+  const longTiming = m5.trend === 'BULLISH' && m5.rsi > rsiLong && m5.adx >= adxTrendMin;
+  const shortTiming = m5.trend === 'BEARISH' && m5.rsi < rsiShort && m5.adx >= adxTrendMin;
+  const volumeOk = m15.volumeRatio >= volumeMin && m5.volumeRatio >= volumeMin;
+  const takerLong = Number.isFinite(takerRatio) && takerRatio >= takerMin;
+  const takerShort = Number.isFinite(takerRatio) && takerRatio <= 1 / takerMin;
   const depthLong = Number.isFinite(depthRatio) && depthRatio >= 1.02;
   const depthShort = Number.isFinite(depthRatio) && depthRatio <= 0.98;
   const flowLong = takerLong && (flowMode === 'historical' || depthLong);
   const flowShort = takerShort && (flowMode === 'historical' || depthShort);
   const flowOk = (longBias && flowLong) || (shortBias && flowShort);
-  const adxOk = h4.adx >= 15 && h1.adx >= 15 && m15.adx >= 18;
+  const adxOk = h4.adx >= adxTrendMin && h1.adx >= adxTrendMin && m15.adx >= adx15Min;
   const structureOk = (longBias && longSetup && longTiming && longStructure && flowLong) ||
     (shortBias && shortSetup && shortTiming && shortStructure && flowShort);
   const candidateSide = longBias ? 'LONG' : shortBias ? 'SHORT' : null;
