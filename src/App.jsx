@@ -5,6 +5,7 @@ import { applyAdverseSlippage, calculateTradePnl, resolveIntrabarExit } from './
 import { selectClosedCandlesAsOf } from './historicalData.js';
 import { createSequentialOosFolds } from './walkForward.js';
 import { findConfirmedSwingPivots } from './marketStructure.js';
+import { evaluateStructureEvent } from './structureEvents.js';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Download, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, Trash2, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
 
@@ -132,11 +133,7 @@ function BacktestPanel({symbol,market,defaultInterval}) {
     const indicators=calculateWilderIndicators(d,14),rsi=indicators.rsi,atr=indicators.atr,adx=indicators.adx;
     const avgVol=d.slice(-21,-1).reduce((s,x)=>s+x.volume,0)/20,volumeRatio=avgVol?last.volume/avgVol:0;
     const pivots=findConfirmedSwingPivots(d,3);
-    const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L'),lh=highs.at(-1),pl=lows.at(-1),ph=highs.at(-2),ll=lows.at(-2);
-    const bull=!!lh&&!!pl&&!!ph&&!!ll&&lh.price>ph.price&&pl.price>ll.price,bear=!!lh&&!!pl&&!!ph&&!!ll&&lh.price<ph.price&&pl.price<ll.price;
-    const bos=lh&&last.close>lh.price?'BULLISH':pl&&last.close<pl.price?'BEARISH':'NONE';
-    const choch=bos==='BULLISH'&&bear?'BULLISH':bos==='BEARISH'&&bull?'BEARISH':'NONE';
-    const sweep=lh&&last.high>lh.price&&last.close<lh.price?'HIGH-SIDE':pl&&last.low<pl.price&&last.close>pl.price?'LOW-SIDE':'NONE';
+    const {bos,choch,sweep}=evaluateStructureEvent(d,pivots);
     const sell=Math.max(0,last.volume-last.takerBuy),takerRatio=sell>0?last.takerBuy/sell:null;
     return {trend:last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED',rsi,volumeRatio,adx,atr,atrPct:last.close?atr/last.close*100:0,bos,choch,sweep,takerRatio,close:last.close};
   };
@@ -443,13 +440,13 @@ function MarketStructureScanner({market}) {
  try{for(let n=0;n<WATCH.length;n+=4){const batch=await Promise.all(WATCH.slice(n,n+4).map(async a=>{try{
  const r=await fetch(base+ep+'?symbol='+a[0]+'&interval='+tf+'&limit=300');if(!r.ok)throw Error('Binance HTTP '+r.status);const raw=await r.json();if(raw.length<80)throw Error('Insufficient candles');
  const d=raw.slice(0,-1).map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]})),piv=findConfirmedSwingPivots(d,3);
- const highs=piv.filter(x=>x.type==='H'),lows=piv.filter(x=>x.type==='L'),last=d.at(-1),ph=highs.at(-1),pl=lows.at(-1),hh=highs.slice(-3),ll=lows.slice(-3);
- const up=hh.length>1&&ll.length>1&&hh.at(-1).price>hh.at(-2).price&&ll.at(-1).price>ll.at(-2).price,down=hh.length>1&&ll.length>1&&hh.at(-1).price<hh.at(-2).price&&ll.at(-1).price<ll.at(-2).price;
- const structure=up?'BULLISH STRUCTURE':down?'BEARISH STRUCTURE':'NEUTRAL',bull=!!ph&&last.close>ph.price,bear=!!pl&&last.close<pl.price,bos=bull?'BULLISH BOS':bear?'BEARISH BOS':'—',choch=bull&&down?'BULLISH CHoCH':bear&&up?'BEARISH CHoCH':'—';
- const sweep=ph&&last.high>ph.price&&last.close<ph.price?'HIGH-SIDE SWEEP':pl&&last.low<pl.price&&last.close>pl.price?'LOW-SIDE SWEEP':'NONE';
+ const last=d.at(-1),events=evaluateStructureEvent(d,piv),structure=events.structure+' STRUCTURE';
+  const bos=events.bos==='NONE'?'—':events.bos+' '+(events.choch!=='NONE'?'CHoCH':'BOS');
+  const choch=events.choch==='NONE'?'—':events.choch+' CHoCH';
+  const sweep=events.sweep==='NONE'?'NONE':events.sweep+' SWEEP';
  const near=(xs)=>xs.filter(x=>x.index>=d.length-100).sort((x,y)=>Math.abs(x.price-last.close)-Math.abs(y.price-last.close))[0]?.price??null;
  let fvg=null;for(let i=Math.max(2,d.length-80);i<d.length-1;i++){if(d[i].low>d[i-2].high)fvg={type:'BULLISH FVG',low:d[i-2].high,high:d[i].low};if(d[i].high<d[i-2].low)fvg={type:'BEARISH FVG',low:d[i].high,high:d[i-2].low};}
- let ob=null;if(bos!=='—'){for(let i=d.length-2;i>=Math.max(0,d.length-25);i--){if((bull&&d[i].close<d[i].open)||(bear&&d[i].close>d[i].open)){ob={type:bull?'BULLISH OB':'BEARISH OB',low:d[i].low,high:d[i].high};break;}}}
+ let ob=null;if(events.bos!=='NONE'){const bullishBreak=events.bos==='BULLISH';for(let i=d.length-2;i>=Math.max(0,d.length-25);i--){if((bullishBreak&&d[i].close<d[i].open)||(!bullishBreak&&d[i].close>d[i].open)){ob={type:bullishBreak?'BULLISH OB':'BEARISH OB',low:d[i].low,high:d[i].high};break;}}}
  return {symbol:a[0],ticker:a[2],name:a[1],price:last.close,structure,bos,choch,sweep,support:near(lows),resistance:near(highs),fvg,ob,candles:d.length,time:last.time};
  }catch(e){return {symbol:a[0],ticker:a[2],error:e.message};}}));out.push(...batch);setRows([...out]);}if(!out.some(x=>x.symbol===selected&&!x.error))setSelected(out.find(x=>!x.error)?.symbol||'BTCUSDT');
  }catch(e){setError(e.message||'Scan failed');}finally{setBusy(false);}};
@@ -553,13 +550,7 @@ function evaluateTimeframe(candles,timeframe) {
   // Only pivots with three completed right-side candles are returned.
    const pivots=findConfirmedSwingPivots(rows,3);
   const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L');
-  const lastHigh=highs.at(-1),lastLow=lows.at(-1),priorHigh=highs.at(-2),priorLow=lows.at(-2);
-  const bullishStructure=!!lastHigh&&!!lastLow&&!!priorHigh&&!!priorLow&&lastHigh.price>priorHigh.price&&lastLow.price>priorLow.price;
-  const bearishStructure=!!lastHigh&&!!lastLow&&!!priorHigh&&!!priorLow&&lastHigh.price<priorHigh.price&&lastLow.price<priorLow.price;
-  const structure=bullishStructure?'BULLISH':bearishStructure?'BEARISH':'NEUTRAL';
-  const bos=lastHigh&&last.close>lastHigh.price?'BULLISH':lastLow&&last.close<lastLow.price?'BEARISH':'NONE';
-  const choch=bos==='BULLISH'&&bearishStructure?'BULLISH':bos==='BEARISH'&&bullishStructure?'BEARISH':'NONE';
-  const sweep=lastHigh&&last.high>lastHigh.price&&last.close<lastHigh.price?'HIGH-SIDE':lastLow&&last.low<lastLow.price&&last.close>lastLow.price?'LOW-SIDE':'NONE';
+  const {structure,bos,choch,sweep}=evaluateStructureEvent(rows,pivots);
   const takerSell=Math.max(0,last.volume-last.takerBuy);
   const takerRatio=takerSell>0?last.takerBuy/takerSell:null;
   const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-61),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
