@@ -8,6 +8,7 @@ export function evaluateMtfDecision({
   flowMode = 'live',
   entry,
   market = 'Futures',
+  accountBalance = null,
   feeRate,
   slippageRate,
   thresholds = {},
@@ -99,7 +100,7 @@ export function evaluateMtfDecision({
 
   const riskEntry = Number.isFinite(entry) && entry > 0 ? entry : m5.close;
   const riskPlan = candidateSide ? validateSignalRiskPlan({
-    side: candidateSide, entry: riskEntry, atr: m5.atr, market,
+    side: candidateSide, entry: riskEntry, atr: m5.atr, market, accountBalance,
     ...(Number.isFinite(feeRate) ? { feeRate } : {}),
     ...(Number.isFinite(slippageRate) ? { slippageRate } : {}),
   }) : null;
