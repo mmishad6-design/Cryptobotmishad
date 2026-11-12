@@ -36,19 +36,19 @@ test('break against bearish structure is classified as bullish CHoCH once', () =
 });
 
 test('break against bullish structure is classified as bearish CHoCH', () => {
-  const event = evaluateStructureEvent(rows(81, 79), bullishPivots);
+  const event = evaluateStructureEvent(rows(91, 89), bullishPivots);
   assert.equal(event.bos, 'BEARISH');
   assert.equal(event.choch, 'BEARISH');
 });
 
 test('wick-only sweep is not mislabeled as a close-confirmed BOS', () => {
-  const event = evaluateStructureEvent(rows(99, 99, 102, 98), bullishPivots);
+  const event = evaluateStructureEvent(rows(99, 99, 102, 98), bearishPivots);
   assert.equal(event.bos, 'NONE');
   assert.equal(event.sweep, 'HIGH-SIDE');
 });
 
 test('a break must cross from the other side; already-beyond closes do not repeat', () => {
-  const event = evaluateStructureEvent(rows(101, 103), bullishPivots);
+  const event = evaluateStructureEvent(rows(111, 113), bullishPivots);
   assert.equal(event.bos, 'NONE');
 });
 
