@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { validateSignalRiskPlan } from './riskValidation.js';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Download, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, Trash2, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
 
@@ -518,32 +519,7 @@ function PublicDerivativesPanel({symbol}) {
 }
 
 
-function validateSignalRiskPlan({side,entry,atr,market='Futures',accountBalance=null,feeRate=0.0005,slippageRate=0.0002,minNetRR=1.5}) {
-  const fail=reason=>({ok:false,reason,entry:Number(entry)||null,stop:null,target:null,quantity:0,riskUsd:0,netRR:null});
-  if(!['LONG','SHORT'].includes(side))return fail('No directional setup');
-  if(!Number.isFinite(entry)||entry<=0)return fail('Entry price is invalid');
-  if(!Number.isFinite(atr)||atr<=0)return fail('ATR is missing or invalid');
-  if(!Number.isFinite(feeRate)||feeRate<0||!Number.isFinite(slippageRate)||slippageRate<0)return fail('Trading cost assumptions are invalid');
-  const stopDistance=atr*1.5,rewardDistance=atr*3;
-  const stop=side==='LONG'?entry-stopDistance:entry+stopDistance;
-  const target=side==='LONG'?entry+rewardDistance:entry-rewardDistance;
-  if(!Number.isFinite(stop)||!Number.isFinite(target)||stop<=0||target<=0)return fail('Stop or target price is invalid');
-  if(side==='LONG'&&!(stop<entry&&target>entry))return fail('LONG stop/target placement is invalid');
-  if(side==='SHORT'&&!(stop>entry&&target<entry))return fail('SHORT stop/target placement is invalid');
-  const roundTripCost=entry*(feeRate*2+slippageRate*2);
-  const netReward=rewardDistance-roundTripCost,netRisk=stopDistance+roundTripCost;
-  const netRR=netRisk>0?netReward/netRisk:0;
-  if(!Number.isFinite(netRR)||netReward<=0||netRR<minNetRR)return {...fail('Cost-adjusted reward/risk is below '+minNetRR.toFixed(2)+'R'),stop,target,netRR};
-  let quantity=0,riskUsd=0;
-  if(Number.isFinite(accountBalance)&&accountBalance>0){
-    const riskBudget=accountBalance*0.01;
-    const maxNotional=accountBalance*(market==='Futures'?3:1);
-    quantity=Math.min(riskBudget/stopDistance,maxNotional/entry);
-    riskUsd=quantity*stopDistance;
-    if(!Number.isFinite(quantity)||quantity<=0||riskUsd<=0||riskUsd>riskBudget*1.000001)return {...fail('Position sizing failed the 1% risk budget'),stop,target,netRR};
-  }
-  return {ok:true,reason:'Risk plan valid',entry,stop,target,stopDistance,rewardDistance,roundTripCost,netRR,quantity,riskUsd,riskBudgetPct:1,maxNotional:accountBalance>0?accountBalance*(market==='Futures'?3:1):null};
-}
+
 
 function evaluateTimeframe(candles,timeframe) {
   const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
