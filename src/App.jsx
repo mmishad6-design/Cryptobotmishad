@@ -937,7 +937,7 @@ function App() {
               <div><span>STOP LOSS</span><b>{analysis.stop ? '$'+fmt(analysis.stop,price<1?5:4) : '—'}</b></div>
               <div><span>TAKE PROFIT (2R)</span><b>{analysis.target ? '$'+fmt(analysis.target,price<1?5:4) : '—'}</b></div>
               <div><span>RISK BUDGET (1%)</span><b>$ {fmt(analysis.riskUsd)}</b></div>
-              <div><span>EST. POSITION SIZE</span><b>{analysis.positionSize ? fmt(analysis.positionSize,3)+' '+active[2] : '—'}</b></div>
+              <div><span>EST. POSITION SIZE</span><b>{analysis.positionSize ? fmt(analysis.positionSize,3)+' '+active[2] : '—'}</b></div><div><span>SUGGESTED LEVERAGE</span><b>{suggestedLeverage? suggestedLeverage+'x':'—'}</b></div>
               <div><span>OPEN INTEREST</span><b>{futuresMetrics.openInterest ? compact(+futuresMetrics.openInterest) : '—'}</b></div>
               <div><span>FUNDING RATE</span><b>{futuresMetrics.fundingRate!==null ? fmt(+futuresMetrics.fundingRate*100,4)+'%' : '—'}</b></div>
             </div>
@@ -968,7 +968,7 @@ function App() {
                     <span>{t.status==='OPEN'?('Live: $'+fmt(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry)):('Exit: $'+fmt(t.exit))}</span>
                     <span>SL: ${fmt(t.stop)} · TP: ${fmt(t.target)} · {t.market} · {t.leverage}x</span>
                     {t.status==='OPEN'
-                      ? <button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry),'MANUAL')}>Close at market</button>
+                      ? <button className="secondary-btn" disabled={!Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0))} onClick={()=>closeTrade(t.id,Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)),'MANUAL')}>Close at market</button>
                       : <b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)} <small>{t.exitReason||'CLOSED'}</small></b>}
                   </div>
                 ))}
