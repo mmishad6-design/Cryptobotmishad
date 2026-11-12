@@ -440,7 +440,8 @@ function MarketStructureScanner({market}) {
  try{for(let n=0;n<WATCH.length;n+=4){const batch=await Promise.all(WATCH.slice(n,n+4).map(async a=>{try{
  const r=await fetch(base+ep+'?symbol='+a[0]+'&interval='+tf+'&limit=300');if(!r.ok)throw Error('Binance HTTP '+r.status);const raw=await r.json();if(raw.length<80)throw Error('Insufficient candles');
  const d=raw.slice(0,-1).map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]})),piv=findConfirmedSwingPivots(d,3);
- const last=d.at(-1),events=evaluateStructureEvent(d,piv),structure=events.structure+' STRUCTURE';
+ const highs=piv.filter(x=>x.type==='H'),lows=piv.filter(x=>x.type==='L');
+  const last=d.at(-1),events=evaluateStructureEvent(d,piv),structure=events.structure+' STRUCTURE';
   const bos=events.bos==='NONE'?'—':events.bos+' '+(events.choch!=='NONE'?'CHoCH':'BOS');
   const choch=events.choch==='NONE'?'—':events.choch+' CHoCH';
   const sweep=events.sweep==='NONE'?'NONE':events.sweep+' SWEEP';
