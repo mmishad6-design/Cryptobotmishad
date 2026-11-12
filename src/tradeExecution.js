@@ -26,13 +26,19 @@ export function calculateTradePnl({
   };
 }
 
-export function resolveIntrabarExit({ side, high, low, stop, target } = {}) {
+export function resolveIntrabarExit({ side, open = null, high, low, stop, target } = {}) {
   if (!['LONG', 'SHORT'].includes(side) ||
       ![high, low, stop, target].every(Number.isFinite) ||
+      (open !== null && (!Number.isFinite(open) || open <= 0)) ||
       high < low || stop <= 0 || target <= 0) return null;
   const stopHit = side === 'LONG' ? low <= stop : high >= stop;
   const targetHit = side === 'LONG' ? high >= target : low <= target;
-  if (stopHit) return { price: stop, reason: 'STOP LOSS' };
+  // Stop-market gaps fill at the worse candle open, not at the unreachable stop price.
+  if (stopHit) {
+    const gapThroughStop = open !== null && (side === 'LONG' ? open < stop : open > stop);
+    return { price: gapThroughStop ? open : stop, reason: 'STOP LOSS' };
+  }
+  // Conservative limit assumption: favorable gaps still fill at the target, not the better open.
   if (targetHit) return { price: target, reason: 'TAKE PROFIT' };
   return null;
 }
