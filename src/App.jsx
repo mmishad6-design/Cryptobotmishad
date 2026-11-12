@@ -953,53 +953,23 @@ function App() {
           <section className="panel journal-panel">
             <div className="panel-title">
               <div><h3>Paper trade journal</h3><p>Auto SL/TP while page is open · Saved in this browser</p></div>
-              <div className="paper-open-controls"><label>Margin / Fund (USDT)<input type="number" min="1" step="1" value={paperMarginInput} onChange={e=>setPaperMarginInput(e.target.value)}/></label><label>Leverage{market==='Spot'?<input value="1x · Spot" disabled/>:<select value={paperLeverageInput} onChange={e=>setPaperLeverageInput(e.target.value)}>{[1,2,3,4,5,6,7,8,9,10].map(x=><option key={x} value={x}>{x}x</option>)}</select>}</label><button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button></div>
+              <div className="paper-open-controls">
+                <label>Margin / Fund (USDT)<input type="number" min="1" step="1" value={paperMarginInput} onChange={e=>setPaperMarginInput(e.target.value)}/></label>
+                <label>Leverage{market==='Spot'?<input value="1x · Spot" disabled/>:<select value={paperLeverageInput} onChange={e=>setPaperLeverageInput(e.target.value)}>{[1,2,3,4,5,6,7,8,9,10].map(x=><option key={x} value={x}>{x}x</option>)}</select>}</label>
+                <button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button>
+              </div>
             </div>
             {paperTrades.length===0?<div className="empty-state">No paper trades yet. A trade can only be opened when the setup assessment is LONG or SHORT.</div>:(
               <div className="trade-list">
                 {paperTrades.map(t=>(
                   <div className="trade-row" key={t.id}>
                     <b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b>
-                    <span>Entry: ${fmt(t.entry)}</span>
-                    <span>{t.status==='OPEN'?('Live: 
-                    <span>SL: ${fmt(t.stop)} · TP: ${fmt(t.target)} · {t.market} · {t.leverage}x</span>
+                    <span>Entry: \${fmt(t.entry)}</span>
+                    <span>{t.status==='OPEN'?('Live: $'+fmt(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry)):('Exit: $'+fmt(t.exit))}</span>
+                    <span>SL: \${fmt(t.stop)} · TP: \${fmt(t.target)} · {t.market} · {t.leverage}x</span>
                     {t.status==='OPEN'
                       ? <button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry),'MANUAL')}>Close at market</button>
-                      : <b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)} <small>{t.exitReason||'CLOSED'}</small></b>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
-        <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
-      </div>
-    </main>
-  </div>;
-}
-export default App;
-+fmt(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry)):('Exit: 
-                    <span>SL: ${fmt(t.stop)} · TP: ${fmt(t.target)}</span>
-                    {t.status==='OPEN'
-                      ? <button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(prices[t.symbol]?.lastPrice||t.entry),'MANUAL')}>Close at market</button>
-                      : <b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)} <small>{t.exitReason||'CLOSED'}</small></b>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
-        <footer><span>CryptoBot <b>·</b> Designed by Mishad</span><span><ShieldCheck size={13}/> Analysis only · Manual execution · Not financial advice</span></footer>
-      </div>
-    </main>
-  </div>;
-}
-export default App;
-+fmt(t.exit))}</span>
-                    <span>SL: ${fmt(t.stop)} · TP: ${fmt(t.target)}</span>
-                    {t.status==='OPEN'
-                      ? <button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(prices[t.symbol]?.lastPrice||t.entry),'MANUAL')}>Close at market</button>
-                      : <b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)} <small>{t.exitReason||'CLOSED'}</small></b>}
+                      : <b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}\${fmt(t.pnl)} <small>{t.exitReason||'CLOSED'}</small></b>}
                   </div>
                 ))}
               </div>
