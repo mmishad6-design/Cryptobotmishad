@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { validateSignalRiskPlan } from './riskValidation.js';
+import { evaluateMtfDecision } from './mtfDecision.js';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Download, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, Trash2, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
 
@@ -146,24 +147,23 @@ function BacktestPanel({symbol,market,defaultInterval}) {
       for(const frame of frames){const rows=historyByFrame[frame];let lo=0,hi=rows.length;while(lo<hi){const mid=(lo+hi)>>1;if(rows[mid].closeTime<=availableAt)lo=mid+1;else hi=mid;}snap[frame]=evaluate(rows.slice(Math.max(0,lo-120),lo));}
       const [h4,h1,m15,m5]=frames.map(f=>snap[f]);
       if(position){const stopHit=position.side==='LONG'?c.low<=position.stop:c.high>=position.stop,targetHit=position.side==='LONG'?c.high>=position.target:c.low<=position.target;if(stopHit)close(position.stop,'STOP LOSS',c.time);else if(targetHit)close(position.target,'TAKE PROFIT',c.time);}
-      let bias='WAIT';
+      let bias='WAIT',riskPlan=null;
       if(h4&&h1&&m15&&m5){
-        const longBias=h4.trend==='BULLISH'&&h1.trend==='BULLISH',shortBias=h4.trend==='BEARISH'&&h1.trend==='BEARISH';
-        const longSetup=longBias&&m15.trend==='BULLISH'&&m15.rsi>=cfg.rsiLong&&m15.rsi<=72&&m15.adx>=cfg.adx15,shortSetup=shortBias&&m15.trend==='BEARISH'&&m15.rsi>=28&&m15.rsi<=cfg.rsiShort&&m15.adx>=cfg.adx15;
-        const longStructure=m15.bos==='BULLISH'||m15.choch==='BULLISH'||m15.sweep==='LOW-SIDE'||m5.bos==='BULLISH'||m5.choch==='BULLISH'||m5.sweep==='LOW-SIDE';
-        const shortStructure=m15.bos==='BEARISH'||m15.choch==='BEARISH'||m15.sweep==='HIGH-SIDE'||m5.bos==='BEARISH'||m5.choch==='BEARISH'||m5.sweep==='HIGH-SIDE';
-        const longTiming=m5.trend==='BULLISH'&&m5.rsi>cfg.rsiLong&&m5.adx>=cfg.adxTrend,shortTiming=m5.trend==='BEARISH'&&m5.rsi<cfg.rsiShort&&m5.adx>=cfg.adxTrend;
-        const volumeOk=m15.volumeRatio>=cfg.volume&&m5.volumeRatio>=cfg.volume;
-        const takerLong=m5.takerRatio!==null&&m5.takerRatio>=cfg.taker,takerShort=m5.takerRatio!==null&&m5.takerRatio<=1/cfg.taker;
-        const adxOk=h4.adx>=cfg.adxTrend&&h1.adx>=cfg.adxTrend&&m15.adx>=cfg.adx15;
-        if(longBias&&longSetup&&longTiming&&longStructure&&volumeOk&&adxOk&&takerLong)bias='LONG';
-        if(shortBias&&shortSetup&&shortTiming&&shortStructure&&volumeOk&&adxOk&&takerShort)bias='SHORT';
+        const rawEntry=data[i+1].open;
+        const simulatedEntry=bias==='SHORT'?rawEntry*(1-slipRate):rawEntry*(1+slipRate);
+        const evaluated=evaluateMtfDecision({
+          data:snap, flow:{takerRatio:m5.takerRatio}, flowMode:'historical',
+          entry:simulatedEntry, market, feeRate, slippageRate:slipRate,
+          thresholds:{adx15:cfg.adx15,adxTrend:cfg.adxTrend,rsiLong:cfg.rsiLong,rsiShort:cfg.rsiShort,volume:cfg.volume,taker:cfg.taker},
+        });
+        bias=evaluated.decision==='NO TRADE'?'WAIT':evaluated.decision;
+        riskPlan=evaluated.riskPlan;
       }
       if(bias!=='WAIT')signals++;
-      if(!position&&bias!=='WAIT'&&(market==='Futures'||bias==='LONG')){
-        const atr=atrAt(i),rawEntry=data[i+1].open,entry=bias==='LONG'?rawEntry*(1+slipRate):rawEntry*(1-slipRate),distance=atr*1.5;
-        const qty=Math.min(equity*.01/distance,(equity*(market==='Futures'?3:1))/(entry*(1+feeRate)));
-        if(Number.isFinite(qty)&&qty>0){const margin=entry*qty/(market==='Futures'?3:1),entryFee=entry*qty*feeRate;if(margin+entryFee<=equity)position={side:bias,entry,qty,stop:bias==='LONG'?entry-distance:entry+distance,target:bias==='LONG'?entry+atr*3:entry-atr*3,entryFee,entryTime:data[i+1].time};}
+      if(!position&&bias!=='WAIT'&&riskPlan?.ok&&(market==='Futures'||bias==='LONG')){
+        const entry=riskPlan.entry,qty=riskPlan.quantity,atr=atrAt(i);
+        const margin=entry*qty/(market==='Futures'?3:1),entryFee=entry*qty*feeRate;
+        if(Number.isFinite(qty)&&qty>0&&margin+entryFee<=equity)position={side:bias,entry,qty,stop:riskPlan.stop,target:riskPlan.target,entryFee,entryTime:data[i+1].time};
       }
       const positionActiveAtClose=position&&position.entryTime<=c.time;
       const marked=equity+(positionActiveAtClose?((c.close-position.entry)*position.qty*(position.side==='LONG'?1:-1)-position.entryFee):0);peak=Math.max(peak,marked);maxDrawdown=Math.max(maxDrawdown,(peak-marked)/peak*100);
@@ -593,34 +593,11 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
         const staleFrames=frames.filter(tf=>!data[tf]||!Number.isFinite(data[tf].closeTime)||Date.now()-data[tf].closeTime>frameMs[tf]+120000||data[tf].candleGaps>0);
         if(staleFrames.length){setResult({symbol,market,decision:'NO TRADE',score:0,data,flow:null,reasons:['সিগন্যাল বন্ধ রাখা হয়েছে: '+staleFrames.map(x=>x.toUpperCase()).join(', ')+' টাইমফ্রেমের ক্যান্ডেল পুরোনো অথবা মাঝখানে ক্যান্ডেল অনুপস্থিত। Binance থেকে ধারাবাহিক সম্পূর্ণ ক্যান্ডেল না আসা পর্যন্ত অপেক্ষা করতে হবে।'],updated:new Date(),status:'BLOCKED'});return;}
         const takerRatio=Number.isFinite(externalTakerRatio)&&externalTakerRatio>0?externalTakerRatio:m5.takerRatio;
-        const longBias=h4.trend==='BULLISH'&&h1.trend==='BULLISH';
-        const shortBias=h4.trend==='BEARISH'&&h1.trend==='BEARISH';
-        const longSetup=longBias&&m15.trend==='BULLISH'&&m15.rsi>=50&&m15.rsi<=72&&m15.adx>=18;
-        const shortSetup=shortBias&&m15.trend==='BEARISH'&&m15.rsi>=28&&m15.rsi<=50&&m15.adx>=18;
-        const longStructure=m15.bos==='BULLISH'||m15.choch==='BULLISH'||m15.sweep==='LOW-SIDE'||m5.bos==='BULLISH'||m5.choch==='BULLISH'||m5.sweep==='LOW-SIDE';
-        const shortStructure=m15.bos==='BEARISH'||m15.choch==='BEARISH'||m15.sweep==='HIGH-SIDE'||m5.bos==='BEARISH'||m5.choch==='BEARISH'||m5.sweep==='HIGH-SIDE';
-        const longTiming=m5.trend==='BULLISH'&&m5.rsi>50&&m5.adx>=15;
-        const shortTiming=m5.trend==='BEARISH'&&m5.rsi<50&&m5.adx>=15;
-        const volumeOk=m15.volumeRatio>=0.8&&m5.volumeRatio>=0.8;
-        const flowLong=takerRatio!==null&&takerRatio>=1.05&&depthRatio!==null&&depthRatio>=1.02;
-        const flowShort=takerRatio!==null&&takerRatio<=0.95&&depthRatio!==null&&depthRatio<=0.98;
-        let score=0,decision='NO TRADE',reasons=[];
-        if(longBias||shortBias){score+=25;reasons.push('৪ ঘণ্টা ও ১ ঘণ্টার ট্রেন্ড একই দিকে: '+(longBias?'ঊর্ধ্বমুখী — LONG-এর পক্ষে':'নিম্নমুখী — SHORT-এর পক্ষে')+'।');}else reasons.push('NO TRADE কারণ: ৪ ঘণ্টার ট্রেন্ড '+(h4.trend==='BULLISH'?'ঊর্ধ্বমুখী':h4.trend==='BEARISH'?'নিম্নমুখী':'মিশ্র')+' এবং ১ ঘণ্টার ট্রেন্ড '+(h1.trend==='BULLISH'?'ঊর্ধ্বমুখী':h1.trend==='BEARISH'?'নিম্নমুখী':'মিশ্র')+' — বড় টাইমফ্রেমে একই দিকের সমর্থন নেই।');
-        if(longSetup||shortSetup){score+=20;reasons.push('১৫ মিনিটের সেটআপ নিশ্চিত: ট্রেন্ড, RSI ('+fmt(m15.rsi,1)+') ও ADX ('+fmt(m15.adx,1)+') নির্ধারিত শর্ত পূরণ করেছে।');}else reasons.push('NO TRADE কারণ: ১৫ মিনিটের সেটআপ মেলেনি। বর্তমান ট্রেন্ড '+(m15.trend==='BULLISH'?'ঊর্ধ্বমুখী':m15.trend==='BEARISH'?'নিম্নমুখী':'মিশ্র')+', RSI '+fmt(m15.rsi,1)+', ADX '+fmt(m15.adx,1)+'। LONG-এর জন্য bullish trend, RSI ৫০–৭২ ও ADX কমপক্ষে ১৮; SHORT-এর জন্য bearish trend, RSI ২৮–৫০ ও ADX কমপক্ষে ১৮ দরকার।');
-        if(longTiming||shortTiming){score+=15;reasons.push('৫ মিনিটের এন্ট্রি টাইমিং সমর্থন করছে: ট্রেন্ড '+(longTiming?'ঊর্ধ্বমুখী':'নিম্নমুখী')+', RSI '+fmt(m5.rsi,1)+', ADX '+fmt(m5.adx,1)+'।');}else reasons.push('NO TRADE কারণ: ৫ মিনিটে এন্ট্রির সময় এখনো উপযুক্ত নয়। ট্রেন্ড '+(m5.trend==='BULLISH'?'ঊর্ধ্বমুখী':m5.trend==='BEARISH'?'নিম্নমুখী':'মিশ্র')+', RSI '+fmt(m5.rsi,1)+', ADX '+fmt(m5.adx,1)+'। দিক অনুযায়ী RSI ৫০-এর ওপরে/নিচে এবং ADX কমপক্ষে ১৫ দরকার।');
-        if((longBias&&longStructure)||(shortBias&&shortStructure)){score+=15;reasons.push('মার্কেট স্ট্রাকচার সমর্থন করছে: BOS / CHoCH / liquidity sweep বড় টাইমফ্রেমের দিকের সঙ্গে মিলেছে।');}else reasons.push('NO TRADE কারণ: ১৫ বা ৫ মিনিটে বড় ট্রেন্ডের দিক সমর্থন করে এমন BOS, CHoCH অথবা liquidity sweep পাওয়া যায়নি।');
-        if(volumeOk){score+=10;reasons.push('ভলিউম গ্রহণযোগ্য: ১৫ ও ৫ মিনিট—দুই টাইমফ্রেমেই ভলিউম গড়ের অন্তত ০.৮ গুণ।');}else reasons.push('NO TRADE কারণ: ভলিউম দুর্বল। ১৫ মিনিটের ভলিউম '+fmt(m15.volumeRatio,2)+'x এবং ৫ মিনিটের ভলিউম '+fmt(m5.volumeRatio,2)+'x; উভয়টিই গড়ের অন্তত ০.৮ গুণ হওয়া দরকার।');
-        if((longBias&&flowLong)||(shortBias&&flowShort)){score+=15;reasons.push('অর্ডার-ফ্লো সমর্থন করছে: taker buy/sell ratio '+fmt(takerRatio,2)+'x এবং top-20 bid/ask depth ratio '+fmt(depthRatio,2)+'x—দুটিই সিগন্যালের দিকের সঙ্গে মিলেছে।');}else reasons.push('NO TRADE কারণ: অর্ডার-ফ্লো নিশ্চিত নয় বা বিপরীত। Taker buy/sell '+fmt(takerRatio,2)+'x, bid/ask depth '+fmt(depthRatio,2)+'x। LONG-এর জন্য যথাক্রমে ≥১.০৫x ও ≥১.০২x; SHORT-এর জন্য ≤০.৯৫x ও ≤০.৯৮x দরকার।');
-        const adxRegimeOk=h4.adx>=15&&h1.adx>=15&&m15.adx>=18;
-        if(!adxRegimeOk)reasons.push('NO TRADE কারণ: ট্রেন্ডের শক্তি (ADX) যথেষ্ট নয়। ৪ ঘণ্টা '+fmt(h4.adx,1)+', ১ ঘণ্টা '+fmt(h1.adx,1)+', ১৫ মিনিট '+fmt(m15.adx,1)+'; যথাক্রমে ১৫, ১৫ ও ১৮ বা বেশি প্রয়োজন।');
-        const structureOk=(longBias&&longSetup&&longTiming&&longStructure&&flowLong)||(shortBias&&shortSetup&&shortTiming&&shortStructure&&flowShort);
-        const candidateSide=longBias?'LONG':shortBias?'SHORT':null;
-        const riskPlan=candidateSide?validateSignalRiskPlan({side:candidateSide,entry:m5.close,atr:m5.atr,market}):null;
-        const riskGatePassed=Boolean(riskPlan?.ok);
-        if(candidateSide&&!riskGatePassed)reasons.push('NO TRADE কারণ: Risk Validation Gate ব্যর্থ — '+(riskPlan?.reason||'ঝুঁকি পরিকল্পনা যাচাই হয়নি')+'.');
-        if(score>=85&&volumeOk&&adxRegimeOk&&structureOk&&riskGatePassed){decision=candidateSide;reasons.push('সিগন্যালের সিদ্ধান্ত: '+(decision==='LONG'?'LONG — সব বাধ্যতামূলক শর্ত ও Risk Validation পূরণ হয়েছে।':'SHORT — সব বাধ্যতামূলক শর্ত ও Risk Validation পূরণ হয়েছে।')+' কনফ্লুয়েন্স স্কোর '+score+'/100; cost-adjusted R:R '+riskPlan.netRR.toFixed(2)+'R।');}
-        else {if(score<85)reasons.push('NO TRADE কারণ: কনফ্লুয়েন্স স্কোর '+score+'/100; সিগন্যালের জন্য কমপক্ষে ৮৫/১০০ প্রয়োজন।');if(!structureOk)reasons.push('NO TRADE কারণ: দিক, সেটআপ, এন্ট্রি টাইমিং, স্ট্রাকচার ও অর্ডার-ফ্লোর সব বাধ্যতামূলক শর্ত একসঙ্গে পূরণ হয়নি।');}
-        setResult({symbol,market,decision,score,data,riskPlan,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio},reasons,updated:new Date(),status:'READY'});
+        const evaluated=evaluateMtfDecision({
+          data, flow:{takerRatio,depthRatio}, flowMode:'live', entry:m5.close, market,
+        });
+        const {decision,score,reasons,riskPlan,gates}=evaluated;
+        setResult({symbol,market,decision,score,data,riskPlan,gates,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio},reasons,updated:new Date(),status:'READY'});
         setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const entry=m5.close,atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,entryType:'COMPLETED_5M_CLOSE_REFERENCE',stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
       }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['NO TRADE: প্রয়োজনীয় টাইমফ্রেমের ক্যান্ডেল অথবা order-book ডেটা পাওয়া যায়নি। সংযোগ, Binance API বা rate limit সমস্যার কারণে বিশ্লেষণ সম্পূর্ণ হয়নি। বিস্তারিত: '+(e.message||'অজানা ডেটা সমস্যা')],updated:new Date(),status:'BLOCKED'});setError('বিশ্লেষণ সম্পন্ন হয়নি: '+(e.message||'Binance ডেটা পাওয়া যায়নি।'));}}
       finally{if(live)setLoading(false);}
