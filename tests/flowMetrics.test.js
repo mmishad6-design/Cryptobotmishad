@@ -6,7 +6,8 @@ const candles = (volumes = Array(21).fill(100), buy = 60) =>
   volumes.map((volume, index) => ({ volume, takerBuy: index === 20 ? buy : volume * 0.5 }));
 
 test('uses latest candle against exactly 20 prior volumes', () => {
-  const result = calculateCandleFlow(candles([...Array(20).fill(100), 150]));
+  const rows = candles([...Array(20).fill(100), 150], 90);
+  const result = calculateCandleFlow(rows);
   assert.equal(result.valid, true);
   assert.equal(result.volumeRatio, 1.5);
   assert.equal(result.takerRatio, 1.5);
