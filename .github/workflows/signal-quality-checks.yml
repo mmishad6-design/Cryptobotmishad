@@ -1,0 +1,27 @@
+name: Signal quality checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [quality-validation-architecture]
+  workflow_dispatch:
+
+concurrency:
+  group: signal-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - name: Run automated tests
+        run: npm test
+      - name: Verify production build
+        run: npm run build
