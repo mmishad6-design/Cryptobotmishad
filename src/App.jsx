@@ -4,6 +4,7 @@ import { evaluateMtfDecision } from './mtfDecision.js';
 import { applyAdverseSlippage, calculateTradePnl, resolveIntrabarExit } from './tradeExecution.js';
 import { selectClosedCandlesAsOf } from './historicalData.js';
 import { createSequentialOosFolds } from './walkForward.js';
+import { findConfirmedSwingPivots } from './marketStructure.js';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Download, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, Trash2, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
 
@@ -130,8 +131,7 @@ function BacktestPanel({symbol,market,defaultInterval}) {
     const e20=ema(20),e50=ema(50),last=d.at(-1),prev=d.at(-2);
     const indicators=calculateWilderIndicators(d,14),rsi=indicators.rsi,atr=indicators.atr,adx=indicators.adx;
     const avgVol=d.slice(-21,-1).reduce((s,x)=>s+x.volume,0)/20,volumeRatio=avgVol?last.volume/avgVol:0;
-    const pivots=[],rad=3;
-    for(let i=rad;i<d.length-rad-1;i++){let hi=true,lo=true;for(let j=i-rad;j<=i+rad;j++){if(j===i)continue;if(d[j].high>=d[i].high)hi=false;if(d[j].low<=d[i].low)lo=false;}if(hi)pivots.push({type:'H',price:d[i].high});if(lo)pivots.push({type:'L',price:d[i].low});}
+    const pivots=findConfirmedSwingPivots(d,3);
     const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L'),lh=highs.at(-1),pl=lows.at(-1),ph=highs.at(-2),ll=lows.at(-2);
     const bull=!!lh&&!!pl&&!!ph&&!!ll&&lh.price>ph.price&&pl.price>ll.price,bear=!!lh&&!!pl&&!!ph&&!!ll&&lh.price<ph.price&&pl.price<ll.price;
     const bos=lh&&last.close>lh.price?'BULLISH':pl&&last.close<pl.price?'BEARISH':'NONE';
@@ -442,8 +442,7 @@ function MarketStructureScanner({market}) {
  const scan=async()=>{setBusy(true);setError('');setRows([]);const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',ep=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines',out=[];
  try{for(let n=0;n<WATCH.length;n+=4){const batch=await Promise.all(WATCH.slice(n,n+4).map(async a=>{try{
  const r=await fetch(base+ep+'?symbol='+a[0]+'&interval='+tf+'&limit=300');if(!r.ok)throw Error('Binance HTTP '+r.status);const raw=await r.json();if(raw.length<80)throw Error('Insufficient candles');
- const d=raw.slice(0,-1).map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]})),piv=[],rad=3;
- for(let i=rad;i<d.length-rad;i++){let h=true,l=true;for(let j=i-rad;j<=i+rad;j++)if(j!==i){if(d[j].high>=d[i].high)h=false;if(d[j].low<=d[i].low)l=false;}if(h)piv.push({type:'H',i,price:d[i].high});if(l)piv.push({type:'L',i,price:d[i].low});}
+ const d=raw.slice(0,-1).map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]})),piv=findConfirmedSwingPivots(d,3);
  const highs=piv.filter(x=>x.type==='H'),lows=piv.filter(x=>x.type==='L'),last=d.at(-1),ph=highs.at(-1),pl=lows.at(-1),hh=highs.slice(-3),ll=lows.slice(-3);
  const up=hh.length>1&&ll.length>1&&hh.at(-1).price>hh.at(-2).price&&ll.at(-1).price>ll.at(-2).price,down=hh.length>1&&ll.length>1&&hh.at(-1).price<hh.at(-2).price&&ll.at(-1).price<ll.at(-2).price;
  const structure=up?'BULLISH STRUCTURE':down?'BEARISH STRUCTURE':'NEUTRAL',bull=!!ph&&last.close>ph.price,bear=!!pl&&last.close<pl.price,bos=bull?'BULLISH BOS':bear?'BEARISH BOS':'—',choch=bull&&down?'BULLISH CHoCH':bear&&up?'BEARISH CHoCH':'—';
@@ -551,14 +550,8 @@ function evaluateTimeframe(candles,timeframe) {
   const {atr,adx}=indicators;
   const atrPct=last.close?atr/last.close*100:0;
 
-  // Confirm swing pivots with three bars to the right; the newest completed candle is tested against prior pivots.
-  const pivots=[],radius=3;
-  for(let i=radius;i<rows.length-radius-1;i++){
-    let swingHigh=true,swingLow=true;
-    for(let j=i-radius;j<=i+radius;j++){if(j===i)continue;if(rows[j].high>=rows[i].high)swingHigh=false;if(rows[j].low<=rows[i].low)swingLow=false;}
-    if(swingHigh)pivots.push({type:'H',index:i,price:rows[i].high});
-    if(swingLow)pivots.push({type:'L',index:i,price:rows[i].low});
-  }
+  // Only pivots with three completed right-side candles are returned.
+   const pivots=findConfirmedSwingPivots(rows,3);
   const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L');
   const lastHigh=highs.at(-1),lastLow=lows.at(-1),priorHigh=highs.at(-2),priorLow=lows.at(-2);
   const bullishStructure=!!lastHigh&&!!lastLow&&!!priorHigh&&!!priorLow&&lastHigh.price>priorHigh.price&&lastLow.price>priorLow.price;
