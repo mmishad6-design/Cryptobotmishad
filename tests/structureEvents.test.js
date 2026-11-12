@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { evaluateStructureEvent } from '../src/structureEvents.js';
 
 const rows = (previousClose, close, high = Math.max(previousClose, close), low = Math.min(previousClose, close)) => [
+  ...Array.from({ length: 6 }, (_, i) => ({ open: 95, high: 97 + i, low: 90 - i, close: 95 })),
   { open: previousClose, high: previousClose + 1, low: previousClose - 1, close: previousClose },
   { open: previousClose, high, low, close },
 ];
