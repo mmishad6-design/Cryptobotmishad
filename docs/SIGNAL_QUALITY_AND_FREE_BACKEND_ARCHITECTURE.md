@@ -177,3 +177,13 @@ Before connecting Supabase or enabling workflows, verify the current free-tier q
 - The fold helper has deterministic tests proving contiguous, non-overlapping test ranges and prior-only warm-up.
 - Important terminology correction: these three folds reuse the same profile selected on the original training segment. They are sequential OOS slices, not a re-optimizing/expanding-window walk-forward test. The UI and report now state this explicitly rather than overstating validation strength.
 - Remaining audit item: inspect all indicator and market-structure functions for confirmation delays and ensure no pivot is used before its right-side candles have closed.
+
+## Phase 6 — Swing-pivot confirmation audit
+
+- Audited the MTF live evaluator, historical MTF evaluator, and multi-asset market-structure scanner.
+- Extracted one shared `findConfirmedSwingPivots` helper. A swing at index `i` is returned only when all configured right-side candles exist in the supplied completed-candle array; its explicit confirmation index is `i + radius`.
+- Equal highs/lows invalidate a pivot, avoiding ambiguous duplicate swing levels.
+- Replaced the three independent pivot loops with the shared helper so live signals, historical validation, and the scanner use the same confirmation rule.
+- Live MTF inputs are filtered to candles whose Binance close time is earlier than the current clock. Historical MTF inputs are selected as-of the 5M decision timestamp before the evaluator is called. Thus the pivot helper cannot inspect a candle beyond either caller's supplied closed-candle snapshot.
+- Added four deterministic tests covering insufficient right-side bars, equal-high/low invalidation, confirmation-index bounds, and invalid inputs.
+- Remaining nuance: the scanner intentionally removes the newest Binance kline before analysis as an additional conservative guard. This may delay its latest update by one candle, but does not introduce look-ahead.
