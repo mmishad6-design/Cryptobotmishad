@@ -9,6 +9,48 @@ const WATCH = [
 ];
 const fmt = (n, digits=2) => Number.isFinite(Number(n)) ? Number(n).toLocaleString('en-US',{maximumFractionDigits:digits,minimumFractionDigits:digits}) : '—';
 const compact = n => n >= 1e9 ? (n/1e9).toFixed(2)+'B' : n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? (n/1e3).toFixed(2)+'K' : fmt(n);
+const calculateWilderIndicators = (rows, period=14) => {
+  if(!Array.isArray(rows)||rows.length<period+1)return {rsi:null,atr:null,adx:null,plusDI:null,minusDI:null};
+  const tr=[],plusDM=[],minusDM=[],gains=[],losses=[];
+  for(let i=1;i<rows.length;i++){
+    const cur=rows[i],prev=rows[i-1],up=cur.high-prev.high,down=prev.low-cur.low,change=cur.close-prev.close;
+    tr.push(Math.max(cur.high-cur.low,Math.abs(cur.high-prev.close),Math.abs(cur.low-prev.close)));
+    plusDM.push(up>down&&up>0?up:0);
+    minusDM.push(down>up&&down>0?down:0);
+    gains.push(Math.max(0,change));losses.push(Math.max(0,-change));
+  }
+  let avgGain=gains.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  let avgLoss=losses.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  for(let i=period;i<gains.length;i++){avgGain=(avgGain*(period-1)+gains[i])/period;avgLoss=(avgLoss*(period-1)+losses[i])/period;}
+  const rsi=avgLoss===0?(avgGain===0?50:100):100-100/(1+avgGain/avgLoss);
+  let atr=tr.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  let smPlus=plusDM.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  let smMinus=minusDM.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  const dx=[];
+  const directional=()=>{const plus=atr?smPlus/atr*100:0,minus=atr?smMinus/atr*100:0;return {plus,minus,dx:plus+minus?Math.abs(plus-minus)/(plus+minus)*100:0};};
+  dx.push(directional().dx);
+  for(let i=period;i<tr.length;i++){
+    atr=(atr*(period-1)+tr[i])/period;
+    smPlus=(smPlus*(period-1)+plusDM[i])/period;
+    smMinus=(smMinus*(period-1)+minusDM[i])/period;
+    dx.push(directional().dx);
+  }
+  let adx=null;
+  if(dx.length>=period){
+    adx=dx.slice(0,period).reduce((a,b)=>a+b,0)/period;
+    for(let i=period;i<dx.length;i++)adx=(adx*(period-1)+dx[i])/period;
+  }
+  const latest=directional();
+  return {rsi,atr,adx,plusDI:latest.plus,minusDI:latest.minus};
+};
+const wilderATRAt = (rows,endIndex,period=14) => {
+  if(endIndex<period||!Array.isArray(rows))return null;
+  let atr=0;
+  for(let i=1;i<=period;i++){const c=rows[i],p=rows[i-1];atr+=Math.max(c.high-c.low,Math.abs(c.high-p.close),Math.abs(c.low-p.close));}
+  atr/=period;
+  for(let i=period+1;i<=endIndex;i++){const c=rows[i],p=rows[i-1],tr=Math.max(c.high-c.low,Math.abs(c.high-p.close),Math.abs(c.low-p.close));atr=(atr*(period-1)+tr)/period;}
+  return atr;
+};
 const intervals = ['1m','5m','15m','1h','4h','1d'];
 
 function ChartPanel({symbol, interval, candles, loading, market, resetKey, onReset}) {
@@ -79,14 +121,8 @@ function BacktestPanel({symbol,market,defaultInterval}) {
     const d=rows.slice(-120),closes=d.map(x=>x.close);
     const ema=n=>{const a=2/(n+1);let v=closes.slice(0,n).reduce((s,x)=>s+x,0)/n;for(let i=n;i<closes.length;i++)v=closes[i]*a+v*(1-a);return v;};
     const e20=ema(20),e50=ema(50),last=d.at(-1),prev=d.at(-2);
-    let gain=0,loss=0;for(let i=Math.max(1,d.length-14);i<d.length;i++){const change=closes[i]-closes[i-1];gain+=Math.max(0,change);loss+=Math.max(0,-change);}
-    const rsi=loss===0?100:100-100/(1+gain/Math.max(loss,1e-12));
+    const indicators=calculateWilderIndicators(d,14),rsi=indicators.rsi,atr=indicators.atr,adx=indicators.adx;
     const avgVol=d.slice(-21,-1).reduce((s,x)=>s+x.volume,0)/20,volumeRatio=avgVol?last.volume/avgVol:0;
-    const tr=[],pdm=[],mdm=[];
-    for(let i=1;i<d.length;i++){const c=d[i],p=d[i-1],up=c.high-p.high,down=p.low-c.low;tr.push(Math.max(c.high-c.low,Math.abs(c.high-p.close),Math.abs(c.low-p.close)));pdm.push(up>down&&up>0?up:0);mdm.push(down>up&&down>0?down:0);}
-    let atr=tr.slice(0,14).reduce((s,x)=>s+x,0)/14,p=pdm.slice(0,14).reduce((s,x)=>s+x,0)/14,m=mdm.slice(0,14).reduce((s,x)=>s+x,0)/14;const dx=[];
-    for(let i=14;i<tr.length;i++){atr=(atr*13+tr[i])/14;p=(p*13+pdm[i])/14;m=(m*13+mdm[i])/14;const plus=atr?p/atr*100:0,minus=atr?m/atr*100:0;dx.push(plus+minus?Math.abs(plus-minus)/(plus+minus)*100:0);}
-    const adx=dx.length?dx.slice(-14).reduce((s,x)=>s+x,0)/Math.min(14,dx.length):0;
     const pivots=[],rad=3;
     for(let i=rad;i<d.length-rad-1;i++){let hi=true,lo=true;for(let j=i-rad;j<=i+rad;j++){if(j===i)continue;if(d[j].high>=d[i].high)hi=false;if(d[j].low<=d[i].low)lo=false;}if(hi)pivots.push({type:'H',price:d[i].high});if(lo)pivots.push({type:'L',price:d[i].low});}
     const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L'),lh=highs.at(-1),pl=lows.at(-1),ph=highs.at(-2),ll=lows.at(-2);
@@ -99,7 +135,7 @@ function BacktestPanel({symbol,market,defaultInterval}) {
   };
   const simulate=(data,feeRate,slipRate,historyByFrame,cfg={adx15:18,adxTrend:15,rsiLong:50,rsiShort:50,volume:0.8,taker:1.05})=>{
     let equity=10000,peak=10000,maxDrawdown=0,position=null,trades=[],signals=0;
-    const atrAt=i=>{let sum=0;for(let j=i-14;j<=i;j++){const prev=data[j-1]?.close??data[j].close;sum+=Math.max(data[j].high-data[j].low,Math.abs(data[j].high-prev),Math.abs(data[j].low-prev));}return sum/15;};
+    const atrAt=i=>wilderATRAt(data,i,14);
     const close=(rawExit,reason,time)=>{const p=position;if(!p)return;const exit=p.side==='LONG'?rawExit*(1-slipRate):rawExit*(1+slipRate),gross=(exit-p.entry)*p.qty*(p.side==='LONG'?1:-1),net=gross-p.entryFee-exit*p.qty*feeRate;equity+=net;trades.push({side:p.side,entry:p.entry,exit,qty:p.qty,pnl:net,reason,entryTime:p.entryTime,exitTime:time});position=null;};
     for(let i=60;i<data.length-1;i++){
       const c=data[i],availableAt=c.time+intervalMs['5m']-1;
@@ -485,34 +521,14 @@ function evaluateTimeframe(candles,timeframe) {
   if(rows.length<60) throw new Error('Not enough completed candles');
   const closes=rows.map(x=>x.close);
   const ema=(period)=>{const alpha=2/(period+1);let value=closes.slice(0,period).reduce((a,b)=>a+b,0)/period;for(let i=period;i<closes.length;i++)value=closes[i]*alpha+value*(1-alpha);return value;};
-  const gains=[],losses=[];
-  for(let i=Math.max(1,closes.length-14);i<closes.length;i++){const d=closes[i]-closes[i-1];gains.push(Math.max(0,d));losses.push(Math.max(0,-d));}
-  const avgGain=gains.reduce((a,b)=>a+b,0)/gains.length,avgLoss=losses.reduce((a,b)=>a+b,0)/losses.length;
-  const rsi=avgLoss===0?100:100-(100/(1+avgGain/avgLoss));
+  const indicators=calculateWilderIndicators(rows,14),rsi=indicators.rsi;
   const last=rows.at(-1),previous=rows.at(-2),volumeAvg=rows.slice(-21,-1).reduce((a,b)=>a+b.volume,0)/20;
   const volumeRatio=volumeAvg>0?last.volume/volumeAvg:0;
   const e20=ema(20),e50=ema(50);
   const trend=last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED';
   const momentum=(last.close-previous.close)/previous.close*100;
 
-  // Wilder-style smoothed directional movement and ATR, calculated only from closed candles.
-  const tr=[],plusDM=[],minusDM=[];
-  for(let i=1;i<rows.length;i++){
-    const cur=rows[i],prev=rows[i-1],up=cur.high-prev.high,down=prev.low-cur.low;
-    tr.push(Math.max(cur.high-cur.low,Math.abs(cur.high-prev.close),Math.abs(cur.low-prev.close)));
-    plusDM.push(up>down&&up>0?up:0);minusDM.push(down>up&&down>0?down:0);
-  }
-  const period=14;
-  let atr=tr.slice(0,period).reduce((a,b)=>a+b,0)/period;
-  let p=plusDM.slice(0,period).reduce((a,b)=>a+b,0)/period;
-  let m=minusDM.slice(0,period).reduce((a,b)=>a+b,0)/period;
-  const dx=[];
-  for(let i=period;i<tr.length;i++){
-    atr=(atr*(period-1)+tr[i])/period;p=(p*(period-1)+plusDM[i])/period;m=(m*(period-1)+minusDM[i])/period;
-    const pdi=atr?p/atr*100:0,mdi=atr?m/atr*100:0;
-    dx.push(pdi+mdi?Math.abs(pdi-mdi)/(pdi+mdi)*100:0);
-  }
-  const adx=dx.length?dx.slice(-period).reduce((a,b)=>a+b,0)/Math.min(period,dx.length):0;
+  const {atr,adx}=indicators;
   const atrPct=last.close?atr/last.close*100:0;
 
   // Confirm swing pivots with three bars to the right; the newest completed candle is tested against prior pivots.
