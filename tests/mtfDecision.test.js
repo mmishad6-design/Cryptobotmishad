@@ -24,10 +24,11 @@ test('live LONG requires aligned trend, setup, timing, structure, volume, taker 
   assert.equal(result.gates.risk,true);
 });
 
-test('live mode blocks missing order-book depth even when taker flow is bullish', () => {
+test('live mode can use confirmed taker flow when an order-book snapshot is temporarily unavailable', () => {
   const result = evaluateMtfDecision({data:bullishData(),flow:{takerRatio:1.2,depthRatio:null},flowMode:'live',entry:100});
-  assert.equal(result.decision,'NO TRADE');
-  assert.equal(result.gates.flow,false);
+  assert.equal(result.decision,'LONG');
+  assert.equal(result.gates.flow,true);
+  assert.ok(result.reasons.some(x=>x.includes('Score কম রাখা হয়েছে')));
 });
 
 test('historical mode uses taker proxy but explicitly does not require unavailable depth snapshots', () => {
@@ -35,7 +36,7 @@ test('historical mode uses taker proxy but explicitly does not require unavailab
   assert.equal(result.decision,'LONG');
   assert.equal(result.diagnostics.flowMode,'historical');
   assert.equal(result.diagnostics.depthRatio,null);
-  assert.ok(result.reasons.some(x=>x.includes('পুরোনো ডেটায় Order Book Depth পাওয়া যায় না')));
+  assert.ok(result.reasons.some(x=>x.includes('Order Book Depth না থাকায় Flow-এর Score কম রাখা হয়েছে')));
 });
 
 test('SHORT requires bearish alignment and bearish taker flow', () => {
@@ -62,9 +63,25 @@ test('blocks weak volume, ADX, setup, timing and structure independently', () =>
     d=>{d['4h'].adx=10;},
     d=>{d['15m'].rsi=80;},
     d=>{d['5m'].rsi=45;},
-    d=>{d['15m'].bos='NONE';d['15m'].choch='NONE';d['15m'].sweep='NONE';d['5m'].bos='NONE';},
+
   ];
   for(const mutate of cases){const data=bullishData();mutate(data);const result=evaluateMtfDecision({data,flow:{takerRatio:1.2,depthRatio:1.1},entry:100});assert.equal(result.decision,'NO TRADE');}
+});
+
+test('allows strong volume to substitute for a recent structure print while taker flow confirms direction', () => {
+  const data=bullishData();
+  data['15m'].bos='NONE';data['15m'].choch='NONE';data['15m'].sweep='NONE';
+  data['5m'].bos='NONE';data['5m'].choch='NONE';data['5m'].sweep='NONE';
+  const result=evaluateMtfDecision({data,flow:{takerRatio:1.2,depthRatio:1.1},entry:100});
+  assert.equal(result.decision,'LONG');
+});
+
+test('blocks when both market structure and directional flow confirmation are absent', () => {
+  const data=bullishData();
+  data['15m'].bos='NONE';data['15m'].choch='NONE';data['15m'].sweep='NONE';
+  data['5m'].bos='NONE';data['5m'].choch='NONE';data['5m'].sweep='NONE';
+  const result=evaluateMtfDecision({data,flow:{takerRatio:1,depthRatio:1},entry:100});
+  assert.equal(result.decision,'NO TRADE');
 });
 
 test('blocks risk plan with invalid entry or ATR', () => {

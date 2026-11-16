@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { translateText } from './i18n.js';
 import { validateSignalRiskPlan } from './riskValidation.js';
 import { evaluateMtfDecision } from './mtfDecision.js';
 import { calculateCandleFlow, calculateOrderBookDepth } from './flowMetrics.js';
@@ -63,6 +64,32 @@ const wilderATRAt = (rows,endIndex,period=14) => {
   return atr;
 };
 const intervals = ['1m','5m','15m','1h','4h','1d'];
+
+async function fetchJsonWithRetry(url, { attempts = 3, timeoutMs = 10000 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+      if (!response.ok) {
+        const error = new Error('HTTP ' + response.status);
+        error.status = response.status;
+        if (response.status !== 429 && response.status < 500) throw error;
+        lastError = error;
+      } else {
+        return await response.json();
+      }
+    } catch (error) {
+      lastError = error;
+      if (error?.status && error.status !== 429 && error.status < 500) throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+    if (attempt < attempts - 1) await new Promise(resolve => window.setTimeout(resolve, 500 * (2 ** attempt)));
+  }
+  throw lastError || new Error('Binance API request failed');
+}
 const profileName = name => ({Balanced:'ভারসাম্যপূর্ণ', 'Strict trend':'কঠোর Trend', 'Early momentum':'প্রাথমিক Momentum', 'Volume confirmed':'Volume নিশ্চিত', 'High conviction':'উচ্চ আস্থার সেটআপ', 'Baseline fallback':'বিকল্প Baseline'}[name] || name);
 
 const regimeLabel = value => ({TRENDING:'Trend চলমান',RANGING:'সীমাবদ্ধ Market', 'HIGH VOLATILITY':'উচ্চ Volatility',TRANSITION:'পরিবর্তনশীল অবস্থা'}[value] || value);
@@ -562,33 +589,34 @@ function evaluateTimeframe(candles,timeframe) {
   const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L');
   const {structure,bos,choch,sweep}=evaluateStructureEvent(rows,pivots);
   const takerRatio=flowMetrics.takerRatio;
-  const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-61),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
+  const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-6),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
   return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio,flowValid:flowMetrics.valid};
 }
-function Multiটাইমফ্রেমignal({symbol,market,onSignal}) {
+function MultiTimeframeSignal({symbol,market,onSignal}) {
   const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
   useEffect(()=>{onSignal?.(result);},[result,onSignal]);
   useEffect(()=>{
-    let live=true;
+    let live=true,inFlight=false;
     const run=async()=>{
+      if(inFlight)return;
+      inFlight=true;
       setLoading(true);setError('');
       try{
         const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
         const path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
         const frames=['4h','1h','15m','5m'];
         const all=await Promise.all(frames.map(async tf=>{
-          const response=await fetch(base+path+'?symbol='+symbol+'&interval='+tf+'&limit=120',{cache:'no-store'});
-          if(!response.ok)throw new Error(tf+' timeframe data unavailable ('+response.status+')');
-          return [tf,evaluateTimeframe(await response.json(),tf)];
+          const candles=await fetchJsonWithRetry(base+path+'?symbol='+symbol+'&interval='+tf+'&limit=120');
+          if(!Array.isArray(candles))throw new Error(tf+' timeframe returned an invalid candle payload');
+          return [tf,evaluateTimeframe(candles,tf)];
         }));
         const depthRequestedAt=Date.now();
-        const depthResponse=await fetch(base+(market==='Futures'?'/fapi/v1/depth':'/api/v3/depth')+'?symbol='+symbol+'&limit=20',{cache:'no-store'});
-        if(!depthResponse.ok)throw new Error('Order-book snapshot unavailable ('+depthResponse.status+').');
-        const book=await depthResponse.json();
-        const depthReceivedAt=Date.now();
-        const depth=calculateOrderBookDepth(book,{requestedAt:depthRequestedAt,receivedAt:depthReceivedAt,maxRequestMs:8000});
-        if(!depth.ok)throw new Error('Order-book snapshot rejected: '+depth.reason);
-        const {bidValue,askValue,depthRatio}=depth;
+        let depth=null;
+        try {
+          const book=await fetchJsonWithRetry(base+(market==='Futures'?'/fapi/v1/depth':'/api/v3/depth')+'?symbol='+symbol+'&limit=20',{attempts:2,timeoutMs:7000});
+          depth=calculateOrderBookDepth(book,{requestedAt:depthRequestedAt,receivedAt:Date.now(),maxRequestMs:8000});
+        } catch {}
+        const {bidValue=null,askValue=null,depthRatio=null}=depth?.ok?depth:{};
         let externalTakerRatio=null;
         if(market==='Futures'){
           try{
@@ -607,10 +635,10 @@ function Multiটাইমফ্রেমignal({symbol,market,onSignal}) {
           data, flow:{takerRatio,depthRatio}, flowMode:'live', entry:m5.close, market,
         });
         const {decision,score,reasons,riskPlan,gates}=evaluated;
-        setResult({symbol,market,decision,score,data,riskPlan,gates,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio,depthRequestMs:depth.requestDurationMs},reasons,updated:new Date(),status:'READY'});
+        setResult({symbol,market,decision,score,data,riskPlan,gates,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio,depthRequestMs:depth?.requestDurationMs??null,depthAvailable:Boolean(depth?.ok)},reasons,updated:new Date(),status:'READY'});
         setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const referenceEntry=m5.close,entry=applyAdverseSlippage(referenceEntry,decision,'Entry',0.0002),atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,referenceEntry,entryType:'COMPLETED_5M_CLOSE_WITH_ESTIMATED_SLIPPAGE',feeRate:0.0005,slippageRate:0.0002,stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
       }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['NO TRADE: প্রয়োজনীয় টাইমফ্রেমের ক্যান্ডেল অথবা order-book ডেটা পাওয়া যায়নি। সংযোগ, Binance API বা rate limit সমস্যার কারণে বিশ্লেষণ সম্পূর্ণ হয়নি। বিস্তারিত: '+(e.message||'অজানা ডেটা সমস্যা')],updated:new Date(),status:'BLOCKED'});setError('বিশ্লেষণ সম্পন্ন হয়নি: '+(e.message||'Binance ডেটা পাওয়া যায়নি।'));}}
-      finally{if(live)setLoading(false);}
+      finally{inFlight=false;if(live)setLoading(false);}
     };
     run();const timer=window.setInterval(run,60000);
     return()=>{live=false;clearInterval(timer);};
@@ -682,6 +710,7 @@ function App() {
   const [interval,setTimeframe] = useState('15m');
   const [market,setMarket] = useState('Futures');
   const [theme,setTheme] = useState('dark');
+  const [language,setLanguage] = useState(()=>{try{return localStorage.getItem('cryptobot.language')==='en'?'en':'bn';}catch{return 'bn';}});
   const [prices,setPrices] = useState({});
   const [candles,setCandles] = useState([]);
   const [chartResetKey,setChartResetKey] = useState(0);
@@ -700,7 +729,50 @@ function App() {
   const closingIds=useRef(new Set());
   const [notice,setNotice] = useState('');
   const [mtfSignal,setMtfSignal] = useState(null);
+  const translationRecords=useRef(new WeakMap());
 
+  useEffect(()=>{
+    try{localStorage.setItem('cryptobot.language',language);}catch{}
+    const root=document.querySelector('.app');
+    if(!root)return;
+    // Keep original Bengali text across language changes. Recreating this map
+    // on every toggle made the already-translated English text become the source.
+    const records=translationRecords.current;
+    const renderText=node=>{
+      const current=node.nodeValue;
+      let record=records.get(node);
+      if(!record){record={source:current,rendered:null};records.set(node,record);}
+      else if(current!==record.rendered&&current!==record.source){record.source=current;}
+      const next=language==='en'?translateText(record.source):record.source;
+      if(current!==next){record.rendered=next;node.nodeValue=next;}else record.rendered=current;
+    };
+    const renderElement=el=>{
+      for(const attr of ['placeholder','title','aria-label']){
+        if(!el.hasAttribute?.(attr))continue;
+        const current=el.getAttribute(attr),key=el.tagName+':'+attr;
+        let attrs=records.get(el);if(!attrs){attrs={};records.set(el,attrs);}
+        let rec=attrs[key];if(!rec){rec={source:current,rendered:null};attrs[key]=rec;}else if(current!==rec.rendered&&current!==rec.source){rec.source=current;}
+        const next=language==='en'?translateText(rec.source):rec.source;
+        if(current!==next){el.setAttribute(attr,next);rec.rendered=next;}else rec.rendered=current;
+      }
+    };
+    const scan=node=>{
+      if(node.nodeType===Node.TEXT_NODE){renderText(node);return;}
+      if(node.nodeType!==Node.ELEMENT_NODE&&node!==root)return;
+      if(node.nodeType===Node.ELEMENT_NODE)renderElement(node);
+      node.childNodes?.forEach(scan);
+    };
+    scan(root);
+    const observer=new MutationObserver(recordsList=>{
+      for(const mutation of recordsList){
+        if(mutation.type==='characterData')renderText(mutation.target);
+        else if(mutation.type==='attributes')renderElement(mutation.target);
+        else mutation.addedNodes.forEach(scan);
+      }
+    });
+    observer.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['placeholder','title','aria-label']});
+    return()=>observer.disconnect();
+  },[language]);
   const active = WATCH.find(c=>c[0]===symbol) || WATCH[0];
   const ticker = prices[symbol];
   const price = Number(ticker?.lastPrice || 0);
@@ -716,33 +788,37 @@ function App() {
 
   // Push-based 24h ticker feed: Binance WebSocket, with REST snapshot/fallback.
   useEffect(()=>{
-    let live=true,ws=null,reconnect=null,fallback=null,snapshotTimer=null,delay=1000;
+    let live=true,ws=null,reconnect=null,fallback=null,snapshotTimer=null,watchdog=null,lastMessageAt=0,snapshotInFlight=false,delay=1000;
     const endpoint=market==='Futures'?'https://fapi.binance.com/fapi/v1/ticker/24hr':'https://api.binance.com/api/v3/ticker/24hr';
-    const snapshot=async()=>{try{const r=await fetch(endpoint);if(!r.ok)throw new Error();const rows=await r.json();if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const meta=prev[x.symbol]||{};const wsFresh=meta.wsAt&&Date.now()-meta.wsAt<=15000;next[x.symbol]={...x,lastPrice:wsFresh?(prev[x.symbol]?.lastPrice||x.lastPrice):x.lastPrice};}});return next;});setUpdated(new Date());setFeedMeta(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const old=prev[x.symbol]||{},restPrice=Number(x.lastPrice),wsPrice=Number(prev[x.symbol]?.wsPrice||0),divergence=wsPrice>0&&restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null;next[x.symbol]={...old,priceAt:old.wsAt&&Date.now()-old.wsAt<=15000?old.wsAt:Date.now(),priceSource:old.wsAt&&Date.now()-old.wsAt<=15000?'WEBSOCKET':'REST',restAt:Date.now(),restPrice,divergencePct:divergence};}});return next;});}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}};
+    const spotSymbols=encodeURIComponent(JSON.stringify(WATCH.map(w=>w[0])));
+    const snapshot=async()=>{if(snapshotInFlight)return;snapshotInFlight=true;try{const rows=market==='Spot'
+      ? await fetchJsonWithRetry(endpoint+'?symbols='+spotSymbols,{attempts:2,timeoutMs:10000})
+      : await Promise.all(WATCH.map(w=>fetchJsonWithRetry(endpoint+'?symbol='+w[0],{attempts:2,timeoutMs:10000})));
+      if(!Array.isArray(rows))throw new Error('Invalid ticker snapshot');if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const meta=prev[x.symbol]||{};const wsFresh=meta.wsAt&&Date.now()-meta.wsAt<=15000;next[x.symbol]={...x,lastPrice:wsFresh?(prev[x.symbol]?.lastPrice||x.lastPrice):x.lastPrice};}});return next;});setUpdated(new Date());setFeedMeta(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const old=prev[x.symbol]||{},restPrice=Number(x.lastPrice),wsPrice=Number(prev[x.symbol]?.wsPrice||0),divergence=wsPrice>0&&restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null;next[x.symbol]={...old,priceAt:old.wsAt&&Date.now()-old.wsAt<=15000?old.wsAt:Date.now(),priceSource:old.wsAt&&Date.now()-old.wsAt<=15000?'WEBSOCKET':'REST',restAt:Date.now(),restPrice,divergencePct:divergence};}});return next;});}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}finally{snapshotInFlight=false;}};
     const startFallback=()=>{if(fallback===null){setFeedStatus('REST FALLBACK');snapshot();fallback=window.setInterval(snapshot,5000);}};
     const connect=()=>{if(!live)return;setFeedStatus('CONNECTING');const host=market==='Futures'?'wss://fstream.binance.com/stream?streams=':'wss://stream.binance.com:9443/stream?streams=';
       const streams=WATCH.map(w=>w[0].toLowerCase()+'@trade').join('/');
       const url=host+streams;try{ws=new WebSocket(url);}catch{startFallback();return;}
-      ws.onopen=()=>{delay=1000;if(fallback!==null){clearInterval(fallback);fallback=null;}setFeedStatus('LIVE');};
-      ws.onmessage=e=>{try{const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),symbol:x.s,lastPrice:x.p}}));setFeedMeta(prev=>{const old=prev[x.s]||{},restPrice=Number(old.restPrice||0),wsPrice=Number(x.p);return {...prev,[x.s]:{...old,priceAt:Date.now(),wsAt:Date.now(),wsExchangeAt:Number(x.T||x.E||0),priceSource:'WEBSOCKET',wsPrice,divergencePct:restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null}};});setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
+      ws.onopen=()=>{delay=1000;lastMessageAt=Date.now();if(fallback!==null){clearInterval(fallback);fallback=null;}setFeedStatus('LIVE');};
+      ws.onmessage=e=>{try{lastMessageAt=Date.now();const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),symbol:x.s,lastPrice:x.p}}));setFeedMeta(prev=>{const old=prev[x.s]||{},restPrice=Number(old.restPrice||0),wsPrice=Number(x.p);return {...prev,[x.s]:{...old,priceAt:Date.now(),wsAt:Date.now(),wsExchangeAt:Number(x.T||x.E||0),priceSource:'WEBSOCKET',wsPrice,divergencePct:restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null}};});setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;setFeedStatus('RECONNECTING');startFallback();reconnect=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
-    snapshot();snapshotTimer=window.setInterval(snapshot,30000);connect();return()=>{live=false;if(reconnect)clearTimeout(reconnect);if(fallback!==null)clearInterval(fallback);if(snapshotTimer!==null)clearInterval(snapshotTimer);try{ws?.close();}catch{}};
+    snapshot();snapshotTimer=window.setInterval(snapshot,30000);connect();watchdog=window.setInterval(()=>{if(live&&ws?.readyState===WebSocket.OPEN&&lastMessageAt&&Date.now()-lastMessageAt>45000){setFeedStatus('RECONNECTING');startFallback();try{ws.close();}catch{}}},10000);return()=>{live=false;if(reconnect)clearTimeout(reconnect);if(fallback!==null)clearInterval(fallback);if(snapshotTimer!==null)clearInterval(snapshotTimer);if(watchdog!==null)clearInterval(watchdog);try{ws?.close();}catch{}};
   },[market]);
   // Load fresh history whenever the selected chart market changes.
   useEffect(()=>{
-    let live=true,ws=null,retryTimer=null,fallbackTimer=null,delay=1000;
+    let live=true,ws=null,retryTimer=null,fallbackTimer=null,watchdog=null,lastMessageAt=0,delay=1000;
     setCandles([]);setLoading(true);
-    const history=async()=>{try{const r=await fetch(candleUrl,{cache:'no-store'});if(!r.ok)throw new Error('Binance candle HTTP '+r.status);const rows=await r.json();if(!Array.isArray(rows))throw new Error('Invalid Binance candle response');if(live){const normalized=rows.map(k=>({time:Math.floor(Number(k[0])/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})).filter(c=>Number.isFinite(c.time)&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));setCandles(normalized.slice(-160));setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'REST'}}));setLoading(false);}}catch(e){if(live){setLoading(false);setNotice('চার্টের ক্যান্ডেল ডেটা লোড হয়নি: '+(e.message||'Binance সংযোগ সমস্যা')+'। আবার চেষ্টা করা হচ্ছে।');}}};
+    const history=async()=>{try{const rows=await fetchJsonWithRetry(candleUrl,{attempts:2,timeoutMs:10000});if(!Array.isArray(rows))throw new Error('Invalid Binance candle response');if(live){const normalized=rows.map(k=>({time:Math.floor(Number(k[0])/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})).filter(c=>Number.isFinite(c.time)&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));setCandles(normalized.slice(-160));setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'REST'}}));setLoading(false);}}catch(e){if(live){setLoading(false);setNotice('চার্টের ক্যান্ডেল ডেটা লোড হয়নি: '+(e.message||'Binance সংযোগ সমস্যা')+'। আবার চেষ্টা করা হচ্ছে।');}}};
     const connect=()=>{if(!live)return;const host=market==='Futures'?'wss://fstream.binance.com/ws/':'wss://stream.binance.com:9443/ws/';try{ws=new WebSocket(host+symbol.toLowerCase()+'@kline_'+interval);}catch{fallback();return;}
-      ws.onopen=()=>{delay=1000;if(fallbackTimer){clearInterval(fallbackTimer);fallbackTimer=null;}};
-      ws.onmessage=e=>{try{const k=JSON.parse(e.data).k;if(!k||!live)return;const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c,closeTime:Number(k.T),isClosed:Boolean(k.x),exchangeAt:Number(k.T)};setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'WEBSOCKET',candleExchangeAt:Number(k.T)}}));setCandles(prev=>{const map=new Map(prev.map(x=>[x.time,x]));map.set(c.time,c);return [...map.values()].sort((x,y)=>x.time-y.time).slice(-160);});}catch{}};
+      ws.onopen=()=>{delay=1000;lastMessageAt=Date.now();if(fallbackTimer){clearInterval(fallbackTimer);fallbackTimer=null;}};
+      ws.onmessage=e=>{try{lastMessageAt=Date.now();const k=JSON.parse(e.data).k;if(!k||!live)return;const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c,closeTime:Number(k.T),isClosed:Boolean(k.x),exchangeAt:Number(k.T)};setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'WEBSOCKET',candleExchangeAt:Number(k.T)}}));setCandles(prev=>{const map=new Map(prev.map(x=>[x.time,x]));map.set(c.time,c);return [...map.values()].sort((x,y)=>x.time-y.time).slice(-160);});}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;fallback();retryTimer=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
     const fallback=()=>{if(fallbackTimer===null)fallbackTimer=window.setInterval(history,10000);};
-    history();connect();return()=>{live=false;if(retryTimer)clearTimeout(retryTimer);if(fallbackTimer)clearInterval(fallbackTimer);try{ws?.close();}catch{}};
+    history();connect();watchdog=window.setInterval(()=>{if(live&&ws?.readyState===WebSocket.OPEN&&lastMessageAt&&Date.now()-lastMessageAt>45000){fallback();try{ws.close();}catch{}}},10000);return()=>{live=false;if(retryTimer)clearTimeout(retryTimer);if(fallbackTimer)clearInterval(fallbackTimer);if(watchdog)clearInterval(watchdog);try{ws?.close();}catch{}};
   },[candleUrl,market,symbol,interval,chartResetKey]);
 
   // Keep the in-progress chart candle aligned to each live trade.
@@ -799,9 +875,23 @@ function App() {
   const closedCandleAge=Number.isFinite(latestClosedCandleAt)?feedClock-latestClosedCandleAt:Infinity;
   const expectedCandleMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[interval];
   const candleGaps=validClosed.slice(1).filter((c,i)=>c.time-validClosed[i].time!==expectedCandleMs/1000).length;
-  const restReferenceFresh=Boolean(activeFeed.restAt&&feedClock-activeFeed.restAt<=60000&&Number(activeFeed.restPrice)>0);
-  const reconciliationOk=restReferenceFresh&&Number.isFinite(activeFeed.divergencePct)&&activeFeed.divergencePct<=0.5;
+  const restReferenceAge=activeFeed.restAt?feedClock-activeFeed.restAt:Infinity;
+  const restReferenceFresh=Boolean(restReferenceAge<=60000&&Number(activeFeed.restPrice)>0);
+  const websocketPriceFresh=Boolean(activeFeed.wsAt&&feedClock-activeFeed.wsAt<=15000);
+  // Compare only near-simultaneous REST/stream observations; a 30s-old REST snapshot
+  // naturally differs from a live trade price during volatile moves.
+  const reconciliationOk=websocketPriceFresh
+    ? (!restReferenceFresh||restReferenceAge>10000||!Number.isFinite(activeFeed.divergencePct)||activeFeed.divergencePct<=0.75)
+    : restReferenceFresh;
   const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000&&closedCandleAge<=expectedCandleMs+30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
+  const integrityIssues = [
+    ...(!signalHealth.hasTicker ? ['লাইভ Price Feed পাওয়া যায়নি।'] : []),
+    ...(!signalHealth.priceFresh ? ['লাইভ Price Feed ৩০ সেকেন্ডের বেশি পুরোনো।'] : []),
+    ...(!signalHealth.hasClosedCandles ? ['কমপক্ষে ৫০টি সম্পূর্ণ Candle পাওয়া যায়নি।'] : []),
+    ...(!signalHealth.candleFresh ? ['Candle Feed পুরোনো অথবা সর্বশেষ সম্পূর্ণ Candle দেরিতে এসেছে।'] : []),
+    ...(!signalHealth.reconciliationOk ? ['REST ও WebSocket Price-এর পার্থক্য গ্রহণযোগ্য সীমার বাইরে।'] : []),
+    ...(signalHealth.candleGaps>0 ? [signalHealth.candleGaps+'টি Candle interval অনুপস্থিত।'] : []),
+  ];
   const analysis = useMemo(()=>{
      const matches=mtfSignal?.symbol===symbol&&mtfSignal?.market===market;
      const signalAge=mtfSignal?.updated instanceof Date?feedClock-mtfSignal.updated.getTime():Infinity;
@@ -880,7 +970,7 @@ function App() {
   },[prices,paperPrices,paperTrades,market]);
 
   const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN'&&t.market===market).reduce((sum,t)=>{const live=Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry),exitFill=applyAdverseSlippage(live,t.side,'EXIT',Number(t.slippageRate??0.0002)),accounting=calculateTradePnl({side:t.side,entry:t.entry,exit:exitFill,quantity:t.quantity,feeRate:Number(t.feeRate??0.0005),entryFee:Number(t.entryFee||0)});return sum+(accounting.ok?accounting.netPnl:0);},0);
-  return <div className={`app ${theme}`}>
+  return <div className={`app ${theme}`} data-language={language}>
     <aside className={`sidebar ${mobileNav?'open':''}`}>
       <div className="brand"><div className="brand-mark"><Activity size={19}/></div><div><b>Crypto<span>Bot</span></b><small>TRADING TERMINAL</small></div><button className="icon-btn mobile-close" onClick={()=>setMobileNav(false)}><X size={17}/></button></div>
       <div className="workspace"><div className="workspace-icon"><Command size={16}/></div><div><b>Market Desk</b><small>Personal workspace</small></div><ChevronDown size={14}/></div>
@@ -890,7 +980,7 @@ function App() {
     </aside>
     {mobileNav&&<div className="scrim" onClick={()=>setMobileNav(false)}/>}
     <main className="main">
-      <header className="topbar"><div className="top-left"><button className="icon-btn mobile-menu" onClick={()=>setMobileNav(true)}><Menu size={19}/></button><span className="crumb">Workspace</span><span className="slash">/</span><b>{tab}</b></div><div className="top-actions"><div className="feed"><span className={`pulse ${feedStatus==='LIVE'?'':'feed-warn'}`}/> <span>{feedStatus}</span></div><button className="icon-btn" onClick={()=>setTheme(t=>t==='dark'?'light':'dark')} title="Toggle theme">{theme==='dark'?<Sun size={17}/>:<Moon size={17}/>}</button><button className="icon-btn" onClick={()=>showNotice('Notifications are not configured yet.')}><Bell size={17}/></button><div className="top-avatar">M</div></div></header>
+      <header className="topbar"><div className="top-left"><button className="icon-btn mobile-menu" onClick={()=>setMobileNav(true)}><Menu size={19}/></button><span className="crumb">Workspace</span><span className="slash">/</span><b>{tab}</b></div><div className="top-actions"><div className="feed"><span className={`pulse ${feedStatus==='LIVE'?'':'feed-warn'}`}/> <span>{feedStatus}</span></div><button className="icon-btn" onClick={()=>setTheme(t=>t==='dark'?'light':'dark')} title="Toggle theme">{theme==='dark'?<Sun size={17}/>:<Moon size={17}/>}</button><button className="secondary-btn language-toggle" onClick={()=>setLanguage(l=>l==='bn'?'en':'bn')} title="Switch interface language">{language==='bn'?'EN':'বাংলা'}</button><button className="icon-btn" onClick={()=>showNotice('Notifications are not configured yet.')}><Bell size={17}/></button><div className="top-avatar">M</div></div></header>
       <div className="content">
         <div className="page-heading"><div><div className="eyebrow">WEDNESDAY, NOVEMBER 11, 2026 <span>·</span> MARKET OVERVIEW</div><h1>{tab==='Overview'?'Market overview':tab}</h1><p>Read the market. Respect the risk. Trade with a plan.</p></div><div className="heading-actions"><button className="secondary-btn" onClick={()=>{setLoading(true);fetch(candleUrl).then(r=>r.json()).then(rows=>setCandles(rows.filter(k=>Number(k[6])>Number(k[0])).map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})))).finally(()=>setLoading(false));}}><RefreshCw size={15}/> Refresh</button><button className="primary-btn" onClick={()=>setTab('Paper Trading')}><Plus size={16}/> New paper trade</button></div></div>
         {notice&&<div className="notice"><CircleHelp size={15}/>{notice}<button onClick={()=>setNotice('')}><X size={14}/></button></div>}
@@ -903,9 +993,9 @@ function App() {
             <div><span>CANDLE SEQUENCE</span><b>{signalHealth.candleGaps===0?"CONTIGUOUS":"GAP DETECTED"}</b><small>{signalHealth.candleGaps} missing interval(s)</small></div>
             <div><span>COMPLETED CANDLES</span><b>{candles.filter(c=>c.isClosed).length}</b><small>Open candle excluded from signal</small></div>
             <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
-          </div><p>Age is measured from browser receipt time. This check cannot guarantee zero exchange/network latency.</p>
+          </div><p>{integrityIssues.length ? 'Signal Block হওয়ার কারণ: '+integrityIssues.join(' ') : 'সব Data Integrity Check পাস করেছে।'} Age is measured from browser receipt time; this check cannot guarantee zero exchange/network latency.</p>
         </section>
-        <Multiটাইমফ্রেমignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
+        <MultiTimeframeSignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
         <section className="market-strip">
           <div className="market-stat"><span>BTC / USDT</span><b>{prices.BTCUSDT?'$'+fmt(prices.BTCUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.BTCUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.BTCUSDT?fmt(prices.BTCUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat"><span>ETH / USDT</span><b>{prices.ETHUSDT?'$'+fmt(prices.ETHUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.ETHUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.ETHUSDT?fmt(prices.ETHUSDT.priceChangePercent)+'%':'—'}</em></div>
