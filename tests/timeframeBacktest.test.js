@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { simulateTimeframeProfile } from '../src/timeframeBacktest.js';
 import { TIMEFRAME_INTERVAL_MS } from '../src/timeframeSelection.js';
 
-function makeRows(frame, count = 150, start = 1_700_000_000_000) {
+function makeRows(frame, count = 150) {
+  const executionStart = 1_700_000_000_000;
+  const historyBars = 149;
+  const start = executionStart - historyBars * TIMEFRAME_INTERVAL_MS[frame];
   const interval = TIMEFRAME_INTERVAL_MS[frame];
   return Array.from({ length: count }, (_, index) => {
     const time = start + index * interval;
