@@ -54,3 +54,19 @@ test('historical replay rejects an unsupported execution timeframe', () => {
   const result = simulateTimeframeProfile({ dataByFrame, timeframe: '4h', evaluateFrame });
   assert.equal(result.ok, false);
 });
+
+test('training window never evaluates an entry candle that closes at or after the split', () => {
+  const dataByFrame = Object.fromEntries(frames.map(frame => [frame, makeRows(frame)]));
+  const endTime = dataByFrame['15m'][100].time + 1;
+  let latestDecision = -Infinity;
+  const trackingEvaluator = (rows, frame, decisionTime) => {
+    latestDecision = Math.max(latestDecision, decisionTime);
+    return evaluateFrame(rows, frame, decisionTime);
+  };
+  const result = simulateTimeframeProfile({
+    dataByFrame, timeframe: '15m', evaluateFrame: trackingEvaluator,
+    startTime: dataByFrame['15m'][60].time, endTime,
+  });
+  assert.equal(result.ok, true);
+  assert.ok(latestDecision < endTime);
+});
