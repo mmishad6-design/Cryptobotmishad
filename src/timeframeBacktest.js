@@ -85,11 +85,10 @@ export function simulateTimeframeProfile({
     const roleData = buildTimeframeRoleData(snapshots, timeframe);
     if (!roleData) continue;
 
-    const evaluated = Object.fromEntries(
+    const roles = Object.fromEntries(
       Object.entries(roleData).map(([frame, rows]) => [frame, evaluateFrame(rows, frame, decisionTime)])
     );
-    const roles = buildTimeframeRoleData(evaluated, timeframe);
-    if (!roles) continue;
+    if (['4h', '1h', '15m', '5m'].some(frame => !roles[frame])) continue;
     if (position) {
       const exit = resolveIntrabarExit({
         side: position.side, open: candle.open, high: candle.high, low: candle.low,
