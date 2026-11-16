@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { translateText } from './i18n.js';
 import { validateSignalRiskPlan } from './riskValidation.js';
 import { evaluateMtfDecision } from './mtfDecision.js';
+import { buildTimeframeRoleData, selectBestTimeframeSignal, TIMEFRAME_PROFILES, TIMEFRAME_INTERVAL_MS } from './timeframeSelection.js';
 import { calculateCandleFlow, calculateOrderBookDepth } from './flowMetrics.js';
 import { applyAdverseSlippage, calculateTradePnl, resolveIntrabarExit } from './tradeExecution.js';
 import { selectClosedCandlesAsOf } from './historicalData.js';
@@ -571,143 +572,100 @@ function PublicDerivativesPanel({symbol}) {
 
 function evaluateTimeframe(candles,timeframe) {
   const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
-  if(rows.length<60) throw new Error('Not enough টি সম্পূর্ণ Candle');
-  const closes=rows.map(x=>x.close);
-  const ema=(period)=>{const alpha=2/(period+1);let value=closes.slice(0,period).reduce((a,b)=>a+b,0)/period;for(let i=period;i<closes.length;i++)value=closes[i]*alpha+value*(1-alpha);return value;};
-  const indicators=calculateWilderIndicators(rows,14),rsi=indicators.rsi;
-  const last=rows.at(-1),previous=rows.at(-2),flowMetrics=calculateCandleFlow(rows,20);
-  const volumeRatio=flowMetrics.volumeRatio;
-  const e20=ema(20),e50=ema(50);
+  if(rows.length<60)throw new Error('কমপক্ষে ৬০টি সম্পূর্ণ Candle প্রয়োজন');
+  const closes=rows.map(x=>x.close),ema=period=>{const alpha=2/(period+1);let value=closes.slice(0,period).reduce((a,b)=>a+b,0)/period;for(let i=period;i<closes.length;i++)value=closes[i]*alpha+value*(1-alpha);return value;};
+  const indicators=calculateWilderIndicators(rows,14),last=rows.at(-1),previous=rows.at(-2),flow=calculateCandleFlow(rows,20),e20=ema(20),e50=ema(50);
   const trend=last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED';
-  const momentum=(last.close-previous.close)/previous.close*100;
-
-  const {atr,adx}=indicators;
-  const atrPct=last.close?atr/last.close*100:0;
-
-  // Only pivots with three completed right-side candles are returned.
-   const pivots=findConfirmedSwingPivots(rows,3);
-  const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L');
-  const {structure,bos,choch,sweep}=evaluateStructureEvent(rows,pivots);
-  const takerRatio=flowMetrics.takerRatio;
-  const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-6),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
-  return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio,flowValid:flowMetrics.valid};
+  const pivots=findConfirmedSwingPivots(rows,3),{structure,bos,choch,sweep}=evaluateStructureEvent(rows,pivots),frameMs=TIMEFRAME_INTERVAL_MS[timeframe];
+  const recent=rows.slice(-6),candleGaps=recent.slice(1).filter((x,i)=>x.time-recent[i].time!==frameMs).length;
+  return {trend,rsi:indicators.rsi,volumeRatio:flow.volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum:(last.close-previous.close)/previous.close*100,candles:rows.length,adx:indicators.adx,atrPct:indicators.atr/last.close*100,atr:indicators.atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio:flow.takerRatio,flowValid:flow.valid};
 }
-function MultiTimeframeSignal({symbol,market,onSignal}) {
-  const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
+
+function MultiTimeframeSignal({symbol,market,onSignal,timeframeMode='AUTO',onTimeframeModeChange=()=>{},onTimeframeChange=()=>{}}) {
+  const [snapshot,setSnapshot]=useState(null),[result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState('');
+  const [tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
   useEffect(()=>{onSignal?.(result);},[result,onSignal]);
   useEffect(()=>{
-    let live=true,inFlight=false;
+    let live=true,busy=false;
     const run=async()=>{
-      if(inFlight)return;
-      inFlight=true;
-      setLoading(true);setError('');
+      if(busy)return;busy=true;setLoading(true);setError('');
       try{
-        const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
-        const path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
-        const frames=['4h','1h','15m','5m'];
-        const all=await Promise.all(frames.map(async tf=>{
-          const candles=await fetchJsonWithRetry(base+path+'?symbol='+symbol+'&interval='+tf+'&limit=120');
-          if(!Array.isArray(candles))throw new Error(tf+' timeframe returned an invalid candle payload');
-          return [tf,evaluateTimeframe(candles,tf)];
-        }));
-        const depthRequestedAt=Date.now();
-        let depth=null;
-        try {
-          const book=await fetchJsonWithRetry(base+(market==='Futures'?'/fapi/v1/depth':'/api/v3/depth')+'?symbol='+symbol+'&limit=20',{attempts:2,timeoutMs:7000});
-          depth=calculateOrderBookDepth(book,{requestedAt:depthRequestedAt,receivedAt:Date.now(),maxRequestMs:8000});
-        } catch {}
+        const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines',frames=['1w','1d','4h','1h','15m','5m'];
+        const fetched=await Promise.all(frames.map(async tf=>{try{const raw=await fetchJsonWithRetry(base+path+'?symbol='+symbol+'&interval='+tf+'&limit=120');if(!Array.isArray(raw))throw new Error('Invalid candle payload');return {tf,value:evaluateTimeframe(raw,tf)};}catch(e){return {tf,error:e.message||'Data unavailable'};}}));
+        if(!live)return;
+        const data=Object.fromEntries(fetched.filter(x=>x.value).map(x=>[x.tf,x.value])),frameErrors=Object.fromEntries(fetched.filter(x=>x.error).map(x=>[x.tf,x.error]));
+        const requestedAt=Date.now();let depth=null;
+        try{const book=await fetchJsonWithRetry(base+(market==='Futures'?'/fapi/v1/depth':'/api/v3/depth')+'?symbol='+symbol+'&limit=20',{attempts:2,timeoutMs:7000});depth=calculateOrderBookDepth(book,{requestedAt,receivedAt:Date.now(),maxRequestMs:8000});}catch{}
         const {bidValue=null,askValue=null,depthRatio=null}=depth?.ok?depth:{};
         let externalTakerRatio=null;
-        if(market==='Futures'){
-          try{
-            const tr=await fetch('https://fapi.binance.com/futures/data/takerlongshortRatio?symbol='+symbol+'&period=5m&limit=1',{cache:'no-store'});
-            if(tr.ok){const values=await tr.json();const latest=values?.[0],stamp=Number(latest?.timestamp);if(latest&&Number.isFinite(stamp)&&Date.now()-stamp<=10*60*1000)externalTakerRatio=Number(latest.buySellRatio);}
-          }catch{}
-        }
+        if(market==='Futures'){try{const r=await fetch('https://fapi.binance.com/futures/data/takerlongshortRatio?symbol='+symbol+'&period=5m&limit=1',{cache:'no-store'});if(r.ok){const v=(await r.json())?.[0];if(v&&Date.now()-Number(v.timestamp)<=600000)externalTakerRatio=Number(v.buySellRatio);}}catch{}}
         if(!live)return;
-        const data=Object.fromEntries(all),[h4,h1,m15,m5]=frames.map(tf=>data[tf]);
-        const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000};
-        const staleFrames=frames.filter(tf=>!data[tf]||!Number.isFinite(data[tf].closeTime)||Date.now()-data[tf].closeTime>frameMs[tf]+120000||data[tf].candleGaps>0);
-        if(staleFrames.length){setResult({symbol,market,decision:'NO TRADE',score:0,data,flow:null,reasons:['সিগন্যাল বন্ধ রাখা হয়েছে: '+staleFrames.map(x=>x.toUpperCase()).join(', ')+' টাইমফ্রেমের ক্যান্ডেল পুরোনো অথবা মাঝখানে ক্যান্ডেল অনুপস্থিত। Binance থেকে ধারাবাহিক সম্পূর্ণ ক্যান্ডেল না আসা পর্যন্ত অপেক্ষা করতে হবে।'],updated:new Date(),status:'BLOCKED'});return;}
-        // Use the last fully closed 5m kline for signal authorization; the Futures aggregate ratio may be an incomplete interval.
-        const takerRatio=m5.takerRatio;
-        const evaluated=evaluateMtfDecision({
-          data, flow:{takerRatio,depthRatio}, flowMode:'live', entry:m5.close, market,
-        });
-        const {decision,score,reasons,riskPlan,gates}=evaluated;
-        setResult({symbol,market,decision,score,data,riskPlan,gates,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio,depthRequestMs:depth?.requestDurationMs??null,depthAvailable:Boolean(depth?.ok)},reasons,updated:new Date(),status:'READY'});
-        setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const referenceEntry=m5.close,entry=applyAdverseSlippage(referenceEntry,decision,'Entry',0.0002),atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,referenceEntry,entryType:'COMPLETED_5M_CLOSE_WITH_ESTIMATED_SLIPPAGE',feeRate:0.0005,slippageRate:0.0002,stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
-      }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['NO TRADE: প্রয়োজনীয় টাইমফ্রেমের ক্যান্ডেল অথবা order-book ডেটা পাওয়া যায়নি। সংযোগ, Binance API বা rate limit সমস্যার কারণে বিশ্লেষণ সম্পূর্ণ হয়নি। বিস্তারিত: '+(e.message||'অজানা ডেটা সমস্যা')],updated:new Date(),status:'BLOCKED'});setError('বিশ্লেষণ সম্পন্ন হয়নি: '+(e.message||'Binance ডেটা পাওয়া যায়নি।'));}}
-      finally{inFlight=false;if(live)setLoading(false);}
+        const now=Date.now(),evaluations=Object.fromEntries(Object.entries(TIMEFRAME_PROFILES).map(([tf,profile])=>{
+          const required=Object.values(profile),stale=required.filter(frame=>{const x=data[frame],ms=TIMEFRAME_INTERVAL_MS[frame];return !x||!Number.isFinite(x.closeTime)||now-x.closeTime>ms+120000||x.candleGaps>0;});
+          const roleData=buildTimeframeRoleData(data,tf);
+          if(!roleData||stale.length)return [tf,{timeframe:tf,decision:'NO TRADE',score:0,status:'BLOCKED',reasons:['প্রয়োজনীয় '+stale.map(x=>x.toUpperCase()).join(', ')+' ডেটা অনুপস্থিত, পুরোনো অথবা Candle gap আছে।'],gates:{data:false}}];
+          const entryFrame=data[profile.entry],frameLabels={contextSlow:profile.contextSlow,contextFast:profile.contextFast,setup:profile.setup,entry:profile.entry};
+          const evaluated=evaluateMtfDecision({data:roleData,flow:{takerRatio:entryFrame.takerRatio,depthRatio},flowMode:'live',entry:entryFrame.close,market,frameLabels});
+          return [tf,{...evaluated,timeframe:tf,entryFrame,status:'READY'}];
+        }));
+        setSnapshot({symbol,market,data,evaluations,flow:{bidValue,askValue,depthRatio,takerRatio:data['5m']?.takerRatio??null,externalTakerRatio,depthRequestMs:depth?.requestDurationMs??null,depthAvailable:Boolean(depth?.ok)},updated:new Date(),status:Object.values(evaluations).some(x=>x.status==='READY')?'READY':'BLOCKED'});
+      }catch(e){if(live){setError('বিশ্লেষণ সম্পন্ন হয়নি: '+(e.message||'Binance ডেটা পাওয়া যায়নি।'));setSnapshot({symbol,market,data:{},evaluations:{},flow:null,updated:new Date(),status:'BLOCKED'});}}
+      finally{busy=false;if(live)setLoading(false);}
     };
-    run();const timer=window.setInterval(run,60000);
-    return()=>{live=false;clearInterval(timer);};
+    setSnapshot(null);setResult(null);run();const timer=window.setInterval(run,60000);return()=>{live=false;clearInterval(timer);};
   },[symbol,market]);
-  const rows=result?.data?['4h','1h','15m','5m'].map(tf=>[tf,result.data[tf]]):[];
+
   useEffect(()=>{
-    let live=true;
-    const pending=tracked.filter(x=>x.status==='PENDING'&&x.symbol===symbol&&x.market===market);
-    if(!pending.length)return;
-    const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
-    const path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
-    (async()=>{
-      try{
-        const start=Math.min(...pending.map(x=>x.candleTime))+300000;
-        const r=await fetch(base+path+'?symbol='+symbol+'&interval=5m&startTime='+start+'&limit=1000',{cache:'no-store'});
-        if(!r.ok)return;
-        const raw=await r.json();
-        const candles=Array.isArray(raw)?raw.filter(k=>Number(k[6])<Date.now()).sort((a,b)=>Number(a[0])-Number(b[0])):[];
-        if(!live||!candles.length)return;
-        setTracked(prev=>{
-          let changed=false;
-          const next=prev.map(sig=>{
-            if(sig.status!=='PENDING'||sig.symbol!==symbol||sig.market!==market)return sig;
-            let bars=sig.bars,exit=null,reason=null,review=false;
-            let expected=sig.candleTime+300000;
-            for(const k of candles){
-              const t=Number(k[0]);
-              if(t<expected)continue;
-              if(t!==expected){review=true;break;}
-              bars++;
-              const hi=Number(k[2]),lo=Number(k[3]),cl=Number(k[4]);
-              const stop=sig.side==='LONG'?lo<=sig.stop:hi>=sig.stop;
-              const target=sig.side==='LONG'?hi>=sig.target:lo<=sig.target;
-              if(stop){exit=sig.stop;reason='স্টপ লস';break;}
-              if(target){exit=sig.target;reason='টেক প্রফিট';break;}
-              if(bars>=12){exit=cl;reason='12-CANDLE TIME Exit';break;}
-              expected+=300000;
-            }
-            if(review){changed=true;return {...sig,bars,status:'REVIEW',reason:'DATA GAP — outcome not scored',reviewedAt:Date.now()};}
-            if(!exit){if(bars!==sig.bars){changed=true;return {...sig,bars};}return sig;}
-            const exitFill=applyAdverseSlippage(exit,sig.side,'EXIT',Number(sig.slippageRate??0.0002));const accounting=calculateTradePnl({side:sig.side,entry:sig.entry,exit:exitFill,quantity:1,feeRate:Number(sig.feeRate??0.0005)});if(!accounting.ok){changed=true;return {...sig,bars,status:'REVIEW',reason:'INVALID TRADE ACCOUNTING — outcome not scored',reviewedAt:Date.now()};}const gross=accounting.grossPnl/sig.entry*100,net=accounting.netPnl/sig.entry*100;
-            changed=true;
-            return {...sig,bars,exit:exitFill,rawExit:exit,reason,grossPct:gross,netPct:net,entryFeePct:accounting.entryFee/sig.entry*100,exitFeePct:accounting.exitFee/sig.entry*100,status:'CLOSED',closedAt:Date.now()};
-          });
-          if(changed){try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;}
-          return prev;
-        });
-      }catch{}
-    })();
-    return()=>{live=false;};
+    if(!snapshot||snapshot.symbol!==symbol||snapshot.market!==market)return;
+    const picked=selectBestTimeframeSignal(snapshot.evaluations,timeframeMode),tf=picked.selectedTimeframe,candidate=tf?snapshot.evaluations[tf]:null,best=picked.bestCandidate?snapshot.evaluations[picked.bestCandidate]:null;
+    const next={...snapshot,...picked,selectedTimeframe:tf,decision:picked.decision||'NO TRADE',score:picked.score??best?.score??0,riskPlan:candidate?.riskPlan??null,gates:candidate?.gates??null,reasons:picked.reasons?.length?picked.reasons:(candidate?.reasons||best?.reasons||['NO TRADE']),status:snapshot.status,selectionStatus:picked.selectionStatus};
+    setResult(next);
+    if(next.status==='READY'&&(next.decision==='LONG'||next.decision==='SHORT')&&candidate?.entryFrame){
+      const entryFrame=candidate.entryFrame,id=symbol+'_'+market+'_'+tf+'_'+entryFrame.candleTime;
+      setTracked(prev=>{let list=prev.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);if(entryFrame.candleTime&&!list.some(x=>x.id===id)){const entry=applyAdverseSlippage(entryFrame.close,next.decision,'Entry',0.0002),atr=entryFrame.atr;list.unshift({id,symbol,market,timeframe:tf,side:next.decision,entry,referenceEntry:entryFrame.close,entryType:'COMPLETED_'+tf.toUpperCase()+'_CLOSE',feeRate:0.0005,slippageRate:0.0002,stop:next.decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:next.decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime:entryFrame.candleTime,createdAt:Date.now(),score:next.score,status:'PENDING',bars:0});}list=list.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(list));}catch{}return list;});
+    }
+  },[snapshot,timeframeMode,symbol,market]);
+
+  useEffect(()=>{
+    let live=true;const pending=tracked.filter(x=>x.status==='PENDING'&&x.symbol===symbol&&x.market===market);if(!pending.length)return;
+    const groups=new Map();pending.forEach(x=>{const tf=x.timeframe||'5m';if(!groups.has(tf))groups.set(tf,[]);groups.get(tf).push(x);});
+    (async()=>{try{
+      const entries=await Promise.all([...groups].map(async([tf,signals])=>{const ms=TIMEFRAME_INTERVAL_MS[tf]||300000,base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines',start=Math.min(...signals.map(x=>x.candleTime))+ms,raw=await fetchJsonWithRetry(base+path+'?symbol='+symbol+'&interval='+tf+'&startTime='+start+'&limit=1000',{attempts:2,timeoutMs:10000});return [tf,Array.isArray(raw)?raw.filter(k=>Number(k[6])<Date.now()).sort((a,b)=>Number(a[0])-Number(b[0])):[]];}));
+      if(!live)return;const series=new Map(entries);
+      setTracked(prev=>{let changed=false;const next=prev.map(sig=>{
+        if(sig.status!=='PENDING'||sig.symbol!==symbol||sig.market!==market)return sig;
+        const tf=sig.timeframe||'5m',ms=TIMEFRAME_INTERVAL_MS[tf]||300000,candles=series.get(tf)||[];let bars=sig.bars,exit=null,reason=null,review=false,expected=sig.candleTime+ms;
+        for(const k of candles){const t=Number(k[0]);if(t<expected)continue;if(t!==expected){review=true;break;}bars++;const hi=Number(k[2]),lo=Number(k[3]),close=Number(k[4]),stop=sig.side==='LONG'?lo<=sig.stop:hi>=sig.stop,target=sig.side==='LONG'?hi>=sig.target:lo<=sig.target;if(stop){exit=sig.stop;reason='স্টপ লস';break;}if(target){exit=sig.target;reason='টেক প্রফিট';break;}if(bars>=12){exit=close;reason='12-CANDLE TIME Exit';break;}expected+=ms;}
+        if(review){changed=true;return {...sig,bars,status:'REVIEW',reason:'DATA GAP — outcome not scored',reviewedAt:Date.now()};}
+        if(!exit){if(bars!==sig.bars){changed=true;return {...sig,bars};}return sig;}
+        const fill=applyAdverseSlippage(exit,sig.side,'EXIT',Number(sig.slippageRate??0.0002)),account=calculateTradePnl({side:sig.side,entry:sig.entry,exit:fill,quantity:1,feeRate:Number(sig.feeRate??0.0005)});
+        if(!account.ok){changed=true;return {...sig,bars,status:'REVIEW',reason:'INVALID TRADE ACCOUNTING — outcome not scored',reviewedAt:Date.now()};}
+        changed=true;return {...sig,bars,exit:fill,rawExit:exit,reason,grossPct:account.grossPnl/sig.entry*100,netPct:account.netPnl/sig.entry*100,entryFeePct:account.entryFee/sig.entry*100,exitFeePct:account.exitFee/sig.entry*100,status:'CLOSED',closedAt:Date.now()};
+      });if(changed){try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;}return prev;});
+    }catch{}})();return()=>{live=false;};
   },[symbol,market,tracked.filter(x=>x.status==='PENDING'&&x.symbol===symbol&&x.market===market).map(x=>x.id+':'+x.bars).join('|')]);
-  const closedTracked=tracked.filter(x=>x.status==='CLOSED'),trackedWins=closedTracked.filter(x=>x.netPct>0).length,trackedNet=closedTracked.reduce((s,x)=>s+x.netPct,0);
-  const ratio=n=>n==null||!Number.isFinite(n)?'—':n.toFixed(2)+'x';
+
+  const closedTracked=tracked.filter(x=>x.status==='CLOSED'),trackedWins=closedTracked.filter(x=>x.netPct>0).length,trackedNet=closedTracked.reduce((s,x)=>s+x.netPct,0),ratio=n=>n==null||!Number.isFinite(n)?'—':n.toFixed(2)+'x';
+  const rows=result?.data?['1w','1d','4h','1h','15m','5m'].filter(tf=>result.data[tf]).map(tf=>[tf,result.data[tf]]):[];
   return <section className="panel mtf-panel">
-    <div className="panel-title"><div><h3>উন্নত Multi-Timeframe Signal Engine</h3><p>4H Trend → 1H মিল → 15M Setup → 5M Timing · ADX / BOS / Sweep / Flow · প্রতি ৬০ সেকেন্ডে হালনাগাদ</p></div><span className={'tiny-live '+(result?.status==='READY'?'':'data-status-warn')}>{loading?'SCANNING':result?.status||'WAITING'}</span></div>
-    <div className="mtf-decision"><div><span>Engine-এর সিদ্ধান্ত</span><b className={result?.decision==='LONG'?'positive':result?.decision==='SHORT'?'negative':''}>{result?.decision||'NO TRADE'}</b></div><div><span>সম্মিলিত শর্তের Score</span><b>{result?.score??0}/100</b></div><div><span>সর্বশেষ যাচাই</span><b>{result?.updated?result.updated.toLocaleTimeString():'—'}</b></div></div>
-    <div className="mtf-table-wrap"><table className="mtf-table"><thead><tr><th>Timeframe</th><th>Trend</th><th>ADX</th><th>Structure</th><th>BOS</th><th>CHoCH</th><th>Sweep</th><th>RSI</th><th>Volume / গড়</th></tr></thead><tbody>{rows.map(([tf,x])=><tr key={tf}><td>{tf.toUpperCase()}</td><td className={x.trend==='BULLISH'?'positive':x.trend==='BEARISH'?'negative':''}>{trendLabel(x.trend)}</td><td>{fmt(x.adx,1)}</td><td>{structureLabel(x.structure)}</td><td>{structureLabel(x.bos==='NONE'?'—':x.bos)}</td><td>{structureLabel(x.choch==='NONE'?'—':x.choch)}</td><td>{structureLabel(x.sweep==='NONE'?'—':x.sweep)}</td><td>{fmt(x.rsi,1)}</td><td>{fmt(x.volumeRatio,2)}x</td></tr>)}</tbody></table></div>
-    {result?.flow&&<div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>Taker Buy / Sell</span><b>{ratio(result.flow.takerRatio)}</b><small>সম্পূর্ণ 5M Candle · Taker Buy Base Volume</small></div><div className="public-data-card"><span>শীর্ষ ২০টি Depth-এর Bid / Ask</span><b>{ratio(result.flow.depthRatio)}</b><small>শীর্ষ ২০টি Level-এর Snapshot · {result.flow.depthRequestMs}ms request · সম্পূর্ণ Order Flow নয়</small></div><div className="public-data-card"><span>ADX-এর অবস্থা</span><b>{result.data['4h'].adx>=15&&result.data['1h'].adx>=15?'Trend-এর জন্য গ্রহণযোগ্য':'দুর্বল / মিশ্র'}</b><small>ADX Trend-এর শক্তি মাপে, দিক নয়</small></div></div>}
+    <div className="panel-title"><div><h3>উন্নত Multi-Timeframe Signal Engine</h3><p>Higher timeframe context → setup → entry · Auto Best অথবা Manual timeframe · প্রতি ৬০ সেকেন্ডে হালনাগাদ</p></div><span className={'tiny-live '+(result?.status==='READY'?'':'data-status-warn')}>{loading?'SCANNING':result?.selectionStatus==='CONFLICT'?'CONFLICT':result?.status||'WAITING'}</span></div>
+    <div className="mtf-timeframe-controls"><span>Signal Timeframe</span><div className="scanner-chips"><button className={timeframeMode==='AUTO'?'active':''} onClick={()=>onTimeframeModeChange('AUTO')}>AUTO BEST</button>{Object.keys(TIMEFRAME_PROFILES).map(tf=><button key={tf} className={timeframeMode===tf?'active':''} onClick={()=>{onTimeframeModeChange(tf);onTimeframeChange(tf);}}>{tf.toUpperCase()}</button>)}</div><small>{timeframeMode==='AUTO'?'সব Candidate যাচাই করে যোগ্য Signal-এর মধ্যে সেরা Timeframe নির্বাচন করা হয়।':'Manual mode: নির্বাচিত Timeframe-এর Signal যাচাই করা হচ্ছে।'}</small></div>
+    <div className="mtf-candidate-grid">{Object.keys(TIMEFRAME_PROFILES).map(tf=>{const candidate=result?.evaluations?.[tf],side=candidate?.decision||'NO TRADE';return <div key={tf} className={'mtf-candidate '+(result?.selectedTimeframe===tf?'selected':'')}><div><b>{tf.toUpperCase()}</b><span className={'scanner-bias '+(side==='LONG'?'long':side==='SHORT'?'short':'wait')}>{side}</span></div><strong>{candidate?.score??0}/100</strong><small>{candidate?.status==='READY'?'Context '+TIMEFRAME_PROFILES[tf].contextSlow.toUpperCase()+' / '+TIMEFRAME_PROFILES[tf].contextFast.toUpperCase():'ডেটা প্রস্তুত নয়'}</small></div>;})}</div>
+    <div className="mtf-decision"><div><span>Engine-এর সিদ্ধান্ত</span><b className={result?.decision==='LONG'?'positive':result?.decision==='SHORT'?'negative':''}>{result?.decision||'NO TRADE'}</b></div><div><span>সম্মিলিত শর্তের Score</span><b>{result?.score??0}/100</b></div><div><span>নির্বাচিত Timeframe</span><b>{result?.selectedTimeframe?.toUpperCase()||'—'}</b></div></div>
+    <div className="mtf-table-wrap"><table className="mtf-table"><thead><tr><th>Timeframe</th><th>Trend</th><th>ADX</th><th>Structure</th><th>BOS</th><th>CHoCH</th><th>Sweep</th><th>RSI</th><th>Volume / গড়</th></tr></thead><tbody>{rows.map(([tf,x])=><tr key={tf} className={tf===result?.selectedTimeframe?'selected-timeframe':''}><td>{tf.toUpperCase()}</td><td className={x.trend==='BULLISH'?'positive':x.trend==='BEARISH'?'negative':''}>{trendLabel(x.trend)}</td><td>{fmt(x.adx,1)}</td><td>{structureLabel(x.structure)}</td><td>{structureLabel(x.bos==='NONE'?'—':x.bos)}</td><td>{structureLabel(x.choch==='NONE'?'—':x.choch)}</td><td>{structureLabel(x.sweep==='NONE'?'—':x.sweep)}</td><td>{fmt(x.rsi,1)}</td><td>{fmt(x.volumeRatio,2)}x</td></tr>)}</tbody></table></div>
+    {result?.flow&&<div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>Taker Buy / Sell</span><b>{ratio(result.flow.takerRatio)}</b><small>সম্পূর্ণ 5M Candle · Taker Buy Base Volume</small></div><div className="public-data-card"><span>শীর্ষ ২০টি Depth-এর Bid / Ask</span><b>{ratio(result.flow.depthRatio)}</b><small>শীর্ষ ২০টি Level-এর Snapshot · {result.flow.depthRequestMs}ms request · সম্পূর্ণ Order Flow নয়</small></div><div className="public-data-card"><span>ADX-এর অবস্থা</span><b>{result.data?.['4h']?.adx>=15&&result.data?.['1h']?.adx>=15?'Trend-এর জন্য গ্রহণযোগ্য':'দুর্বল / মিশ্র'}</b><small>ADX Trend-এর শক্তি মাপে, দিক নয়</small></div></div>}
     {error&&<p className="public-data-error">{error}</p>}
     <div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>সংরক্ষিত Live Signal</span><b>{tracked.length}</b><small>এই Browser-এ সংরক্ষিত</small></div><div className="public-data-card"><span>বন্ধ Signal-এর জয়ের হার</span><b>{closedTracked.length?fmt(trackedWins/closedTracked.length*100,1)+'%':'—'}</b><small>{closedTracked.length}টি নিষ্পত্তি হয়েছে · {tracked.filter(x=>x.status==='REVIEW').length}টি পুনরায় যাচাই প্রয়োজন</small></div><div className="public-data-card"><span>সংরক্ষিত Signal-এর নিট Return</span><b className={trackedNet>=0?'positive':'negative'}>{closedTracked.length?(trackedNet>=0?'+':'')+fmt(trackedNet,2)+'%':'—'}</b><small>সমান ওজনের Price Return-এর আনুমানিক হিসাব</small></div></div>
-    {tracked.length>0&&<div className="mtf-reasons">{tracked.slice(0,8).map(x=><span key={x.id}>{x.symbol} {x.side} · {x.status==='PENDING'?'অপেক্ষমাণ '+x.bars+'/12':x.status==='REVIEW'?x.reason:x.reason+' · '+(x.netPct>=0?'+':'')+fmt(x.netPct,2)+'%'}</span>)}</div>}
+    {tracked.length>0&&<div className="mtf-reasons">{tracked.slice(0,8).map(x=><span key={x.id}>{x.symbol} {x.side} · {(x.timeframe||'5m').toUpperCase()} · {x.status==='PENDING'?'অপেক্ষমাণ '+x.bars+'/12':x.status==='REVIEW'?x.reason:x.reason+' · '+(x.netPct>=0?'+':'')+fmt(x.netPct,2)+'%'}</span>)}</div>}
     <h4 className="section-subtitle">সিগন্যালের কারণ ও NO TRADE-এর ব্যাখ্যা</h4><div className="mtf-reasons">{(result?.reasons||['সম্পূর্ণ ক্যান্ডেল ও order-book ডেটার জন্য অপেক্ষা করা হচ্ছে।']).map((x,i)=><span key={i}>{x}</span>)}</div>
-    <p className="public-data-foot">শুধু গবেষণার জন্য তৈরি নিয়মভিত্তিক ব্যবস্থা। Signal Log এই Browser-এ থাকে এবং নির্বাচিত Symbol/Market-এর LONG/SHORT Signal সংরক্ষণ করে; অন্য Symbol নির্বাচন করলে সেখানকার অপেক্ষমাণ Signal-এর হিসাব সাময়িক থেমে থাকে। Entry হলো সম্পূর্ণ হওয়া 5M Candle-এর Close Price—পরের Candle-এ ওই দামে Trade হবে, এমন নিশ্চয়তা নেই। ফলাফল নির্ধারণে ATR-এর ১.৫ গুণ Stop, ৩ গুণ Target অথবা ১২টি সম্পূর্ণ 5M Candle ব্যবহার করা হয়; একই Candle-এ Stop ও Target লাগলে Stop আগে ধরা হয় এবং দুই পাশ মিলিয়ে ০.১৪% খরচ ধরা হয়। 5M Candle-এর ধারাবাহিকতায় Gap থাকলে সেটি REVIEW হিসেবে চিহ্নিত হয় এবং Win Rate থেকে বাদ যায়। এটি শুধু পর্যবেক্ষণভিত্তিক হিসাব; Broker-এর প্রকৃত Fill বা স্বাধীনভাবে যাচাই করা Win Rate নয়। ADX-এ Wilder পদ্ধতির Smoothing ব্যবহার করা হয়; Pivot নিশ্চিত করতে ডান পাশে তিনটি সম্পূর্ণ Candle লাগে। Order Book-এর একটি Top-20 Snapshot নেওয়া হয়। কোনো বাস্তব Order পাঠানো হয় না।</p>
+    <p className="public-data-foot">শুধু গবেষণার জন্য তৈরি নিয়মভিত্তিক ব্যবস্থা। Entry নির্বাচিত Timeframe-এর সম্পূর্ণ Candle-এর Close Price ও আনুমানিক Slippage-ভিত্তিক; পরের Candle-এ ওই দামে Trade হবে, এমন নিশ্চয়তা নেই। Entry Timeframe-এর ATR-এর ১.৫ গুণ Stop, ৩ গুণ Target অথবা ১২টি সম্পূর্ণ Candle ব্যবহার করা হয়; একই Candle-এ Stop ও Target লাগলে Stop আগে ধরা হয়। Candle gap থাকলে Signal REVIEW হয় এবং Win Rate থেকে বাদ যায়। এটি পর্যবেক্ষণভিত্তিক হিসাব; Broker-এর প্রকৃত Fill বা স্বাধীনভাবে যাচাই করা Win Rate নয়। কোনো বাস্তব Order পাঠানো হয় না।</p>
   </section>;
 }
 
 function App() {
   const [symbol,setSymbol] = useState('BTCUSDT');
   const [interval,setTimeframe] = useState('15m');
+  const [signalTimeframeMode,setSignalTimeframeMode] = useState('AUTO');
   const [market,setMarket] = useState('Futures');
   const [theme,setTheme] = useState('dark');
   const [language,setLanguage] = useState(()=>{try{return localStorage.getItem('cryptobot.language')==='en'?'en':'bn';}catch{return 'bn';}});
@@ -895,21 +853,22 @@ function App() {
   const analysis = useMemo(()=>{
      const matches=mtfSignal?.symbol===symbol&&mtfSignal?.market===market;
      const signalAge=mtfSignal?.updated instanceof Date?feedClock-mtfSignal.updated.getTime():Infinity;
-     const m5=mtfSignal?.data?.['5m'];
-     const blockers=[];
+     const selectedTf=mtfSignal?.selectedTimeframe||(signalTimeframeMode!=='AUTO'?signalTimeframeMode:'5m');
+     const entryFrame=mtfSignal?.data?.[selectedTf],blockers=[];
      if(!matches)blockers.push('বর্তমান কয়েন/মার্কেটের MTF বিশ্লেষণ এখনো পাওয়া যায়নি');
      else if(mtfSignal.status!=='READY')blockers.push('MTF Signal Engine-এর ডেটা যাচাই সম্পূর্ণ হয়নি');
      if(!Number.isFinite(signalAge)||signalAge>90000)blockers.push('MTF সিগন্যাল ৯০ সেকেন্ডের বেশি পুরোনো');
      if(!signalHealth.hasTicker||!signalHealth.priceFresh)blockers.push('লাইভ ট্রেডিং প্রাইস অনুপস্থিত বা ৩০ সেকেন্ডের বেশি পুরোনো');
      if(!signalHealth.reconciliationOk)blockers.push('লাইভ REST ও WebSocket প্রাইস যাচাই মেলেনি');
-     if(!m5||!Number.isFinite(m5.atr)||m5.atr<=0)blockers.push('৫ মিনিটের ATR পাওয়া যায়নি');
-     if(blockers.length)return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,ready:false,reason:'NO TRADE — '+blockers.join('। ')+'.'};
+     if(!entryFrame||!Number.isFinite(entryFrame.atr)||entryFrame.atr<=0)blockers.push(selectedTf.toUpperCase()+' ATR পাওয়া যায়নি');
+     if(blockers.length)return {bias:'WAIT',score:0,atr:null,stop:null,target:null,positionSize:0,riskUsd:demoBalance*0.01,ready:false,timeframe:selectedTf,reason:'NO TRADE — '+blockers.join('। ')+'.'};
      const bias=mtfSignal.decision==='LONG'||mtfSignal.decision==='SHORT'?mtfSignal.decision:'WAIT';
-     if(bias==='WAIT')return {bias,score:mtfSignal.score??0,atr:m5.atr,stop:null,target:null,positionSize:0,riskUsd:0,ready:true,reason:(mtfSignal.reasons||['NO TRADE']).join(' ')};
-     const riskPlan=validateSignalRiskPlan({side:bias,entry:price,atr:m5.atr,market,accountBalance:demoBalance});
-     if(!riskPlan.ok)return {bias:'WAIT',score:0,atr:m5.atr,stop:null,target:null,positionSize:0,riskUsd:0,ready:false,reason:'NO TRADE — Risk যাচাইয়ের শর্ত: '+riskPlan.reason+'.'};
-     return {bias,score:mtfSignal.score??0,atr:m5.atr,stop:riskPlan.stop,target:riskPlan.target,positionSize:riskPlan.quantity,riskUsd:riskPlan.riskUsd,netRR:riskPlan.netRR,ready:true,reason:(mtfSignal.reasons||['MTF analysis completed.']).join(' ')};
-  },[mtfSignal,symbol,market,feedClock,price,demoBalance,signalHealth.hasTicker,signalHealth.priceFresh,signalHealth.reconciliationOk]);
+     if(bias==='WAIT')return {bias,score:mtfSignal.score??0,atr:entryFrame.atr,stop:null,target:null,positionSize:0,riskUsd:0,ready:true,timeframe:selectedTf,reason:(mtfSignal.reasons||['NO TRADE']).join(' ')};
+     const riskPlan=validateSignalRiskPlan({side:bias,entry:price,atr:entryFrame.atr,market,accountBalance:demoBalance});
+     if(!riskPlan.ok)return {bias:'WAIT',score:0,atr:entryFrame.atr,stop:null,target:null,positionSize:0,riskUsd:0,ready:false,timeframe:selectedTf,reason:'NO TRADE — Risk যাচাইয়ের শর্ত: '+riskPlan.reason+'.'};
+     return {bias,score:mtfSignal.score??0,atr:entryFrame.atr,stop:riskPlan.stop,target:riskPlan.target,positionSize:riskPlan.quantity,riskUsd:riskPlan.riskUsd,netRR:riskPlan.netRR,ready:true,timeframe:selectedTf,reason:(mtfSignal.reasons||['MTF analysis completed.']).join(' ')};
+  },[mtfSignal,symbol,market,feedClock,price,demoBalance,signalTimeframeMode,signalHealth.hasTicker,signalHealth.priceFresh,signalHealth.reconciliationOk]);
+  useEffect(()=>{if(signalTimeframeMode==='AUTO'&&mtfSignal?.selectedTimeframe&&mtfSignal.symbol===symbol&&mtfSignal.market===market)setTimeframe(current=>current===mtfSignal.selectedTimeframe?current:mtfSignal.selectedTimeframe);},[signalTimeframeMode,mtfSignal?.selectedTimeframe,mtfSignal?.updated,mtfSignal?.symbol,mtfSignal?.market,symbol,market]);
   const suggestedLeverage=market==='Futures'&&analysis.ready&&analysis.bias!=='WAIT'?suggestConservativeLeverage({entry:price,atr:analysis.atr}):null;
   const resetDemoFunds=()=>{if(paperTrades.some(t=>t.status==='OPEN'&&t.market===market)){showNotice('Close all open '+market+' paper trades before resetting this account balance.');return;}if(window.confirm('Reset '+market+' demo balance to 10,000 USDT? Closed trade history will be kept.')){updateMarketBalance(market,10000);showNotice(market+' demo balance reset to 10,000 USDT. Trade history was preserved.');}};
   const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['Multi-Asset Scanner',Globe2],['Market Regime',Activity],['Market Structure',Layers3],['News & Events',Newspaper]];
@@ -995,7 +954,7 @@ function App() {
             <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
           </div><p>{integrityIssues.length ? 'Signal Block হওয়ার কারণ: '+integrityIssues.join(' ') : 'সব Data Integrity Check পাস করেছে।'} Age is measured from browser receipt time; this check cannot guarantee zero exchange/network latency.</p>
         </section>
-        <MultiTimeframeSignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
+        <MultiTimeframeSignal symbol={symbol} market={market} onSignal={setMtfSignal} timeframeMode={signalTimeframeMode} onTimeframeModeChange={setSignalTimeframeMode} onTimeframeChange={setTimeframe}/>
         <section className="market-strip">
           <div className="market-stat"><span>BTC / USDT</span><b>{prices.BTCUSDT?'$'+fmt(prices.BTCUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.BTCUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.BTCUSDT?fmt(prices.BTCUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat"><span>ETH / USDT</span><b>{prices.ETHUSDT?'$'+fmt(prices.ETHUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.ETHUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.ETHUSDT?fmt(prices.ETHUSDT.priceChangePercent)+'%':'—'}</em></div>
@@ -1025,7 +984,7 @@ function App() {
         {tab==='Futures Analysis'&&(
           <section className="panel risk-panel">
             <div className="panel-title">
-              <div><h3>Futures Risk Plan</h3><p>{active[2]}/USDT · {interval} timeframe · ATR-based levels</p></div>
+              <div><h3>Futures Risk Plan</h3><p>{active[2]}/USDT · {analysis.timeframe||interval} signal timeframe · ATR-based levels</p></div>
               <ShieldCheck size={18}/>
             </div>
             <div className="risk-grid">
