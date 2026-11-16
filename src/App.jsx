@@ -588,7 +588,7 @@ function evaluateTimeframe(candles,timeframe) {
   const highs=pivots.filter(x=>x.type==='H'),lows=pivots.filter(x=>x.type==='L');
   const {structure,bos,choch,sweep}=evaluateStructureEvent(rows,pivots);
   const takerRatio=flowMetrics.takerRatio;
-  const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-61),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
+  const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-6),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
   return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio,flowValid:flowMetrics.valid};
 }
 function MultiTimeframeSignal({symbol,market,onSignal}) {
@@ -831,7 +831,9 @@ function App() {
   const websocketPriceFresh=Boolean(activeFeed.wsAt&&feedClock-activeFeed.wsAt<=15000);
   // Compare only near-simultaneous REST/stream observations; a 30s-old REST snapshot
   // naturally differs from a live trade price during volatile moves.
-  const reconciliationOk=restReferenceFresh&&(!websocketPriceFresh||restReferenceAge>10000||!Number.isFinite(activeFeed.divergencePct)||activeFeed.divergencePct<=0.75);
+  const reconciliationOk=websocketPriceFresh
+    ? (!restReferenceFresh||restReferenceAge>10000||!Number.isFinite(activeFeed.divergencePct)||activeFeed.divergencePct<=0.75)
+    : restReferenceFresh;
   const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000&&closedCandleAge<=expectedCandleMs+30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
   const analysis = useMemo(()=>{
      const matches=mtfSignal?.symbol===symbol&&mtfSignal?.market===market;
