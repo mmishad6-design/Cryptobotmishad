@@ -59,8 +59,8 @@ export function evaluateMtfDecision({
   const flowShort = takerShort && (!depthAvailable || depthShort);
   const flowOk = (longBias && flowLong) || (shortBias && flowShort);
   const adxOk = h4.adx >= adxTrendMin && h1.adx >= adxTrendMin && m15.adx >= adx15Min;
-  const structureOk = (longBias && longSetup && longTiming && (longStructure || flowLong)) ||
-    (shortBias && shortSetup && shortTiming && (shortStructure || flowShort));
+  const structureOk = (longBias && longSetup && longTiming && flowLong && (longStructure || volumeOk)) ||
+    (shortBias && shortSetup && shortTiming && flowShort && (shortStructure || volumeOk));
   const candidateSide = longBias ? 'LONG' : shortBias ? 'SHORT' : null;
   const sideSetup = candidateSide === 'LONG' ? longSetup : candidateSide === 'SHORT' ? shortSetup : false;
   const sideTiming = candidateSide === 'LONG' ? longTiming : candidateSide === 'SHORT' ? shortTiming : false;
@@ -84,7 +84,7 @@ export function evaluateMtfDecision({
   if ((longBias && longStructure) || (shortBias && shortStructure)) {
     score += 15;
     reasons.push('Market Structure উচ্চতর টাইমফ্রেমের দিককে সমর্থন করছে।');
-  } else reasons.push('NO TRADE: একই দিকের BOS, CHoCH অথবা Liquidity Sweep পাওয়া যায়নি।');
+  } else reasons.push('একই দিকের BOS, CHoCH অথবা Liquidity Sweep পাওয়া যায়নি; Volume ও Taker Flow-এর বিকল্প সমর্থন যাচাই করা হয়েছে।');
   if (volumeOk) {
     score += 10;
     reasons.push('15M ও 5M-এর Volume নিজ নিজ গড়ের অন্তত 0.8 গুণ।');
@@ -116,7 +116,7 @@ export function evaluateMtfDecision({
     ? candidateSide : 'NO TRADE';
   if (decision === 'NO TRADE') {
     if (score < 75) reasons.push('NO TRADE: একাধিক শর্তের সম্মিলিত Score ' + score + '/১০০, যা প্রয়োজনীয় ৭৫-এর কম।');
-    if (!structureOk) reasons.push('NO TRADE: Direction, Setup, Timing, Structure ও Flow—সব শর্ত একসঙ্গে পূরণ হতে হবে।');
+    if (!structureOk) reasons.push('NO TRADE: Direction, Setup, Timing, Taker Flow এবং Structure অথবা Volume-এর সমর্থন প্রয়োজন।');
   } else {
     reasons.push('সিদ্ধান্ত: ' + (decision === 'LONG' ? 'LONG' : 'SHORT') + ' — সব বাধ্যতামূলক শর্ত পূরণ হয়েছে; খরচ সমন্বয়ের পর R:R ' + riskPlan.netRR.toFixed(2) + 'R.');
   }
