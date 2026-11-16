@@ -954,7 +954,7 @@ function App() {
             <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
           </div><p>{integrityIssues.length ? 'Signal Block হওয়ার কারণ: '+integrityIssues.join(' ') : 'সব Data Integrity Check পাস করেছে।'} Age is measured from browser receipt time; this check cannot guarantee zero exchange/network latency.</p>
         </section>
-        <MultiTimeframeSignal symbol={symbol} market={market} onSignal={setMtfSignal} timeframeMode={signalTimeframeMode} onTimeframeModeChange={setSignalTimeframeMode} onTimeframeChange={setTimeframe}/>
+        <MultiTimeframeSignal key={symbol+'_'+market} symbol={symbol} market={market} onSignal={setMtfSignal} timeframeMode={signalTimeframeMode} onTimeframeModeChange={setSignalTimeframeMode} onTimeframeChange={setTimeframe}/>
         <section className="market-strip">
           <div className="market-stat"><span>BTC / USDT</span><b>{prices.BTCUSDT?'$'+fmt(prices.BTCUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.BTCUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.BTCUSDT?fmt(prices.BTCUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat"><span>ETH / USDT</span><b>{prices.ETHUSDT?'$'+fmt(prices.ETHUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.ETHUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.ETHUSDT?fmt(prices.ETHUSDT.priceChangePercent)+'%':'—'}</em></div>
