@@ -19,14 +19,14 @@ export function evaluateMtfDecision({
     riskPlan: null,
   });
   const frames = ['4h', '1h', '15m', '5m'];
-  if (!data || frames.some(frame => !data[frame])) return fail('NO TRADE: required 4H/1H/15M/5M timeframe data is missing.');
+  if (!data || frames.some(frame => !data[frame])) return fail('NO TRADE: প্রয়োজনীয় 4H/1H/15M/5M টাইমফ্রেমের ডেটা পাওয়া যায়নি।');
   const [h4, h1, m15, m5] = frames.map(frame => data[frame]);
   const numeric = [h4,h1,m15,m5].every(x =>
     Number.isFinite(x.close) && x.close > 0 &&
     Number.isFinite(x.rsi) && Number.isFinite(x.adx) &&
     Number.isFinite(x.volumeRatio) && Number.isFinite(x.atr) && x.atr > 0
   );
-  if (!numeric) return fail('NO TRADE: one or more timeframe indicators are missing or invalid.');
+  if (!numeric) return fail('NO TRADE: এক বা একাধিক টাইমফ্রেমের ইন্ডিকেটর অনুপস্থিত অথবা ভুল।');
 
   const takerRatio = Number.isFinite(flow.takerRatio) && flow.takerRatio > 0
     ? flow.takerRatio : m5.takerRatio;
@@ -68,35 +68,35 @@ export function evaluateMtfDecision({
   const reasons = [];
   if (longBias || shortBias) {
     score += 25;
-    reasons.push('4H and 1H trend alignment: ' + (longBias ? 'bullish' : 'bearish') + '.');
+    reasons.push('4H ও 1H ট্রেন্ড একই দিকে: ' + (longBias ? 'ঊর্ধ্বমুখী' : 'নিম্নমুখী') + '.');
   } else reasons.push('NO TRADE: 4H and 1H trends do not align.');
   if (longSetup || shortSetup) {
     score += 20;
-    reasons.push('15M setup confirmed by trend, RSI and ADX.');
+    reasons.push('15M সেটআপে Trend, RSI ও ADX-এর সমর্থন পাওয়া গেছে।');
   } else reasons.push('NO TRADE: 15M setup conditions are not satisfied.');
   if (longTiming || shortTiming) {
     score += 15;
-    reasons.push('5M entry timing supports the direction.');
+    reasons.push('5M এন্ট্রির সময় বর্তমান দিককে সমর্থন করছে।');
   } else reasons.push('NO TRADE: 5M entry timing is not confirmed.');
   if ((longBias && longStructure) || (shortBias && shortStructure)) {
     score += 15;
-    reasons.push('Market structure supports the higher-timeframe direction.');
+    reasons.push('Market Structure উচ্চতর টাইমফ্রেমের দিককে সমর্থন করছে।');
   } else reasons.push('NO TRADE: no aligned BOS, CHoCH or liquidity sweep.');
   if (volumeOk) {
     score += 10;
-    reasons.push('15M and 5M volume are at least 0.8x their averages.');
+    reasons.push('15M ও 5M-এর Volume নিজ নিজ গড়ের অন্তত 0.8 গুণ।');
   } else reasons.push('NO TRADE: volume confirmation is weak.');
   if ((longBias && flowLong) || (shortBias && flowShort)) {
     score += 15;
     reasons.push(flowMode === 'historical'
-      ? 'Historical taker-volume proxy confirms direction; order-book depth is unavailable in historical data.'
-      : 'Taker flow and top-20 order-book depth confirm direction.');
+      ? 'ঐতিহাসিক Taker Volume বর্তমান দিককে সমর্থন করছে; পুরোনো ডেটায় Order Book Depth পাওয়া যায় না।'
+      : 'Taker Flow ও Order Book-এর শীর্ষ ২০ স্তরের Depth বর্তমান দিককে সমর্থন করছে।');
   } else {
     reasons.push(flowMode === 'historical'
-      ? 'NO TRADE: historical taker-volume proxy is missing or opposing.'
-      : 'NO TRADE: taker flow or top-20 order-book depth is missing or opposing.');
+      ? 'NO TRADE: ঐতিহাসিক Taker Volume অনুপস্থিত অথবা বিপরীত দিক নির্দেশ করছে।'
+      : 'NO TRADE: Taker Flow অথবা Order Book-এর শীর্ষ ২০ স্তরের Depth অনুপস্থিত কিংবা বিপরীতমুখী।');
   }
-  if (!adxOk) reasons.push('NO TRADE: ADX strength gate failed (4H/1H >= 15 and 15M >= 18).');
+  if (!adxOk) reasons.push('NO TRADE: ADX-এর শক্তির শর্ত পূরণ হয়নি (4H/1H কমপক্ষে ১৫ এবং 15M কমপক্ষে ১৮ হতে হবে)।');
 
   const riskEntry = entry === undefined || entry === null ? m5.close : entry;
   const riskPlan = candidateSide ? validateSignalRiskPlan({
@@ -106,16 +106,16 @@ export function evaluateMtfDecision({
   }) : null;
   const marketAllowsSide = !(market === 'Spot' && candidateSide === 'SHORT');
   const riskOk = Boolean(riskPlan?.ok);
-  if (!marketAllowsSide) reasons.push('NO TRADE: Spot market is long-only; SHORT signals are disabled.');
-  if (candidateSide && !riskOk) reasons.push('NO TRADE: risk validation failed — ' + (riskPlan?.reason || 'no valid risk plan') + '.');
+  if (!marketAllowsSide) reasons.push('NO TRADE: Spot Market-এ শুধু LONG নেওয়া যায়; SHORT সিগন্যাল বন্ধ।');
+  if (candidateSide && !riskOk) reasons.push('NO TRADE: Risk যাচাইয়ে ব্যর্থ — ' + (riskPlan?.reason || 'বৈধ Risk Plan পাওয়া যায়নি') + '.');
 
   const decision = score >= 85 && volumeOk && adxOk && structureOk && riskOk && marketAllowsSide
     ? candidateSide : 'NO TRADE';
   if (decision === 'NO TRADE') {
-    if (score < 85) reasons.push('NO TRADE: confluence score ' + score + '/100 is below 85.');
-    if (!structureOk) reasons.push('NO TRADE: all directional, setup, timing, structure and flow gates must pass together.');
+    if (score < 85) reasons.push('NO TRADE: একাধিক শর্তের সম্মিলিত Score ' + score + '/১০০, যা প্রয়োজনীয় ৮৫-এর কম।');
+    if (!structureOk) reasons.push('NO TRADE: Direction, Setup, Timing, Structure ও Flow—সব শর্ত একসঙ্গে পূরণ হতে হবে।');
   } else {
-    reasons.push('Decision: ' + decision + ' — mandatory gates passed; cost-adjusted R:R ' + riskPlan.netRR.toFixed(2) + 'R.');
+    reasons.push('সিদ্ধান্ত: ' + (decision === 'LONG' ? 'LONG' : 'SHORT') + ' — সব বাধ্যতামূলক শর্ত পূরণ হয়েছে; খরচ সমন্বয়ের পর R:R ' + riskPlan.netRR.toFixed(2) + 'R.');
   }
   return {
     decision, score, reasons, riskPlan,
