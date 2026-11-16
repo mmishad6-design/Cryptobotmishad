@@ -729,12 +729,15 @@ function App() {
   const closingIds=useRef(new Set());
   const [notice,setNotice] = useState('');
   const [mtfSignal,setMtfSignal] = useState(null);
+  const translationRecords=useRef(new WeakMap());
 
   useEffect(()=>{
     try{localStorage.setItem('cryptobot.language',language);}catch{}
     const root=document.querySelector('.app');
     if(!root)return;
-    const records=new WeakMap();
+    // Keep original Bengali text across language changes. Recreating this map
+    // on every toggle made the already-translated English text become the source.
+    const records=translationRecords.current;
     const renderText=node=>{
       const current=node.nodeValue;
       let record=records.get(node);
