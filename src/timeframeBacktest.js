@@ -86,7 +86,7 @@ export function simulateTimeframeProfile({
     if (!roleData) continue;
 
     const evaluated = Object.fromEntries(
-      Object.entries(roleData).map(([frame, rows]) => [frame, evaluateFrame(rows, frame)])
+      Object.entries(roleData).map(([frame, rows]) => [frame, evaluateFrame(rows, frame, decisionTime)])
     );
     const roles = buildTimeframeRoleData(evaluated, timeframe);
     if (!roles) continue;
