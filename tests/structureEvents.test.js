@@ -57,3 +57,15 @@ test('incomplete or malformed candles safely produce no structure event', () => 
   assert.deepEqual(evaluateStructureEvent([]), { structure: 'NEUTRAL', bos: 'NONE', choch: 'NONE', sweep: 'NONE' });
   assert.equal(evaluateStructureEvent([{ close: 1 }, { close: 2 }], []).bos, 'NONE');
 });
+
+
+test('a low pivot confirmed on the event candle is not eligible yet', () => {
+  const sample = rows(100, 89);
+  const pivots = [
+    { type: 'H', index: 1, confirmationIndex: 2, price: 100 },
+    { type: 'H', index: 3, confirmationIndex: 4, price: 110 },
+    { type: 'L', index: 4, confirmationIndex: sample.length - 1, price: 90 },
+  ];
+  const event = evaluateStructureEvent(sample, pivots);
+  assert.equal(event.bos, 'NONE');
+});

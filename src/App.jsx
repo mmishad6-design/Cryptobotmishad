@@ -9,7 +9,7 @@ import { selectClosedCandlesAsOf } from './historicalData.js';
 import { createSequentialOosFolds } from './walkForward.js';
 import { findConfirmedSwingPivots } from './marketStructure.js';
 import { evaluateStructureEvent } from './structureEvents.js';
-import { suggestConservativeLeverage, calculatePaperQuantity } from './paperTrading.js';
+import { suggestConservativeLeverage, calculatePaperQuantity, getFreshPaperPrice } from './paperTrading.js';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Download, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, Trash2, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
 
@@ -429,12 +429,15 @@ function MarketRegimeScanner({market}) {
        plus.push(up>down&&up>0?up:0);minus.push(down>up&&down>0?down:0);
        if(tr.length>=14){const k=tr.length-1,atr=tr.slice(k-13,k+1).reduce((s,x)=>s+x,0)/14;atrSeries.push({atr,pct:atr/d[i].close*100});}
       }
+      let smTR=tr.slice(0,14).reduce((s,x)=>s+x,0),smPlus=plus.slice(0,14).reduce((s,x)=>s+x,0),smMinus=minus.slice(0,14).reduce((s,x)=>s+x,0);
       const dx=[];
       for(let i=13;i<tr.length;i++){
-       const sumTR=tr.slice(i-13,i+1).reduce((s,x)=>s+x,0),p=plus.slice(i-13,i+1).reduce((s,x)=>s+x,0),m=minus.slice(i-13,i+1).reduce((s,x)=>s+x,0);
-       const pdi=sumTR?p/sumTR*100:0,mdi=sumTR?m/sumTR*100:0;dx.push(pdi+mdi?Math.abs(pdi-mdi)/(pdi+mdi)*100:0);
+       if(i>13){smTR=smTR-smTR/14+tr[i];smPlus=smPlus-smPlus/14+plus[i];smMinus=smMinus-smMinus/14+minus[i];}
+       const pdi=smTR?smPlus/smTR*100:0,mdi=smTR?smMinus/smTR*100:0;
+       dx.push(pdi+mdi?Math.abs(pdi-mdi)/(pdi+mdi)*100:0);
       }
-      const recentDX=dx.slice(-14),adx=recentDX.reduce((s,x)=>s+x,0)/Math.max(1,recentDX.length);
+      let adx=0;
+      if(dx.length>=14){adx=dx.slice(0,14).reduce((s,x)=>s+x,0)/14;for(let i=14;i<dx.length;i++)adx=(adx*13+dx[i])/14;}
       const latest=atrSeries[atrSeries.length-1],recentAtr=atrSeries.slice(-100).map(x=>x.pct).sort((a,b)=>a-b);
       const median=recentAtr[Math.floor(recentAtr.length/2)],rank=atrSeries.filter(x=>x.pct<=latest.pct).length/atrSeries.length*100;
       const closes=d.map(x=>x.close),avg=(end,len)=>closes.slice(end-len+1,end+1).reduce((s,x)=>s+x,0)/len,end=closes.length-1;
@@ -511,6 +514,7 @@ function PublicDerivativesPanel({symbol}) {
   const [error,setError]=useState('');
   useEffect(()=>{
     let live=true,timer=null,ws=null,retry=null,delay=1500;
+    setData({bids:null,asks:null,globalRatio:null,topRatio:null,takerRatio:null,oiChange:null,updated:null});setLiquidations([]);setStatus('CONNECTING');setError('');
     const load=async()=>{
       const base='https://fapi.binance.com';
       const urls=[
@@ -577,7 +581,7 @@ function evaluateTimeframe(candles,timeframe) {
   const indicators=calculateWilderIndicators(rows,14),last=rows.at(-1),previous=rows.at(-2),flow=calculateCandleFlow(rows,20),e20=ema(20),e50=ema(50);
   const trend=last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED';
   const pivots=findConfirmedSwingPivots(rows,3),{structure,bos,choch,sweep}=evaluateStructureEvent(rows,pivots),frameMs=TIMEFRAME_INTERVAL_MS[timeframe];
-  const recent=rows.slice(-6),candleGaps=recent.slice(1).filter((x,i)=>x.time-recent[i].time!==frameMs).length;
+  const candleGaps=rows.slice(1).filter((x,i)=>x.time-rows[i].time!==frameMs).length;
   return {trend,rsi:indicators.rsi,volumeRatio:flow.volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum:(last.close-previous.close)/previous.close*100,candles:rows.length,adx:indicators.adx,atrPct:indicators.atr/last.close*100,atr:indicators.atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio:flow.takerRatio,flowValid:flow.valid};
 }
 
@@ -732,13 +736,13 @@ function App() {
     return()=>observer.disconnect();
   },[language]);
   const active = WATCH.find(c=>c[0]===symbol) || WATCH[0];
-  const ticker = prices[symbol];
+  const ticker = prices[market+':'+symbol];
   const price = Number(ticker?.lastPrice || 0);
   const change = Number(ticker?.priceChangePercent || 0);
   const filtered = WATCH.filter(c => (c[0]+c[1]+c[2]).toLowerCase().includes(query.toLowerCase()));
   const apiBase = market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
   const candleUrl = useMemo(()=>`${apiBase}${market==='Futures'?'/fapi/v1/klines':'/api/v3/klines'}?symbol=${symbol}&interval=${interval}&limit=160`,[symbol,interval,market]);
-  const [futuresMetrics,setFuturesMetrics] = useState({openInterest:null,fundingRate:null,updated:null});
+  const [futuresMetrics,setFuturesMetrics] = useState({openInterest:null,fundingRate:null,updated:null,symbol:null});
   const [feedStatus,setFeedStatus] = useState('CONNECTING');
   const [feedMeta,setFeedMeta] = useState({});
   const [feedClock,setFeedClock] = useState(Date.now());
@@ -752,13 +756,13 @@ function App() {
     const snapshot=async()=>{if(snapshotInFlight)return;snapshotInFlight=true;try{const rows=market==='Spot'
       ? await fetchJsonWithRetry(endpoint+'?symbols='+spotSymbols,{attempts:2,timeoutMs:10000})
       : await Promise.all(WATCH.map(w=>fetchJsonWithRetry(endpoint+'?symbol='+w[0],{attempts:2,timeoutMs:10000})));
-      if(!Array.isArray(rows))throw new Error('Invalid ticker snapshot');if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const meta=prev[x.symbol]||{};const wsFresh=meta.wsAt&&Date.now()-meta.wsAt<=15000;next[x.symbol]={...x,lastPrice:wsFresh?(prev[x.symbol]?.lastPrice||x.lastPrice):x.lastPrice};}});return next;});setUpdated(new Date());setFeedMeta(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const old=prev[x.symbol]||{},restPrice=Number(x.lastPrice),wsPrice=Number(prev[x.symbol]?.wsPrice||0),divergence=wsPrice>0&&restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null;next[x.symbol]={...old,priceAt:old.wsAt&&Date.now()-old.wsAt<=15000?old.wsAt:Date.now(),priceSource:old.wsAt&&Date.now()-old.wsAt<=15000?'WEBSOCKET':'REST',restAt:Date.now(),restPrice,divergencePct:divergence};}});return next;});}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}finally{snapshotInFlight=false;}};
+      if(!Array.isArray(rows))throw new Error('Invalid ticker snapshot');if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const key=market+':'+x.symbol;const meta=prev[key]||{};const wsFresh=meta.wsAt&&Date.now()-meta.wsAt<=15000;next[key]={...x,lastPrice:wsFresh?(prev[key]?.lastPrice||x.lastPrice):x.lastPrice};}});return next;});setUpdated(new Date());setFeedMeta(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const key=market+':'+x.symbol;const old=prev[key]||{},restPrice=Number(x.lastPrice),wsPrice=Number(prev[key]?.wsPrice||0),divergence=wsPrice>0&&restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null;next[key]={...old,priceAt:old.wsAt&&Date.now()-old.wsAt<=15000?old.wsAt:Date.now(),priceSource:old.wsAt&&Date.now()-old.wsAt<=15000?'WEBSOCKET':'REST',restAt:Date.now(),restPrice,divergencePct:divergence};}});return next;});}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}finally{snapshotInFlight=false;}};
     const startFallback=()=>{if(fallback===null){setFeedStatus('REST FALLBACK');snapshot();fallback=window.setInterval(snapshot,5000);}};
     const connect=()=>{if(!live)return;setFeedStatus('CONNECTING');const host=market==='Futures'?'wss://fstream.binance.com/stream?streams=':'wss://stream.binance.com:9443/stream?streams=';
       const streams=WATCH.map(w=>w[0].toLowerCase()+'@trade').join('/');
       const url=host+streams;try{ws=new WebSocket(url);}catch{startFallback();return;}
       ws.onopen=()=>{delay=1000;lastMessageAt=Date.now();if(fallback!==null){clearInterval(fallback);fallback=null;}setFeedStatus('LIVE');};
-      ws.onmessage=e=>{try{lastMessageAt=Date.now();const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),symbol:x.s,lastPrice:x.p}}));setFeedMeta(prev=>{const old=prev[x.s]||{},restPrice=Number(old.restPrice||0),wsPrice=Number(x.p);return {...prev,[x.s]:{...old,priceAt:Date.now(),wsAt:Date.now(),wsExchangeAt:Number(x.T||x.E||0),priceSource:'WEBSOCKET',wsPrice,divergencePct:restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null}};});setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
+      ws.onmessage=e=>{try{lastMessageAt=Date.now();const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[market+':'+x.s]:{...(prev[market+':'+x.s]||{}),symbol:x.s,lastPrice:x.p}}));setFeedMeta(prev=>{const key=market+':'+x.s,old=prev[key]||{},restPrice=Number(old.restPrice||0),wsPrice=Number(x.p);return {...prev,[key]:{...old,priceAt:Date.now(),wsAt:Date.now(),wsExchangeAt:Number(x.T||x.E||0),priceSource:'WEBSOCKET',wsPrice,divergencePct:restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null}};});setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;setFeedStatus('RECONNECTING');startFallback();reconnect=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
@@ -768,10 +772,10 @@ function App() {
   useEffect(()=>{
     let live=true,ws=null,retryTimer=null,fallbackTimer=null,watchdog=null,lastMessageAt=0,delay=1000;
     setCandles([]);setLoading(true);
-    const history=async()=>{try{const rows=await fetchJsonWithRetry(candleUrl,{attempts:2,timeoutMs:10000});if(!Array.isArray(rows))throw new Error('Invalid Binance candle response');if(live){const normalized=rows.map(k=>({time:Math.floor(Number(k[0])/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})).filter(c=>Number.isFinite(c.time)&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));setCandles(normalized.slice(-160));setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'REST'}}));setLoading(false);}}catch(e){if(live){setLoading(false);setNotice('চার্টের ক্যান্ডেল ডেটা লোড হয়নি: '+(e.message||'Binance সংযোগ সমস্যা')+'। আবার চেষ্টা করা হচ্ছে।');}}};
+    const history=async()=>{try{const rows=await fetchJsonWithRetry(candleUrl,{attempts:2,timeoutMs:10000});if(!Array.isArray(rows))throw new Error('Invalid Binance candle response');if(live){const normalized=rows.map(k=>({time:Math.floor(Number(k[0])/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})).filter(c=>Number.isFinite(c.time)&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));setCandles(normalized.slice(-160));setFeedMeta(prev=>({...prev,[market+':'+symbol]:{...(prev[market+':'+symbol]||{}),candleAt:Date.now(),candleSource:'REST'}}));setLoading(false);}}catch(e){if(live){setLoading(false);setNotice('চার্টের ক্যান্ডেল ডেটা লোড হয়নি: '+(e.message||'Binance সংযোগ সমস্যা')+'। আবার চেষ্টা করা হচ্ছে।');}}};
     const connect=()=>{if(!live)return;const host=market==='Futures'?'wss://fstream.binance.com/ws/':'wss://stream.binance.com:9443/ws/';try{ws=new WebSocket(host+symbol.toLowerCase()+'@kline_'+interval);}catch{fallback();return;}
       ws.onopen=()=>{delay=1000;lastMessageAt=Date.now();if(fallbackTimer){clearInterval(fallbackTimer);fallbackTimer=null;}};
-      ws.onmessage=e=>{try{lastMessageAt=Date.now();const k=JSON.parse(e.data).k;if(!k||!live)return;const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c,closeTime:Number(k.T),isClosed:Boolean(k.x),exchangeAt:Number(k.T)};setFeedMeta(prev=>({...prev,[symbol]:{...(prev[symbol]||{}),candleAt:Date.now(),candleSource:'WEBSOCKET',candleExchangeAt:Number(k.T)}}));setCandles(prev=>{const map=new Map(prev.map(x=>[x.time,x]));map.set(c.time,c);return [...map.values()].sort((x,y)=>x.time-y.time).slice(-160);});}catch{}};
+      ws.onmessage=e=>{try{lastMessageAt=Date.now();const k=JSON.parse(e.data).k;if(!k||!live)return;const c={time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c,closeTime:Number(k.T),isClosed:Boolean(k.x),exchangeAt:Number(k.T)};setFeedMeta(prev=>({...prev,[market+':'+symbol]:{...(prev[market+':'+symbol]||{}),candleAt:Date.now(),candleSource:'WEBSOCKET',candleExchangeAt:Number(k.T)}}));setCandles(prev=>{const map=new Map(prev.map(x=>[x.time,x]));map.set(c.time,c);return [...map.values()].sort((x,y)=>x.time-y.time).slice(-160);});}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;fallback();retryTimer=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
@@ -816,16 +820,17 @@ function App() {
 
   useEffect(()=>{
     let live=true;
-    if(market!=='Futures'){setFuturesMetrics({openInterest:null,fundingRate:null,updated:null});return ()=>{live=false;};}
+    setFuturesMetrics({openInterest:null,fundingRate:null,updated:null,symbol});
+    if(market!=='Futures')return ()=>{live=false;};
     Promise.all([
       fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`).then(r=>{if(!r.ok)throw new Error('Open interest unavailable');return r.json();}),
       fetch(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${symbol}&limit=1`).then(r=>{if(!r.ok)throw new Error('Funding rate unavailable');return r.json();})
-    ]).then(([oi,funding])=>{if(live)setFuturesMetrics({openInterest:oi.openInterest,fundingRate:funding?.[0]?.fundingRate??null,updated:new Date()});})
-      .catch(()=>{if(live)setFuturesMetrics({openInterest:null,fundingRate:null,updated:new Date()});});
+    ]).then(([oi,funding])=>{if(live)setFuturesMetrics({openInterest:oi.openInterest,fundingRate:funding?.[0]?.fundingRate??null,updated:new Date(),symbol});})
+      .catch(()=>{if(live)setFuturesMetrics({openInterest:null,fundingRate:null,updated:new Date(),symbol});});
     return ()=>{live=false;};
   },[market,symbol]);
 
-  const activeFeed = feedMeta[symbol] || {};
+  const activeFeed = feedMeta[market+':'+symbol] || {};
   const priceAge = activeFeed.priceAt ? feedClock-activeFeed.priceAt : Infinity;
   const candleAge = activeFeed.candleAt ? feedClock-activeFeed.candleAt : Infinity;
   const validClosed=candles.filter(c=>c.isClosed&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(v)&&v>0));
@@ -841,7 +846,7 @@ function App() {
   const reconciliationOk=websocketPriceFresh
     ? (!restReferenceFresh||restReferenceAge>10000||!Number.isFinite(activeFeed.divergencePct)||activeFeed.divergencePct<=0.75)
     : restReferenceFresh;
-  const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000&&closedCandleAge<=expectedCandleMs+30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
+  const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000&&closedCandleAge<=expectedCandleMs+30000, hasTicker:Number.isFinite(Number(prices[market+':'+symbol]?.lastPrice))&&Number(prices[market+':'+symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
   const integrityIssues = [
     ...(!signalHealth.hasTicker ? ['লাইভ Price Feed পাওয়া যায়নি।'] : []),
     ...(!signalHealth.priceFresh ? ['লাইভ Price Feed ৩০ সেকেন্ডের বেশি পুরোনো।'] : []),
@@ -871,7 +876,7 @@ function App() {
   useEffect(()=>{if(signalTimeframeMode==='AUTO'&&mtfSignal?.selectedTimeframe&&mtfSignal.symbol===symbol&&mtfSignal.market===market)setTimeframe(current=>current===mtfSignal.selectedTimeframe?current:mtfSignal.selectedTimeframe);},[signalTimeframeMode,mtfSignal?.selectedTimeframe,mtfSignal?.updated,mtfSignal?.symbol,mtfSignal?.market,symbol,market]);
   const suggestedLeverage=market==='Futures'&&analysis.ready&&analysis.bias!=='WAIT'?suggestConservativeLeverage({entry:price,atr:analysis.atr}):null;
   const resetDemoFunds=()=>{if(paperTrades.some(t=>t.status==='OPEN'&&t.market===market)){showNotice('Close all open '+market+' paper trades before resetting this account balance.');return;}if(window.confirm('Reset '+market+' demo balance to 10,000 USDT? Closed trade history will be kept.')){updateMarketBalance(market,10000);showNotice(market+' demo balance reset to 10,000 USDT. Trade history was preserved.');}};
-  const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['Multi-Asset Scanner',Globe2],['Market Regime',Activity],['Market Structure',Layers3],['News & Events',Newspaper]];
+  const navItems=[['Overview',Activity],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['Multi-Asset Scanner',Globe2],['Market Regime',Activity],['Market Structure',Layers3]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
   const updateMarketBalance=(marketKey,updater)=>setDemoBalances(prev=>({...prev,[marketKey]:Math.max(0,typeof updater==='function'?updater(prev[marketKey]||10000):updater)}));
   useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalances',JSON.stringify(demoBalances));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalances,paperTrades]);
@@ -902,7 +907,7 @@ function App() {
   };
   const addPaperTrade=()=>{
     if(!analysis.ready||analysis.bias==='WAIT'||!analysis.atr){showNotice('Paper trade blocked: the current MTF signal or live price is not valid. Wait for a fresh, fully checked LONG/SHORT setup.');return;}
-    if(!price){showNotice('Market price is not available yet.');return;}
+    if(!price||priceAge>15000){showNotice('Market price is stale or unavailable. Wait for a fresh quote before opening a paper trade.');return;}
     if(analysis.bias==='WAIT'||!analysis.atr){showNotice('No trade opened: setup is WAIT or ATR data is unavailable.');return;}
     if(market==='Spot'&&analysis.bias==='SHORT'){showNotice('Spot mode cannot open short positions. Switch to Futures or wait for a LONG setup.');return;}
     const side=analysis.bias,leverage=market==='Futures'?Math.max(1,Math.min(10,Math.floor(Number(paperLeverageInput)||1))):1,requestedMargin=Math.max(0,Number(paperMarginInput)),feeRate=0.0005,slippageRate=0.0002,entry=applyAdverseSlippage(price,side,'Entry',slippageRate);
@@ -922,13 +927,13 @@ function App() {
   };
   useEffect(()=>{
     paperTrades.filter(t=>t.status==='OPEN').forEach(t=>{
-      const live=Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||0);if(!live||closingIds.current.has(t.id))return;
+      const live=getFreshPaperPrice(paperPrices[t.market+':'+t.symbol],Date.now());if(!live||closingIds.current.has(t.id))return;
       const stopHit=t.side==='LONG'?live<=t.stop:live>=t.stop,targetHit=t.side==='LONG'?live>=t.target:live<=t.target;
       if(stopHit||targetHit){closingIds.current.add(t.id);closeTrade(t.id,stopHit?live:t.target,stopHit?'STOP LOSS':'TAKE PROFIT');}
     });
   },[prices,paperPrices,paperTrades,market]);
 
-  const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN'&&t.market===market).reduce((sum,t)=>{const live=Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry),exitFill=applyAdverseSlippage(live,t.side,'EXIT',Number(t.slippageRate??0.0002)),accounting=calculateTradePnl({side:t.side,entry:t.entry,exit:exitFill,quantity:t.quantity,feeRate:Number(t.feeRate??0.0005),entryFee:Number(t.entryFee||0)});return sum+(accounting.ok?accounting.netPnl:0);},0);
+  const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN'&&t.market===market).reduce((sum,t)=>{const live=Number(getFreshPaperPrice(paperPrices[t.market+':'+t.symbol],Date.now())||t.entry),exitFill=applyAdverseSlippage(live,t.side,'EXIT',Number(t.slippageRate??0.0002)),accounting=calculateTradePnl({side:t.side,entry:t.entry,exit:exitFill,quantity:t.quantity,feeRate:Number(t.feeRate??0.0005),entryFee:Number(t.entryFee||0)});return sum+(accounting.ok?accounting.netPnl:0);},0);
   return <div className={`app ${theme}`} data-language={language}>
     <aside className={`sidebar ${mobileNav?'open':''}`}>
       <div className="brand"><div className="brand-mark"><Activity size={19}/></div><div><b>Crypto<span>Bot</span></b><small>TRADING TERMINAL</small></div><button className="icon-btn mobile-close" onClick={()=>setMobileNav(false)}><X size={17}/></button></div>
@@ -941,7 +946,7 @@ function App() {
     <main className="main">
       <header className="topbar"><div className="top-left"><button className="icon-btn mobile-menu" onClick={()=>setMobileNav(true)}><Menu size={19}/></button><span className="crumb">Workspace</span><span className="slash">/</span><b>{tab}</b></div><div className="top-actions"><div className="feed"><span className={`pulse ${feedStatus==='LIVE'?'':'feed-warn'}`}/> <span>{feedStatus}</span></div><button className="icon-btn" onClick={()=>setTheme(t=>t==='dark'?'light':'dark')} title="Toggle theme">{theme==='dark'?<Sun size={17}/>:<Moon size={17}/>}</button><button className="secondary-btn language-toggle" onClick={()=>setLanguage(l=>l==='bn'?'en':'bn')} title="Switch interface language">{language==='bn'?'EN':'বাংলা'}</button><button className="icon-btn" onClick={()=>showNotice('Notifications are not configured yet.')}><Bell size={17}/></button><div className="top-avatar">M</div></div></header>
       <div className="content">
-        <div className="page-heading"><div><div className="eyebrow">WEDNESDAY, NOVEMBER 11, 2026 <span>·</span> MARKET OVERVIEW</div><h1>{tab==='Overview'?'Market overview':tab}</h1><p>Read the market. Respect the risk. Trade with a plan.</p></div><div className="heading-actions"><button className="secondary-btn" onClick={()=>{setLoading(true);fetch(candleUrl).then(r=>r.json()).then(rows=>setCandles(rows.filter(k=>Number(k[6])>Number(k[0])).map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})))).finally(()=>setLoading(false));}}><RefreshCw size={15}/> Refresh</button><button className="primary-btn" onClick={()=>setTab('Paper Trading')}><Plus size={16}/> New paper trade</button></div></div>
+        <div className="page-heading"><div><div className="eyebrow">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}).toUpperCase()} <span>·</span> MARKET OVERVIEW</div><h1>{tab==='Overview'?'Market overview':tab}</h1><p>Read the market. Respect the risk. Trade with a plan.</p></div><div className="heading-actions"><button className="secondary-btn" onClick={()=>{setLoading(true);fetch(candleUrl).then(r=>r.json()).then(rows=>setCandles(rows.filter(k=>Number(k[6])>Number(k[0])).map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})))).finally(()=>setLoading(false));}}><RefreshCw size={15}/> Refresh</button><button className="primary-btn" onClick={()=>setTab('Paper Trading')}><Plus size={16}/> New paper trade</button></div></div>
         {notice&&<div className="notice"><CircleHelp size={15}/>{notice}<button onClick={()=>setNotice('')}><X size={14}/></button></div>}
         <section className="data-integrity-panel">
           <div className="integrity-heading"><div><b>DATA INTEGRITY</b><small>Signal gate · active market / timeframe</small></div><span className={signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.hasClosedCandles&&signalHealth.reconciliationOk&&signalHealth.candleGaps===0?"integrity-ok":"integrity-warn"}>{signalHealth.priceFresh&&signalHealth.candleFresh&&signalHealth.hasTicker&&signalHealth.hasClosedCandles&&signalHealth.reconciliationOk&&signalHealth.candleGaps===0?"DATA VALID":"SIGNAL BLOCKED"}</span></div>
@@ -980,7 +985,7 @@ function App() {
         {tab==='Multi-Asset Scanner'&&<MultiAssetScanner market={market}/>}
         {tab==='Market Regime'&&<MarketRegimeScanner market={market}/>}
         {tab==='Market Structure'&&<MarketStructureScanner market={market}/ >}
-        {tab==='Futures Analysis'&&<PublicDerivativesPanel symbol={symbol}/>}
+        {tab==='Futures Analysis'&&<PublicDerivativesPanel key={symbol} symbol={symbol}/>}
         {tab==='Futures Analysis'&&(
           <section className="panel risk-panel">
             <div className="panel-title">
@@ -1002,7 +1007,7 @@ function App() {
           </section>
         )}
         <section className="lower-grid">
-          <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>নির্বাচিত Liquid Market</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Live WebSocket stream · REST fallback · {filtered.length} assets shown</div></div>
+          <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>নির্বাচিত Liquid Market</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[market+':'+c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Live WebSocket stream · REST fallback · {filtered.length} assets shown</div></div>
           <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USDT · {market}</span><span>Starting balance: $10,000</span></div><button className="secondary-btn full reset-funds-btn" onClick={resetDemoFunds}>Reset {market} demo funds</button><div className="paper-stats"><div><span>OPEN {market.toUpperCase()} Trade সংখ্যা</span><b>{paperTrades.filter(t=>t.status==='OPEN'&&t.market===market).length}</b></div><div><span>EST. NET UNREALIZED P&L</span><b className={unrealizedPnl>=0?'positive':'negative'}>{unrealizedPnl>=0?'+':''}${fmt(unrealizedPnl)}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation. Stop exits use the latest observed trade price to avoid optimistic fills after price gaps; target exits are capped at the target. Monitoring depends on this page receiving Binance updates. If the page or connection is offline, the exact intraperiod path can be missed. Futures funding and liquidation are not simulated.</p></div>
         </section>
         {(tab==='Paper Trading'||tab==='Trade Journal')&&(
@@ -1021,10 +1026,10 @@ function App() {
                   <div className="trade-row" key={t.id}>
                     <b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b>
                     <span>Entry: ${fmt(t.entry)}</span>
-                    <span>{t.status==='OPEN'?('Live: $'+fmt(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry)):('Exit: $'+fmt(t.exit))}</span>
+                    <span>{t.status==='OPEN'?('Live: $'+fmt(getFreshPaperPrice(paperPrices[t.market+':'+t.symbol],Date.now())||t.entry)):('Exit: $'+fmt(t.exit))}</span>
                     <span>SL: ${fmt(t.stop)} · TP: ${fmt(t.target)} · {t.market} · {t.leverage}x</span>
                     {t.status==='OPEN'
-                      ? <button className="secondary-btn" disabled={!Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0))} onClick={()=>closeTrade(t.id,Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)),'MANUAL')}>Close at market</button>
+                      ? <button className="secondary-btn" disabled={!Number(getFreshPaperPrice(paperPrices[t.market+':'+t.symbol],Date.now()))} onClick={()=>closeTrade(t.id,Number(getFreshPaperPrice(paperPrices[t.market+':'+t.symbol],Date.now())),'MANUAL')}>Close at market</button>
                       : <b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)} <small>{t.exitReason||'CLOSED'}</small></b>}
                   </div>
                 ))}
