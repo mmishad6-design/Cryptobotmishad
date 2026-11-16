@@ -7,6 +7,7 @@ import { calculateCandleFlow, calculateOrderBookDepth } from './flowMetrics.js';
 import { applyAdverseSlippage, calculateTradePnl, resolveIntrabarExit } from './tradeExecution.js';
 import { selectClosedCandlesAsOf } from './historicalData.js';
 import { createSequentialOosFolds } from './walkForward.js';
+import { simulateTimeframeProfile } from './timeframeBacktest.js';
 import { findConfirmedSwingPivots } from './marketStructure.js';
 import { evaluateStructureEvent } from './structureEvents.js';
 import { suggestConservativeLeverage, calculatePaperQuantity, getFreshPaperPrice } from './paperTrading.js';
@@ -275,6 +276,75 @@ function BacktestPanel({symbol,market,defaultInterval}) {
   <div className="backtest-disclaimer"><ShieldCheck size={14}/> ৩০ দিনের Indicator প্রস্তুতির ডেটাসহ ঐতিহাসিক MTF Simulation। ভবিষ্যতের Candle আগেভাগে ব্যবহার করা হয় না এবং অদেখা Test ভাগের ফল দেখানো হয়। তবে ঐতিহাসিক Order Book Depth ও বাস্তব Trade-এর কয়েকটি খরচ এতে নেই। জয়ের হার বা লাভজনকতার কোনো নিশ্চয়তা দেওয়া হচ্ছে না।</div>
   </section>;
 }
+
+function AutoTimeframeValidationPanel({symbol,market}) {
+  const [days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02');
+  const [running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
+  const frames=['5m','15m','1h','4h','1d','1w'];
+  const intervalMs={'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000,'1w':604800000};
+  const warmupDays={'5m':30,'15m':30,'1h':45,'4h':60,'1d':180,'1w':1100};
+  const toRows=(raw,ms,now)=>{const unique=new Map();for(const k of raw){if(Number(k[6])<now)unique.set(Number(k[0]),{time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:k[9]===undefined?null:Number(k[9])});}return [...unique.values()].sort((a,b)=>a.time-b.time);};
+  const evaluateFrame=rows=>{
+    if(!Array.isArray(rows)||rows.length<60)return null;
+    const d=rows.slice(-120),last=d.at(-1),indicators=calculateWilderIndicators(d,14),flow=calculateCandleFlow(d,20);
+    const pivots=findConfirmedSwingPivots(d,3),structure=evaluateStructureEvent(d,pivots);
+    const ema=n=>{const alpha=2/(n+1);let value=d.slice(0,n).reduce((sum,c)=>sum+c.close,0)/n;for(let i=n;i<d.length;i++)value=d[i].close*alpha+value*(1-alpha);return value;};
+    const e20=ema(20),e50=ema(50);
+    return {trend:last.close>e20&&e20>e50?'BULLISH':last.close<e20&&e20<e50?'BEARISH':'MIXED',rsi:indicators.rsi,volumeRatio:flow.volumeRatio,adx:indicators.adx,atr:indicators.atr,bos:structure.bos,choch:structure.choch,sweep:structure.sweep,takerRatio:flow.takerRatio,close:last.close};
+  };
+  const run=async()=>{
+    setRunning(true);setError('');setResult(null);
+    try{
+      const now=Date.now(),periodStart=now-Number(days)*86400000,splitAt=periodStart+Math.floor((now-periodStart)*0.7);
+      const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',endpoint=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
+      const fetchFrame=async frame=>{
+        const ms=intervalMs[frame];let cursor=periodStart-warmupDays[frame]*86400000,raw=[],pages=0;
+        while(cursor<now&&pages<100){
+          const batch=await fetchJsonWithRetry(base+endpoint+'?symbol='+symbol+'&interval='+frame+'&startTime='+cursor+'&endTime='+now+'&limit=1000');
+          if(!Array.isArray(batch))throw new Error(frame+' API response is malformed.');
+          if(!batch.length)break;
+          raw=raw.concat(batch);
+          const next=Number(batch.at(-1)[0])+ms;
+          if(next<=cursor)throw new Error(frame+' pagination did not advance.');
+          cursor=next;pages++;
+          if(batch.length<1000)break;
+        }
+        if(pages>=100&&cursor<now)throw new Error(frame+' history exceeded the pagination safety limit.');
+        return toRows(raw,ms,now);
+      };
+      const fetched=await Promise.all(frames.map(fetchFrame));
+      const dataByFrame=Object.fromEntries(frames.map((frame,index)=>[frame,fetched[index]]));
+      const feeRate=Math.max(0,Math.min(1,Number(fee)||0))/100,slippageRate=Math.max(0,Math.min(1,Number(slippage)||0))/100;
+      const candidates=['5m','15m','1h'].map(timeframe=>{
+        const training=simulateTimeframeProfile({dataByFrame,timeframe,market,feeRate,slippageRate,startTime:periodStart,endTime:splitAt,evaluateFrame});
+        const outOfSample=simulateTimeframeProfile({dataByFrame,timeframe,market,feeRate,slippageRate,startTime:splitAt,endTime:now,evaluateFrame});
+        if(!training.ok)throw new Error(timeframe+' Training: '+training.reason);
+        if(!outOfSample.ok)throw new Error(timeframe+' OOS: '+outOfSample.reason);
+        return {timeframe,training,outOfSample};
+      });
+      setResult({symbol,market,days,periodStart,splitAt,now,coverage:Object.fromEntries(frames.map((frame,index)=>[frame,fetched[index].length])),candidates,selected:candidates.slice().sort((a,b)=>b.training.returnPct-a.training.returnPct)[0]?.timeframe||null});
+    }catch(e){setError(e.message||'AUTO timeframe historical validation failed.');}
+    finally{setRunning(false);}
+  };
+  const metric=x=>x.returnPct.toFixed(2)+'% · '+x.tradeCount+' trades · '+x.winRate.toFixed(1)+'% win rate · PF '+(x.profitFactor===null?'∞':x.profitFactor.toFixed(2))+' · DD '+x.maxDrawdown.toFixed(2)+'%';
+  return <section className="panel backtest-panel">
+    <div className="panel-title"><div><h3>AUTO Timeframe Historical Validation</h3><p>5m, 15m ও 1h profile আলাদাভাবে যাচাই · 70% Training / 30% Out-of-Sample · closed candle only</p></div><span className="tiny-live">RESEARCH MODE</span></div>
+    <div className="backtest-controls">
+      <label>Historical period<select value={days} onChange={e=>setDays(e.target.value)}><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
+      <label>Trading Fee (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label>
+      <label>Slippage (%)<input type="number" min="0" max="1" step="0.01" value={slippage} onChange={e=>setSlippage(e.target.value)}/></label>
+      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'যাচাই হচ্ছে…':'তিনটি AUTO profile যাচাই করো'}</button>
+    </div>
+    {error&&<div className="backtest-error">{error}</div>}
+    {result&&<>
+      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.periodStart).toLocaleDateString()} – {new Date(result.now).toLocaleDateString()}</span><span>Training / OOS split: {new Date(result.splitAt).toLocaleDateString()}</span></div>
+      <div className="backtest-meta"><span>Fetched candles: {Object.entries(result.coverage).map(([frame,count])=>frame+': '+count).join(' · ')}</span><span>প্রাথমিক training return অনুযায়ী সেরা: {result.selected}</span></div>
+      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>Entry profile</th><th>Training result (70%)</th><th>Out-of-sample result (30%)</th><th>OOS trades</th></tr></thead><tbody>{result.candidates.map(x=><tr key={x.timeframe}><td>{x.timeframe}</td><td>{metric(x.training)}</td><td className={x.outOfSample.returnPct>=0?'positive':'negative'}>{metric(x.outOfSample)}</td><td>{x.outOfSample.tradeCount}</td></tr>)}</tbody></table></div>
+      <p className="backtest-assumption">প্রতিটি profile-এর জন্য একই 70/30 তারিখভিত্তিক split ব্যবহার করা হয়েছে। Training এবং OOS আলাদা ১০,০০০ USDT balance দিয়ে শুরু হয়; OOS-এ training-এর পরের কোনো candle signal তৈরিতে ব্যবহার হয় না। Profile ranking এখানে training return দিয়ে দেখানো; এটি AUTO-এর live score-based timeframe selector-এর historical replay নয়। Order-book depth, funding, liquidation, spread ও partial fills পুরোপুরি মডেল করা হয়নি। ফলাফল গবেষণামূলক, লাভের নিশ্চয়তা নয়।</p>
+    </>}
+  </section>;
+}
+
 function StrategyOptimizer({symbol,market}) {
   const [tf,setTf]=useState('15m'),[days,setDays]=useState('30'),[fee,setFee]=useState('0.05'),[slippage,setSlippage]=useState('0.02');
   const [running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
@@ -981,7 +1051,7 @@ function App() {
             <div className="panel metrics-panel"><div className="panel-title"><div><h3>Market metrics</h3><p>{active[2]} · 24 hour</p></div><BarChart3 size={17}/></div><div className="metric-row"><span>24h Volume (USDT)</span><b>{ticker?compact(+ticker.quoteVolume):'—'}</b></div><div className="metric-row"><span>24h High</span><b className="positive">{ticker?'$'+fmt(ticker.highPrice):'—'}</b></div><div className="metric-row"><span>24h Low</span><b className="negative">{ticker?'$'+fmt(ticker.lowPrice):'—'}</b></div><div className="metric-row"><span>24h Trades</span><b>{ticker?compact(+ticker.count):'—'}</b></div><div className="metric-row"><span>Market source</span><b className="source-label">Binance {market}</b></div>{market==='Futures'&&<><div className="metric-row"><span>Open interest</span><b>{futuresMetrics.openInterest?compact(+futuresMetrics.openInterest):'—'}</b></div><div className="metric-row"><span>Funding rate</span><b className={Number(futuresMetrics.fundingRate)>=0?'positive':'negative'}>{futuresMetrics.fundingRate!==null?fmt(Number(futuresMetrics.fundingRate)*100,4)+'%':'—'}</b></div></>}</div>
           </div>
         </section>
-        {tab==='Backtesting'&&<BacktestPanel symbol={symbol} market={market} defaultInterval={interval}/>}
+        {tab==='Backtesting'&&<><BacktestPanel symbol={symbol} market={market} defaultInterval={interval}/><AutoTimeframeValidationPanel symbol={symbol} market={market}/></>}
         {tab==='Strategy Lab'&&<StrategyOptimizer symbol={symbol} market={market}/>}
         {tab==='Multi-Asset Scanner'&&<MultiAssetScanner market={market}/>}
         {tab==='Market Regime'&&<MarketRegimeScanner market={market}/>}
