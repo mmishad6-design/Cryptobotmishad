@@ -20,7 +20,8 @@ function makeRows(frame, count = 150) {
 }
 
 const frames = ['5m', '15m', '1h', '4h', '1d', '1w'];
-const evaluateFrame = rows => {
+const evaluateFrame = (rows, frame, decisionTime) => {
+  if (rows.length) assert.ok(rows.at(-1).closeTime <= decisionTime, frame + ' leaked a candle that had not closed at decision time');
   const last = rows.at(-1);
   return {
     trend: 'BULLISH', rsi: 60, volumeRatio: 2, adx: 30, atr: 1,
