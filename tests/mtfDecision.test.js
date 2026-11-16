@@ -24,10 +24,11 @@ test('live LONG requires aligned trend, setup, timing, structure, volume, taker 
   assert.equal(result.gates.risk,true);
 });
 
-test('live mode blocks missing order-book depth even when taker flow is bullish', () => {
+test('live mode can use confirmed taker flow when an order-book snapshot is temporarily unavailable', () => {
   const result = evaluateMtfDecision({data:bullishData(),flow:{takerRatio:1.2,depthRatio:null},flowMode:'live',entry:100});
-  assert.equal(result.decision,'NO TRADE');
-  assert.equal(result.gates.flow,false);
+  assert.equal(result.decision,'LONG');
+  assert.equal(result.gates.flow,true);
+  assert.ok(result.reasons.some(x=>x.includes('Score কম রাখা হয়েছে')));
 });
 
 test('historical mode uses taker proxy but explicitly does not require unavailable depth snapshots', () => {
