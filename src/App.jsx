@@ -63,6 +63,32 @@ const wilderATRAt = (rows,endIndex,period=14) => {
   return atr;
 };
 const intervals = ['1m','5m','15m','1h','4h','1d'];
+
+async function fetchJsonWithRetry(url, { attempts = 3, timeoutMs = 10000 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+      if (!response.ok) {
+        const error = new Error('HTTP ' + response.status);
+        error.status = response.status;
+        if (response.status !== 429 && response.status < 500) throw error;
+        lastError = error;
+      } else {
+        return await response.json();
+      }
+    } catch (error) {
+      lastError = error;
+      if (error?.status && error.status !== 429 && error.status < 500) throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+    if (attempt < attempts - 1) await new Promise(resolve => window.setTimeout(resolve, 500 * (2 ** attempt)));
+  }
+  throw lastError || new Error('Binance API request failed');
+}
 const profileName = name => ({Balanced:'ভারসাম্যপূর্ণ', 'Strict trend':'কঠোর Trend', 'Early momentum':'প্রাথমিক Momentum', 'Volume confirmed':'Volume নিশ্চিত', 'High conviction':'উচ্চ আস্থার সেটআপ', 'Baseline fallback':'বিকল্প Baseline'}[name] || name);
 
 const regimeLabel = value => ({TRENDING:'Trend চলমান',RANGING:'সীমাবদ্ধ Market', 'HIGH VOLATILITY':'উচ্চ Volatility',TRANSITION:'পরিবর্তনশীল অবস্থা'}[value] || value);
@@ -565,30 +591,31 @@ function evaluateTimeframe(candles,timeframe) {
   const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-61),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
   return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio,flowValid:flowMetrics.valid};
 }
-function Multiটাইমফ্রেমignal({symbol,market,onSignal}) {
+function MultiTimeframeSignal({symbol,market,onSignal}) {
   const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
   useEffect(()=>{onSignal?.(result);},[result,onSignal]);
   useEffect(()=>{
-    let live=true;
+    let live=true,inFlight=false;
     const run=async()=>{
+      if(inFlight)return;
+      inFlight=true;
       setLoading(true);setError('');
       try{
         const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com';
         const path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
         const frames=['4h','1h','15m','5m'];
         const all=await Promise.all(frames.map(async tf=>{
-          const response=await fetch(base+path+'?symbol='+symbol+'&interval='+tf+'&limit=120',{cache:'no-store'});
-          if(!response.ok)throw new Error(tf+' timeframe data unavailable ('+response.status+')');
-          return [tf,evaluateTimeframe(await response.json(),tf)];
+          const candles=await fetchJsonWithRetry(base+path+'?symbol='+symbol+'&interval='+tf+'&limit=120');
+          if(!Array.isArray(candles))throw new Error(tf+' timeframe returned an invalid candle payload');
+          return [tf,evaluateTimeframe(candles,tf)];
         }));
         const depthRequestedAt=Date.now();
-        const depthResponse=await fetch(base+(market==='Futures'?'/fapi/v1/depth':'/api/v3/depth')+'?symbol='+symbol+'&limit=20',{cache:'no-store'});
-        if(!depthResponse.ok)throw new Error('Order-book snapshot unavailable ('+depthResponse.status+').');
-        const book=await depthResponse.json();
-        const depthReceivedAt=Date.now();
-        const depth=calculateOrderBookDepth(book,{requestedAt:depthRequestedAt,receivedAt:depthReceivedAt,maxRequestMs:8000});
-        if(!depth.ok)throw new Error('Order-book snapshot rejected: '+depth.reason);
-        const {bidValue,askValue,depthRatio}=depth;
+        let depth=null;
+        try {
+          const book=await fetchJsonWithRetry(base+(market==='Futures'?'/fapi/v1/depth':'/api/v3/depth')+'?symbol='+symbol+'&limit=20',{attempts:2,timeoutMs:7000});
+          depth=calculateOrderBookDepth(book,{requestedAt:depthRequestedAt,receivedAt:Date.now(),maxRequestMs:8000});
+        } catch {}
+        const {bidValue=null,askValue=null,depthRatio=null}=depth?.ok?depth:{};
         let externalTakerRatio=null;
         if(market==='Futures'){
           try{
@@ -607,10 +634,10 @@ function Multiটাইমফ্রেমignal({symbol,market,onSignal}) {
           data, flow:{takerRatio,depthRatio}, flowMode:'live', entry:m5.close, market,
         });
         const {decision,score,reasons,riskPlan,gates}=evaluated;
-        setResult({symbol,market,decision,score,data,riskPlan,gates,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio,depthRequestMs:depth.requestDurationMs},reasons,updated:new Date(),status:'READY'});
+        setResult({symbol,market,decision,score,data,riskPlan,gates,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio,depthRequestMs:depth?.requestDurationMs??null,depthAvailable:Boolean(depth?.ok)},reasons,updated:new Date(),status:'READY'});
         setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const referenceEntry=m5.close,entry=applyAdverseSlippage(referenceEntry,decision,'Entry',0.0002),atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,referenceEntry,entryType:'COMPLETED_5M_CLOSE_WITH_ESTIMATED_SLIPPAGE',feeRate:0.0005,slippageRate:0.0002,stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
       }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['NO TRADE: প্রয়োজনীয় টাইমফ্রেমের ক্যান্ডেল অথবা order-book ডেটা পাওয়া যায়নি। সংযোগ, Binance API বা rate limit সমস্যার কারণে বিশ্লেষণ সম্পূর্ণ হয়নি। বিস্তারিত: '+(e.message||'অজানা ডেটা সমস্যা')],updated:new Date(),status:'BLOCKED'});setError('বিশ্লেষণ সম্পন্ন হয়নি: '+(e.message||'Binance ডেটা পাওয়া যায়নি।'));}}
-      finally{if(live)setLoading(false);}
+      finally{inFlight=false;if(live)setLoading(false);}
     };
     run();const timer=window.setInterval(run,60000);
     return()=>{live=false;clearInterval(timer);};
@@ -716,19 +743,19 @@ function App() {
 
   // Push-based 24h ticker feed: Binance WebSocket, with REST snapshot/fallback.
   useEffect(()=>{
-    let live=true,ws=null,reconnect=null,fallback=null,snapshotTimer=null,delay=1000;
+    let live=true,ws=null,reconnect=null,fallback=null,snapshotTimer=null,watchdog=null,lastMessageAt=0,delay=1000;
     const endpoint=market==='Futures'?'https://fapi.binance.com/fapi/v1/ticker/24hr':'https://api.binance.com/api/v3/ticker/24hr';
     const snapshot=async()=>{try{const r=await fetch(endpoint);if(!r.ok)throw new Error();const rows=await r.json();if(!live)return;setPrices(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const meta=prev[x.symbol]||{};const wsFresh=meta.wsAt&&Date.now()-meta.wsAt<=15000;next[x.symbol]={...x,lastPrice:wsFresh?(prev[x.symbol]?.lastPrice||x.lastPrice):x.lastPrice};}});return next;});setUpdated(new Date());setFeedMeta(prev=>{const next={...prev};rows.forEach(x=>{if(WATCH.some(w=>w[0]===x.symbol)){const old=prev[x.symbol]||{},restPrice=Number(x.lastPrice),wsPrice=Number(prev[x.symbol]?.wsPrice||0),divergence=wsPrice>0&&restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null;next[x.symbol]={...old,priceAt:old.wsAt&&Date.now()-old.wsAt<=15000?old.wsAt:Date.now(),priceSource:old.wsAt&&Date.now()-old.wsAt<=15000?'WEBSOCKET':'REST',restAt:Date.now(),restPrice,divergencePct:divergence};}});return next;});}catch{if(live)setNotice('Live feed reconnecting; using the latest available market snapshot.');}};
     const startFallback=()=>{if(fallback===null){setFeedStatus('REST FALLBACK');snapshot();fallback=window.setInterval(snapshot,5000);}};
     const connect=()=>{if(!live)return;setFeedStatus('CONNECTING');const host=market==='Futures'?'wss://fstream.binance.com/stream?streams=':'wss://stream.binance.com:9443/stream?streams=';
       const streams=WATCH.map(w=>w[0].toLowerCase()+'@trade').join('/');
       const url=host+streams;try{ws=new WebSocket(url);}catch{startFallback();return;}
-      ws.onopen=()=>{delay=1000;if(fallback!==null){clearInterval(fallback);fallback=null;}setFeedStatus('LIVE');};
-      ws.onmessage=e=>{try{const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),symbol:x.s,lastPrice:x.p}}));setFeedMeta(prev=>{const old=prev[x.s]||{},restPrice=Number(old.restPrice||0),wsPrice=Number(x.p);return {...prev,[x.s]:{...old,priceAt:Date.now(),wsAt:Date.now(),wsExchangeAt:Number(x.T||x.E||0),priceSource:'WEBSOCKET',wsPrice,divergencePct:restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null}};});setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
+      ws.onopen=()=>{delay=1000;lastMessageAt=Date.now();if(fallback!==null){clearInterval(fallback);fallback=null;}setFeedStatus('LIVE');};
+      ws.onmessage=e=>{try{lastMessageAt=Date.now();const x=JSON.parse(e.data).data;if(!x?.s||!x?.p)return;setPrices(prev=>({...prev,[x.s]:{...(prev[x.s]||{}),symbol:x.s,lastPrice:x.p}}));setFeedMeta(prev=>{const old=prev[x.s]||{},restPrice=Number(old.restPrice||0),wsPrice=Number(x.p);return {...prev,[x.s]:{...old,priceAt:Date.now(),wsAt:Date.now(),wsExchangeAt:Number(x.T||x.E||0),priceSource:'WEBSOCKET',wsPrice,divergencePct:restPrice>0?Math.abs(wsPrice-restPrice)/restPrice*100:null}};});setUpdated(new Date());setFeedStatus('LIVE');}catch{}};
       ws.onerror=()=>{try{ws.close();}catch{}};
       ws.onclose=()=>{if(!live)return;setFeedStatus('RECONNECTING');startFallback();reconnect=window.setTimeout(connect,delay);delay=Math.min(delay*2,15000);};
     };
-    snapshot();snapshotTimer=window.setInterval(snapshot,30000);connect();return()=>{live=false;if(reconnect)clearTimeout(reconnect);if(fallback!==null)clearInterval(fallback);if(snapshotTimer!==null)clearInterval(snapshotTimer);try{ws?.close();}catch{}};
+    snapshot();snapshotTimer=window.setInterval(snapshot,30000);connect();watchdog=window.setInterval(()=>{if(live&&ws?.readyState===WebSocket.OPEN&&lastMessageAt&&Date.now()-lastMessageAt>45000){setFeedStatus('RECONNECTING');startFallback();try{ws.close();}catch{}}},10000);return()=>{live=false;if(reconnect)clearTimeout(reconnect);if(fallback!==null)clearInterval(fallback);if(snapshotTimer!==null)clearInterval(snapshotTimer);if(watchdog!==null)clearInterval(watchdog);try{ws?.close();}catch{}};
   },[market]);
   // Load fresh history whenever the selected chart market changes.
   useEffect(()=>{
@@ -905,7 +932,7 @@ function App() {
             <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
           </div><p>Age is measured from browser receipt time. This check cannot guarantee zero exchange/network latency.</p>
         </section>
-        <Multiটাইমফ্রেমignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
+        <MultiTimeframeSignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
         <section className="market-strip">
           <div className="market-stat"><span>BTC / USDT</span><b>{prices.BTCUSDT?'$'+fmt(prices.BTCUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.BTCUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.BTCUSDT?fmt(prices.BTCUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat"><span>ETH / USDT</span><b>{prices.ETHUSDT?'$'+fmt(prices.ETHUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.ETHUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.ETHUSDT?fmt(prices.ETHUSDT.priceChangePercent)+'%':'—'}</em></div>
