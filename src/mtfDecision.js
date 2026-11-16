@@ -12,14 +12,19 @@ export function evaluateMtfDecision({
   feeRate,
   slippageRate,
   thresholds = {},
+  frameLabels = {},
 } = {}) {
+  const roleLabels = {
+    contextSlow: '4h', contextFast: '1h', setup: '15m', entry: '5m',
+    ...frameLabels,
+  };
   const fail = reason => ({
     decision: 'NO TRADE', score: 0, reasons: [reason],
     gates: { data: false, trend: false, setup: false, timing: false, structure: false, volume: false, adx: false, flow: false, risk: false },
     riskPlan: null,
   });
   const frames = ['4h', '1h', '15m', '5m'];
-  if (!data || frames.some(frame => !data[frame])) return fail('NO TRADE: প্রয়োজনীয় 4H/1H/15M/5M টাইমফ্রেমের ডেটা পাওয়া যায়নি।');
+  if (!data || frames.some(frame => !data[frame])) return fail('NO TRADE: প্রয়োজনীয় ' + [roleLabels.contextSlow, roleLabels.contextFast, roleLabels.setup, roleLabels.entry].map(x => x.toUpperCase()).join('/') + ' টাইমফ্রেমের ডেটা পাওয়া যায়নি।');
   const [h4, h1, m15, m5] = frames.map(frame => data[frame]);
   const numeric = [h4,h1,m15,m5].every(x =>
     Number.isFinite(x.close) && x.close > 0 &&
@@ -71,23 +76,23 @@ export function evaluateMtfDecision({
   const reasons = [];
   if (longBias || shortBias) {
     score += 25;
-    reasons.push('4H ও 1H ট্রেন্ড একই দিকে: ' + (longBias ? 'ঊর্ধ্বমুখী' : 'নিম্নমুখী') + '.');
-  } else reasons.push('NO TRADE: 4H ও 1H-এর Trend একই দিকে নেই।');
+    reasons.push(roleLabels.contextSlow.toUpperCase() + ' ও ' + roleLabels.contextFast.toUpperCase() + ' ট্রেন্ড একই দিকে: ' + (longBias ? 'ঊর্ধ্বমুখী' : 'নিম্নমুখী') + '.');
+  } else reasons.push('NO TRADE: ' + roleLabels.contextSlow.toUpperCase() + ' ও ' + roleLabels.contextFast.toUpperCase() + '-এর Trend একই দিকে নেই।');
   if (longSetup || shortSetup) {
     score += 20;
-    reasons.push('15M সেটআপে Trend, RSI ও ADX-এর সমর্থন পাওয়া গেছে।');
-  } else reasons.push('NO TRADE: 15M Setup-এর প্রয়োজনীয় শর্ত পূরণ হয়নি।');
+    reasons.push(roleLabels.setup.toUpperCase() + ' সেটআপে Trend, RSI ও ADX-এর সমর্থন পাওয়া গেছে.');
+  } else reasons.push('NO TRADE: ' + roleLabels.setup.toUpperCase() + ' Setup-এর প্রয়োজনীয় শর্ত পূরণ হয়নি।');
   if (longTiming || shortTiming) {
     score += 15;
-    reasons.push('5M এন্ট্রির সময় বর্তমান দিককে সমর্থন করছে।');
-  } else reasons.push('NO TRADE: 5M Entry নেওয়ার উপযুক্ত সময় নিশ্চিত হয়নি।');
+    reasons.push(roleLabels.entry.toUpperCase() + ' এন্ট্রির সময় বর্তমান দিককে সমর্থন করছে.');
+  } else reasons.push('NO TRADE: ' + roleLabels.entry.toUpperCase() + ' Entry নেওয়ার উপযুক্ত সময় নিশ্চিত হয়নি।');
   if ((longBias && longStructure) || (shortBias && shortStructure)) {
     score += 15;
     reasons.push('Market Structure উচ্চতর টাইমফ্রেমের দিককে সমর্থন করছে।');
   } else reasons.push('একই দিকের BOS, CHoCH অথবা Liquidity Sweep পাওয়া যায়নি; Volume ও Taker Flow-এর বিকল্প সমর্থন যাচাই করা হয়েছে।');
   if (volumeOk) {
     score += 10;
-    reasons.push('15M ও 5M-এর Volume নিজ নিজ গড়ের অন্তত 0.75 গুণ।');
+    reasons.push(roleLabels.setup.toUpperCase() + ' ও ' + roleLabels.entry.toUpperCase() + '-এর Volume নিজ নিজ গড়ের অন্তত 0.75 গুণ.');
   } else reasons.push('NO TRADE: Volume-এর সমর্থন যথেষ্ট নয়।');
   if ((longBias && flowLong) || (shortBias && flowShort)) {
     score += depthAvailable ? 15 : 10;
@@ -99,7 +104,7 @@ export function evaluateMtfDecision({
       ? 'NO TRADE: ঐতিহাসিক Taker Volume অনুপস্থিত অথবা বিপরীত দিক নির্দেশ করছে।'
       : 'NO TRADE: Taker Flow অথবা Order Book-এর শীর্ষ ২০ স্তরের Depth অনুপস্থিত কিংবা বিপরীতমুখী।');
   }
-  if (!adxOk) reasons.push('NO TRADE: ADX-এর শক্তির শর্ত পূরণ হয়নি (4H/1H কমপক্ষে ১৫ এবং 15M কমপক্ষে ১৮ হতে হবে)।');
+  if (!adxOk) reasons.push('NO TRADE: ADX-এর শক্তির শর্ত পূরণ হয়নি (' + roleLabels.contextSlow.toUpperCase() + '/' + roleLabels.contextFast.toUpperCase() + ' কমপক্ষে ১৫ এবং ' + roleLabels.setup.toUpperCase() + ' কমপক্ষে ১৮ হতে হবে)।');
 
   const riskEntry = entry === undefined || entry === null ? m5.close : entry;
   const riskPlan = candidateSide ? validateSignalRiskPlan({
@@ -127,6 +132,6 @@ export function evaluateMtfDecision({
       timing: sideTiming, structure: sideStructure, volume: volumeOk,
       adx: adxOk, flow: sideFlow, risk: riskOk, market: marketAllowsSide,
     },
-    diagnostics: { takerRatio, depthRatio: Number.isFinite(depthRatio) ? depthRatio : null, flowMode },
+    diagnostics: { takerRatio, depthRatio: Number.isFinite(depthRatio) ? depthRatio : null, flowMode, frameLabels: roleLabels },
   };
 }

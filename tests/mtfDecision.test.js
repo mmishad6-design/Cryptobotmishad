@@ -103,6 +103,13 @@ test('historical position sizing respects equity risk budget and notional cap', 
   assert.ok(result.riskPlan.quantity*result.riskPlan.entry<=30000);
 });
 
+test('signal explanations use the selected candidate timeframe roles', () => {
+  const result=evaluateMtfDecision({data:bullishData(),flow:{takerRatio:1.2,depthRatio:1.1},entry:100,frameLabels:{contextSlow:'1d',contextFast:'4h',setup:'1h',entry:'15m'}});
+  assert.ok(result.reasons.some(x=>x.includes('1D ও 4H')));
+  assert.ok(result.reasons.some(x=>x.includes('1H সেটআপ')));
+  assert.ok(result.reasons.some(x=>x.includes('15M এন্ট্রির সময়')));
+});
+
 test('training profile thresholds are applied by the shared engine', () => {
   const data=bullishData();
   data['15m'].rsi=51;
