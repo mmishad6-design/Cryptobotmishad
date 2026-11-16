@@ -146,7 +146,15 @@ const EN = {
 'Setup-এ WAIT দেখালে জোর করে Trade নিও না।':'Do not force a trade when the setup shows WAIT.',
 'Paper trading is a simulation.':'Paper trading is a simulation.',
 'শুধু পর্যবেক্ষণভিত্তিক হিসাব':'Observation-only calculation',
-'এটি গবেষণামূলক ফলাফল—ভবিষ্যৎ লাভের নিশ্চয়তা নয়।':'Research result only — not a guarantee of future profit.'
+'এটি গবেষণামূলক ফলাফল—ভবিষ্যৎ লাভের নিশ্চয়তা নয়।':'Research result only — not a guarantee of future profit.',
+'Signal Block হওয়ার কারণ: ':'Signal blocked because: ',
+'লাইভ Price Feed পাওয়া যায়নি।':'Live price feed is unavailable. ',
+'লাইভ Price Feed ৩০ সেকেন্ডের বেশি পুরোনো।':'Live price feed is older than 30 seconds. ',
+'কমপক্ষে ৫০টি সম্পূর্ণ Candle পাওয়া যায়নি।':'Fewer than 50 completed candles are available. ',
+'Candle Feed পুরোনো অথবা সর্বশেষ সম্পূর্ণ Candle দেরিতে এসেছে।':'Candle feed is stale or the latest completed candle arrived late. ',
+'REST ও WebSocket Price-এর পার্থক্য গ্রহণযোগ্য সীমার বাইরে।':'REST and WebSocket prices differ beyond the allowed threshold. ',
+'টি Candle interval অনুপস্থিত।':' candle interval(s) are missing. ',
+'সব Data Integrity Check পাস করেছে।':'All data integrity checks passed.'
 
 };
 const sorted=Object.keys(EN).sort((a,b)=>b.length-a.length);
