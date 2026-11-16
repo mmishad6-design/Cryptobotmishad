@@ -37,8 +37,8 @@ export function evaluateMtfDecision({
   const rsiShort = Number.isFinite(thresholds.rsiShort) ? thresholds.rsiShort : 50;
   const adx15Min = Number.isFinite(thresholds.adx15) ? thresholds.adx15 : 18;
   const adxTrendMin = Number.isFinite(thresholds.adxTrend) ? thresholds.adxTrend : 15;
-  const volumeMin = Number.isFinite(thresholds.volume) ? thresholds.volume : 0.8;
-  const takerMin = Number.isFinite(thresholds.taker) ? thresholds.taker : 1.05;
+  const volumeMin = Number.isFinite(thresholds.volume) ? thresholds.volume : 0.75;
+  const takerMin = Number.isFinite(thresholds.taker) ? thresholds.taker : 1.03;
   const longSetup = longBias && m15.trend === 'BULLISH' && m15.rsi >= rsiLong && m15.rsi <= 72 && m15.adx >= adx15Min;
   const shortSetup = shortBias && m15.trend === 'BEARISH' && m15.rsi >= 28 && m15.rsi <= rsiShort && m15.adx >= adx15Min;
   const longStructure = ['BULLISH'].includes(m15.bos) || m15.choch === 'BULLISH' || m15.sweep === 'LOW-SIDE' ||
@@ -50,14 +50,17 @@ export function evaluateMtfDecision({
   const volumeOk = m15.volumeRatio >= volumeMin && m5.volumeRatio >= volumeMin;
   const takerLong = Number.isFinite(takerRatio) && takerRatio >= takerMin;
   const takerShort = Number.isFinite(takerRatio) && takerRatio <= 1 / takerMin;
-  const depthLong = Number.isFinite(depthRatio) && depthRatio >= 1.02;
-  const depthShort = Number.isFinite(depthRatio) && depthRatio <= 0.98;
-  const flowLong = takerLong && (flowMode === 'historical' || depthLong);
-  const flowShort = takerShort && (flowMode === 'historical' || depthShort);
+  const depthAvailable = Number.isFinite(depthRatio) && depthRatio > 0;
+  const depthLong = depthAvailable && depthRatio >= 1.005;
+  const depthShort = depthAvailable && depthRatio <= 0.995;
+  // A missing depth snapshot is degraded evidence, not a reason to disable every signal.
+  // If depth is available and strongly contradicts taker flow, keep the flow gate closed.
+  const flowLong = takerLong && (!depthAvailable || depthLong);
+  const flowShort = takerShort && (!depthAvailable || depthShort);
   const flowOk = (longBias && flowLong) || (shortBias && flowShort);
   const adxOk = h4.adx >= adxTrendMin && h1.adx >= adxTrendMin && m15.adx >= adx15Min;
-  const structureOk = (longBias && longSetup && longTiming && longStructure && flowLong) ||
-    (shortBias && shortSetup && shortTiming && shortStructure && flowShort);
+  const structureOk = (longBias && longSetup && longTiming && (longStructure || flowLong)) ||
+    (shortBias && shortSetup && shortTiming && (shortStructure || flowShort));
   const candidateSide = longBias ? 'LONG' : shortBias ? 'SHORT' : null;
   const sideSetup = candidateSide === 'LONG' ? longSetup : candidateSide === 'SHORT' ? shortSetup : false;
   const sideTiming = candidateSide === 'LONG' ? longTiming : candidateSide === 'SHORT' ? shortTiming : false;
@@ -87,9 +90,9 @@ export function evaluateMtfDecision({
     reasons.push('15M ও 5M-এর Volume নিজ নিজ গড়ের অন্তত 0.8 গুণ।');
   } else reasons.push('NO TRADE: Volume-এর সমর্থন যথেষ্ট নয়।');
   if ((longBias && flowLong) || (shortBias && flowShort)) {
-    score += 15;
-    reasons.push(flowMode === 'historical'
-      ? 'ঐতিহাসিক Taker Volume বর্তমান দিককে সমর্থন করছে; পুরোনো ডেটায় Order Book Depth পাওয়া যায় না।'
+    score += depthAvailable ? 15 : 10;
+    reasons.push(flowMode === 'historical' || !depthAvailable
+      ? 'Taker Volume বর্তমান দিককে সমর্থন করছে; Order Book Depth না থাকায় Flow-এর Score কম রাখা হয়েছে।'
       : 'Taker Flow ও Order Book-এর শীর্ষ ২০ স্তরের Depth বর্তমান দিককে সমর্থন করছে।');
   } else {
     reasons.push(flowMode === 'historical'
@@ -109,10 +112,10 @@ export function evaluateMtfDecision({
   if (!marketAllowsSide) reasons.push('NO TRADE: Spot Market-এ শুধু LONG নেওয়া যায়; SHORT সিগন্যাল বন্ধ।');
   if (candidateSide && !riskOk) reasons.push('NO TRADE: Risk যাচাইয়ে ব্যর্থ — ' + (riskPlan?.reason || 'বৈধ Risk Plan পাওয়া যায়নি') + '.');
 
-  const decision = score >= 85 && volumeOk && adxOk && structureOk && riskOk && marketAllowsSide
+  const decision = score >= 75 && volumeOk && adxOk && structureOk && riskOk && marketAllowsSide
     ? candidateSide : 'NO TRADE';
   if (decision === 'NO TRADE') {
-    if (score < 85) reasons.push('NO TRADE: একাধিক শর্তের সম্মিলিত Score ' + score + '/১০০, যা প্রয়োজনীয় ৮৫-এর কম।');
+    if (score < 75) reasons.push('NO TRADE: একাধিক শর্তের সম্মিলিত Score ' + score + '/১০০, যা প্রয়োজনীয় ৭৫-এর কম।');
     if (!structureOk) reasons.push('NO TRADE: Direction, Setup, Timing, Structure ও Flow—সব শর্ত একসঙ্গে পূরণ হতে হবে।');
   } else {
     reasons.push('সিদ্ধান্ত: ' + (decision === 'LONG' ? 'LONG' : 'SHORT') + ' — সব বাধ্যতামূলক শর্ত পূরণ হয়েছে; খরচ সমন্বয়ের পর R:R ' + riskPlan.netRR.toFixed(2) + 'R.');
