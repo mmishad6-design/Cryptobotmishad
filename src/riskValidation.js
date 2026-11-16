@@ -27,17 +27,17 @@ export function validateSignalRiskPlan({
     ...extra,
   });
 
-  if (side !== 'LONG' && side !== 'SHORT') return fail('No directional setup');
-  if (!Number.isFinite(entry) || entry <= 0) return fail('Entry price is invalid');
-  if (!Number.isFinite(atr) || atr <= 0) return fail('ATR is missing or invalid');
-  if (market !== 'Spot' && market !== 'Futures') return fail('Market type is invalid');
+  if (side !== 'LONG' && side !== 'SHORT') return fail('নির্দিষ্ট LONG বা SHORT Setup পাওয়া যায়নি');
+  if (!Number.isFinite(entry) || entry <= 0) return fail('Entry Price-এর মান সঠিক নয়');
+  if (!Number.isFinite(atr) || atr <= 0) return fail('ATR অনুপস্থিত অথবা এর মান সঠিক নয়');
+  if (market !== 'Spot' && market !== 'Futures') return fail('Market-এর ধরন সঠিক নয়');
   if (!Number.isFinite(feeRate) || feeRate < 0 ||
       !Number.isFinite(slippageRate) || slippageRate < 0 ||
       !Number.isFinite(minNetRR) || minNetRR <= 0) {
-    return fail('Trading cost or reward/risk assumptions are invalid');
+    return fail('Trading Cost অথবা Reward/Risk-এর অনুমান সঠিক নয়');
   }
   if (accountBalance !== null && (!Number.isFinite(accountBalance) || accountBalance <= 0)) {
-    return fail('Account balance is invalid');
+    return fail('Account Balance-এর মান সঠিক নয়');
   }
 
   const stopDistance = atr * STOP_ATR_MULTIPLE;
@@ -46,10 +46,10 @@ export function validateSignalRiskPlan({
   const target = side === 'LONG' ? entry + rewardDistance : entry - rewardDistance;
 
   if (!Number.isFinite(stop) || !Number.isFinite(target) || stop <= 0 || target <= 0) {
-    return fail('Stop or target price is invalid');
+    return fail('Stop অথবা Target Price-এর মান সঠিক নয়');
   }
   if (side === 'LONG' ? !(stop < entry && target > entry) : !(stop > entry && target < entry)) {
-    return fail(side + ' stop/target placement is invalid');
+    return fail(side + ' দিকের Stop/Target সঠিকভাবে নির্ধারিত হয়নি');
   }
 
   const roundTripCost = entry * (feeRate * 2 + slippageRate * 2);
@@ -57,7 +57,7 @@ export function validateSignalRiskPlan({
   const netRisk = stopDistance + roundTripCost;
   const netRR = netRisk > 0 ? netReward / netRisk : 0;
   if (!Number.isFinite(netRR) || netReward <= 0 || netRR < minNetRR) {
-    return fail('Cost-adjusted reward/risk is below ' + minNetRR.toFixed(2) + 'R', {
+    return fail('খরচ সমন্বয়ের পর Reward/Risk প্রয়োজনীয় ' + minNetRR.toFixed(2) + 'R-এর নিচে', {
       stop, target, roundTripCost, netRR,
     });
   }
