@@ -36,9 +36,9 @@ export function resolveIntrabarExit({ side, open = null, high, low, stop, target
   // Stop-market gaps fill at the worse candle open, not at the unreachable stop price.
   if (stopHit) {
     const gapThroughStop = open !== null && (side === 'LONG' ? open < stop : open > stop);
-    return { price: gapThroughStop ? open : stop, reason: 'Stop Loss' };
+    return { price: gapThroughStop ? open : stop, reason: 'স্টপ লস' };
   }
   // Conservative limit assumption: favorable gaps still fill at the target, not the better open.
-  if (targetHit) return { price: target, reason: 'Take Profit' };
+  if (targetHit) return { price: target, reason: 'টেক প্রফিট' };
   return null;
 }
