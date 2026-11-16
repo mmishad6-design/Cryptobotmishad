@@ -884,6 +884,14 @@ function App() {
     ? (!restReferenceFresh||restReferenceAge>10000||!Number.isFinite(activeFeed.divergencePct)||activeFeed.divergencePct<=0.75)
     : restReferenceFresh;
   const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000&&closedCandleAge<=expectedCandleMs+30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
+  const integrityIssues = [
+    ...(!signalHealth.hasTicker ? ['লাইভ Price Feed পাওয়া যায়নি।'] : []),
+    ...(!signalHealth.priceFresh ? ['লাইভ Price Feed ৩০ সেকেন্ডের বেশি পুরোনো।'] : []),
+    ...(!signalHealth.hasClosedCandles ? ['কমপক্ষে ৫০টি সম্পূর্ণ Candle পাওয়া যায়নি।'] : []),
+    ...(!signalHealth.candleFresh ? ['Candle Feed পুরোনো অথবা সর্বশেষ সম্পূর্ণ Candle দেরিতে এসেছে।'] : []),
+    ...(!signalHealth.reconciliationOk ? ['REST ও WebSocket Price-এর পার্থক্য গ্রহণযোগ্য সীমার বাইরে।'] : []),
+    ...(signalHealth.candleGaps>0 ? [signalHealth.candleGaps+'টি Candle interval অনুপস্থিত।'] : []),
+  ];
   const analysis = useMemo(()=>{
      const matches=mtfSignal?.symbol===symbol&&mtfSignal?.market===market;
      const signalAge=mtfSignal?.updated instanceof Date?feedClock-mtfSignal.updated.getTime():Infinity;
@@ -985,7 +993,7 @@ function App() {
             <div><span>CANDLE SEQUENCE</span><b>{signalHealth.candleGaps===0?"CONTIGUOUS":"GAP DETECTED"}</b><small>{signalHealth.candleGaps} missing interval(s)</small></div>
             <div><span>COMPLETED CANDLES</span><b>{candles.filter(c=>c.isClosed).length}</b><small>Open candle excluded from signal</small></div>
             <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
-          </div><p>Age is measured from browser receipt time. This check cannot guarantee zero exchange/network latency.</p>
+          </div><p>{integrityIssues.length ? 'Signal Block হওয়ার কারণ: '+integrityIssues.join(' ') : 'সব Data Integrity Check পাস করেছে।'} Age is measured from browser receipt time; this check cannot guarantee zero exchange/network latency.</p>
         </section>
         <MultiTimeframeSignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
         <section className="market-strip">
