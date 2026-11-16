@@ -77,22 +77,22 @@ export function evaluateMtfDecision({
   if (longBias || shortBias) {
     score += 25;
     reasons.push(roleLabels.contextSlow.toUpperCase() + ' ও ' + roleLabels.contextFast.toUpperCase() + ' ট্রেন্ড একই দিকে: ' + (longBias ? 'ঊর্ধ্বমুখী' : 'নিম্নমুখী') + '.');
-  } else reasons.push('NO TRADE: 4H ও 1H-এর Trend একই দিকে নেই।');
+  } else reasons.push('NO TRADE: ' + roleLabels.contextSlow.toUpperCase() + ' ও ' + roleLabels.contextFast.toUpperCase() + '-এর Trend একই দিকে নেই।');
   if (longSetup || shortSetup) {
     score += 20;
-    reasons.push('15M সেটআপে Trend, RSI ও ADX-এর সমর্থন পাওয়া গেছে।');
-  } else reasons.push('NO TRADE: 15M Setup-এর প্রয়োজনীয় শর্ত পূরণ হয়নি।');
+    reasons.push(roleLabels.setup.toUpperCase() + ' সেটআপে Trend, RSI ও ADX-এর সমর্থন পাওয়া গেছে.');
+  } else reasons.push('NO TRADE: ' + roleLabels.setup.toUpperCase() + ' Setup-এর প্রয়োজনীয় শর্ত পূরণ হয়নি।');
   if (longTiming || shortTiming) {
     score += 15;
-    reasons.push('5M এন্ট্রির সময় বর্তমান দিককে সমর্থন করছে।');
-  } else reasons.push('NO TRADE: 5M Entry নেওয়ার উপযুক্ত সময় নিশ্চিত হয়নি।');
+    reasons.push(roleLabels.entry.toUpperCase() + ' এন্ট্রির সময় বর্তমান দিককে সমর্থন করছে.');
+  } else reasons.push('NO TRADE: ' + roleLabels.entry.toUpperCase() + ' Entry নেওয়ার উপযুক্ত সময় নিশ্চিত হয়নি।');
   if ((longBias && longStructure) || (shortBias && shortStructure)) {
     score += 15;
     reasons.push('Market Structure উচ্চতর টাইমফ্রেমের দিককে সমর্থন করছে।');
   } else reasons.push('একই দিকের BOS, CHoCH অথবা Liquidity Sweep পাওয়া যায়নি; Volume ও Taker Flow-এর বিকল্প সমর্থন যাচাই করা হয়েছে।');
   if (volumeOk) {
     score += 10;
-    reasons.push('15M ও 5M-এর Volume নিজ নিজ গড়ের অন্তত 0.75 গুণ।');
+    reasons.push(roleLabels.setup.toUpperCase() + ' ও ' + roleLabels.entry.toUpperCase() + '-এর Volume নিজ নিজ গড়ের অন্তত 0.75 গুণ.');
   } else reasons.push('NO TRADE: Volume-এর সমর্থন যথেষ্ট নয়।');
   if ((longBias && flowLong) || (shortBias && flowShort)) {
     score += depthAvailable ? 15 : 10;
