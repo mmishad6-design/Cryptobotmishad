@@ -295,7 +295,7 @@ function AutoTimeframeValidationPanel({symbol,market}) {
   const run=async()=>{
     setRunning(true);setError('');setResult(null);
     try{
-      const now=Date.now(),periodStart=now-Number(days)*86400000,splitAt=periodStart+Math.floor((now-periodStart)*0.7);
+      const now=Date.now(),periodStart=now-Number(days)*86400000,splitAt=Math.floor((periodStart+(now-periodStart)*0.7)/86400000)*86400000;
       const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',endpoint=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines';
       const fetchFrame=async frame=>{
         const ms=intervalMs[frame];let cursor=periodStart-warmupDays[frame]*86400000,raw=[],pages=0;
