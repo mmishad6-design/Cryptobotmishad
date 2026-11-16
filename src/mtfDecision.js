@@ -12,14 +12,19 @@ export function evaluateMtfDecision({
   feeRate,
   slippageRate,
   thresholds = {},
+  frameLabels = {},
 } = {}) {
+  const roleLabels = {
+    contextSlow: '4h', contextFast: '1h', setup: '15m', entry: '5m',
+    ...frameLabels,
+  };
   const fail = reason => ({
     decision: 'NO TRADE', score: 0, reasons: [reason],
     gates: { data: false, trend: false, setup: false, timing: false, structure: false, volume: false, adx: false, flow: false, risk: false },
     riskPlan: null,
   });
   const frames = ['4h', '1h', '15m', '5m'];
-  if (!data || frames.some(frame => !data[frame])) return fail('NO TRADE: প্রয়োজনীয় 4H/1H/15M/5M টাইমফ্রেমের ডেটা পাওয়া যায়নি।');
+  if (!data || frames.some(frame => !data[frame])) return fail('NO TRADE: প্রয়োজনীয় ' + [roleLabels.contextSlow, roleLabels.contextFast, roleLabels.setup, roleLabels.entry].map(x => x.toUpperCase()).join('/') + ' টাইমফ্রেমের ডেটা পাওয়া যায়নি।');
   const [h4, h1, m15, m5] = frames.map(frame => data[frame]);
   const numeric = [h4,h1,m15,m5].every(x =>
     Number.isFinite(x.close) && x.close > 0 &&
@@ -71,7 +76,7 @@ export function evaluateMtfDecision({
   const reasons = [];
   if (longBias || shortBias) {
     score += 25;
-    reasons.push('4H ও 1H ট্রেন্ড একই দিকে: ' + (longBias ? 'ঊর্ধ্বমুখী' : 'নিম্নমুখী') + '.');
+    reasons.push(roleLabels.contextSlow.toUpperCase() + ' ও ' + roleLabels.contextFast.toUpperCase() + ' ট্রেন্ড একই দিকে: ' + (longBias ? 'ঊর্ধ্বমুখী' : 'নিম্নমুখী') + '.');
   } else reasons.push('NO TRADE: 4H ও 1H-এর Trend একই দিকে নেই।');
   if (longSetup || shortSetup) {
     score += 20;
@@ -99,7 +104,7 @@ export function evaluateMtfDecision({
       ? 'NO TRADE: ঐতিহাসিক Taker Volume অনুপস্থিত অথবা বিপরীত দিক নির্দেশ করছে।'
       : 'NO TRADE: Taker Flow অথবা Order Book-এর শীর্ষ ২০ স্তরের Depth অনুপস্থিত কিংবা বিপরীতমুখী।');
   }
-  if (!adxOk) reasons.push('NO TRADE: ADX-এর শক্তির শর্ত পূরণ হয়নি (4H/1H কমপক্ষে ১৫ এবং 15M কমপক্ষে ১৮ হতে হবে)।');
+  if (!adxOk) reasons.push('NO TRADE: ADX-এর শক্তির শর্ত পূরণ হয়নি (' + roleLabels.contextSlow.toUpperCase() + '/' + roleLabels.contextFast.toUpperCase() + ' কমপক্ষে ১৫ এবং ' + roleLabels.setup.toUpperCase() + ' কমপক্ষে ১৮ হতে হবে)।');
 
   const riskEntry = entry === undefined || entry === null ? m5.close : entry;
   const riskPlan = candidateSide ? validateSignalRiskPlan({
@@ -127,6 +132,6 @@ export function evaluateMtfDecision({
       timing: sideTiming, structure: sideStructure, volume: volumeOk,
       adx: adxOk, flow: sideFlow, risk: riskOk, market: marketAllowsSide,
     },
-    diagnostics: { takerRatio, depthRatio: Number.isFinite(depthRatio) ? depthRatio : null, flowMode },
+    diagnostics: { takerRatio, depthRatio: Number.isFinite(depthRatio) ? depthRatio : null, flowMode, frameLabels: roleLabels },
   };
 }
