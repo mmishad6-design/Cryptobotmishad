@@ -87,7 +87,7 @@ export function evaluateMtfDecision({
   } else reasons.push('একই দিকের BOS, CHoCH অথবা Liquidity Sweep পাওয়া যায়নি; Volume ও Taker Flow-এর বিকল্প সমর্থন যাচাই করা হয়েছে।');
   if (volumeOk) {
     score += 10;
-    reasons.push('15M ও 5M-এর Volume নিজ নিজ গড়ের অন্তত 0.8 গুণ।');
+    reasons.push('15M ও 5M-এর Volume নিজ নিজ গড়ের অন্তত 0.75 গুণ।');
   } else reasons.push('NO TRADE: Volume-এর সমর্থন যথেষ্ট নয়।');
   if ((longBias && flowLong) || (shortBias && flowShort)) {
     score += depthAvailable ? 15 : 10;
