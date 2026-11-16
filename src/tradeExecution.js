@@ -15,7 +15,7 @@ export function calculateTradePnl({
       ![entry, exit, quantity, feeRate].every(Number.isFinite) ||
       entry <= 0 || exit <= 0 || quantity <= 0 || feeRate < 0 ||
       (entryFee !== null && (!Number.isFinite(entryFee) || entryFee < 0))) {
-    return { ok: false, reason: 'Invalid trade accounting inputs' };
+    return { ok: false, reason: 'Trade হিসাবের জন্য দেওয়া তথ্য সঠিক নয়' };
   }
   const grossPnl = (exit - entry) * quantity * (side === 'LONG' ? 1 : -1);
   const chargedEntryFee = entryFee === null ? entry * quantity * feeRate : entryFee;
@@ -36,9 +36,9 @@ export function resolveIntrabarExit({ side, open = null, high, low, stop, target
   // Stop-market gaps fill at the worse candle open, not at the unreachable stop price.
   if (stopHit) {
     const gapThroughStop = open !== null && (side === 'LONG' ? open < stop : open > stop);
-    return { price: gapThroughStop ? open : stop, reason: 'STOP LOSS' };
+    return { price: gapThroughStop ? open : stop, reason: 'স্টপ লস' };
   }
   // Conservative limit assumption: favorable gaps still fill at the target, not the better open.
-  if (targetHit) return { price: target, reason: 'TAKE PROFIT' };
+  if (targetHit) return { price: target, reason: 'টেক প্রফিট' };
   return null;
 }

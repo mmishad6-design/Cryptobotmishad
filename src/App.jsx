@@ -7,6 +7,7 @@ import { selectClosedCandlesAsOf } from './historicalData.js';
 import { createSequentialOosFolds } from './walkForward.js';
 import { findConfirmedSwingPivots } from './marketStructure.js';
 import { evaluateStructureEvent } from './structureEvents.js';
+import { suggestConservativeLeverage, calculatePaperQuantity } from './paperTrading.js';
 import { createChart, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, Bell, BookOpen, CandlestickChart, ChevronDown, CircleHelp, Clock3, Command, Compass, Crosshair, Download, Eye, Filter, Globe2, Layers3, Menu, Moon, Newspaper, PanelLeftClose, Plus, Play, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sun, Target, Trash2, TrendingDown, TrendingUp, Wallet, X } from 'lucide-react';
 
@@ -62,6 +63,13 @@ const wilderATRAt = (rows,endIndex,period=14) => {
   return atr;
 };
 const intervals = ['1m','5m','15m','1h','4h','1d'];
+const profileName = name => ({Balanced:'ভারসাম্যপূর্ণ', 'Strict trend':'কঠোর Trend', 'Early momentum':'প্রাথমিক Momentum', 'Volume confirmed':'Volume নিশ্চিত', 'High conviction':'উচ্চ আস্থার সেটআপ', 'Baseline fallback':'বিকল্প Baseline'}[name] || name);
+
+const regimeLabel = value => ({TRENDING:'Trend চলমান',RANGING:'সীমাবদ্ধ Market', 'HIGH VOLATILITY':'উচ্চ Volatility',TRANSITION:'পরিবর্তনশীল অবস্থা'}[value] || value);
+const directionLabel = value => ({UPTREND:'ঊর্ধ্বমুখী',DOWNTREND:'নিম্নমুখী',SIDEWAYS:'একই সীমায়',MIXED:'মিশ্র',CAUTION:'সতর্কতা'}[value] || value);
+const trendLabel = value => ({BULLISH:'ঊর্ধ্বমুখী',BEARISH:'নিম্নমুখী',MIXED:'মিশ্র'}[value] || value);
+const structureLabel = value => ({NONE:'নেই','BULLISH Sweep':'ঊর্ধ্বমুখী Liquidity Sweep','BEARISH Sweep':'নিম্নমুখী Liquidity Sweep','BULLISH STRUCTURE':'ঊর্ধ্বমুখী Structure','BEARISH STRUCTURE':'নিম্নমুখী Structure','BULLISH BOS':'ঊর্ধ্বমুখী BOS','BEARISH BOS':'নিম্নমুখী BOS','BULLISH CHoCH':'ঊর্ধ্বমুখী CHoCH','BEARISH CHoCH':'নিম্নমুখী CHoCH','BULLISH SWEEP':'ঊর্ধ্বমুখী Liquidity Sweep','BEARISH SWEEP':'নিম্নমুখী Liquidity Sweep','BULLISH FVG':'ঊর্ধ্বমুখী FVG','BEARISH FVG':'নিম্নমুখী FVG','BULLISH OB':'ঊর্ধ্বমুখী Order Block','BEARISH OB':'নিম্নমুখী Order Block'}[value] || value);
+const liquidationLabel = value => value==='LONG LIQUIDATED'?'LONG Position Liquidation':value==='SHORT LIQUIDATED'?'SHORT Position Liquidation':value;
 
 function ChartPanel({symbol, interval, candles, loading, market, resetKey, onReset}) {
   const host = useRef(null);
@@ -158,7 +166,7 @@ function BacktestPanel({symbol,market,defaultInterval}) {
           thresholds:{adx15:cfg.adx15,adxTrend:cfg.adxTrend,rsiLong:cfg.rsiLong,rsiShort:cfg.rsiShort,volume:cfg.volume,taker:cfg.taker},
         });
         if(evaluated.decision!=='NO TRADE'){
-          const simulatedEntry=applyAdverseSlippage(data[i+1].open,evaluated.decision,'ENTRY',slipRate);
+          const simulatedEntry=applyAdverseSlippage(data[i+1].open,evaluated.decision,'Entry',slipRate);
           riskPlan=validateSignalRiskPlan({
             side:evaluated.decision, entry:simulatedEntry, atr:m5.atr, market,
             accountBalance:equity, feeRate, slippageRate:slipRate,
@@ -193,49 +201,49 @@ function BacktestPanel({symbol,market,defaultInterval}) {
       const ranked=candidates.map(cfg=>({...cfg,train:simulate(trainData,feeRate,slipRate,historyByFrame,cfg)})).filter(x=>x.train.tradeCount>=5).sort((a,b)=>{const score=x=>(x.train.profitFactor===null?2:x.train.profitFactor)+x.train.returnPct*.01-x.train.maxDrawdown*.12+x.train.expectancy*.001;return score(b)-score(a);});
       const selected=ranked[0]||{...candidates[0],train:simulate(trainData,feeRate,slipRate,historyByFrame,candidates[0]),name:'Baseline fallback'};const cfg={adx15:selected.adx15,adxTrend:selected.adxTrend,rsiLong:selected.rsiLong,rsiShort:selected.rsiShort,volume:selected.volume,taker:selected.taker};
       const training=selected.train,outOfSample=simulate(testData,feeRate,slipRate,historyByFrame,cfg),folds=createSequentialOosFolds(data,split,3,60).map(fold=>({
-        label:'Sequential OOS Fold '+fold.index,
+        label:'ধারাবাহিক OOS ধাপ '+fold.index,
         from:fold.testStartTime,
         to:fold.testEndTime,
         warmupCandles:fold.warmupCount,
         ...simulate(fold.data,feeRate,slipRate,historyByFrame,cfg),
       }));
-      setResult({symbol,market,tf:'5m execution · 4H/1H/15M context',days,from:data[requestedStartIndex].time,to:data.at(-1).time,candles:requestedCount,warmupCandles:requestedStartIndex,splitAt:data[split].time,training,outOfSample,folds,selected:{name:selected.name,adx15:selected.adx15,adxTrend:selected.adxTrend,rsiLong:selected.rsiLong,rsiShort:selected.rsiShort,volume:selected.volume,taker:selected.taker},candidates:ranked.map(x=>({name:x.name,returnPct:x.train.returnPct,tradeCount:x.train.tradeCount,winRate:x.train.winRate,profitFactor:x.train.profitFactor,maxDrawdown:x.train.maxDrawdown})),feeRate,slipRate,tradeList:outOfSample.trades.slice(-12).reverse(),coverage:{'4h':historyByFrame['4h'].length,'1h':historyByFrame['1h'].length,'15m':historyByFrame['15m'].length,'5m':historyByFrame['5m'].length},assumption:'Five fixed MTF parameter profiles are ranked only on the chronological training segment. The top eligible profile is frozen and evaluated on the unseen 30% test segment and three non-overlapping sequential OOS folds. Each fold receives only its preceding 60 5M candles as indicator warm-up; warm-up rows are excluded from metrics. The same frozen training profile is used for all folds, so these are sequential OOS slices, not a re-optimizing walk-forward test. If no profile produces at least five training trades, the balanced baseline is used and marked as fallback.'});
-    }catch(e){setError(e.message||'Multi-timeframe validation failed.');}finally{setRunning(false);}
+      setResult({symbol,market,tf:'5m execution · 4H/1H/15M context',days,from:data[requestedStartIndex].time,to:data.at(-1).time,candles:requestedCount,warmupCandles:requestedStartIndex,splitAt:data[split].time,training,outOfSample,folds,selected:{name:selected.name,adx15:selected.adx15,adxTrend:selected.adxTrend,rsiLong:selected.rsiLong,rsiShort:selected.rsiShort,volume:selected.volume,taker:selected.taker},candidates:ranked.map(x=>({name:x.name,returnPct:x.train.returnPct,tradeCount:x.train.tradeCount,winRate:x.train.winRate,profitFactor:x.train.profitFactor,maxDrawdown:x.train.maxDrawdown})),feeRate,slipRate,tradeList:outOfSample.trades.slice(-12).reverse(),coverage:{'4h':historyByFrame['4h'].length,'1h':historyByFrame['1h'].length,'15m':historyByFrame['15m'].length,'5m':historyByFrame['5m'].length},assumption:'পাঁচটি নির্দিষ্ট MTF Parameter Profile কেবল সময়ের ক্রমে সাজানো Training ডেটা দিয়ে মূল্যায়ন করা হয়। যোগ্য Profile-গুলোর মধ্যে সেরা Profile নির্বাচন করে স্থির রাখা হয়; এরপর সেটিকে অদেখা শেষ ৩০% Test ডেটা এবং পরস্পর-অতিক্রম না করা তিনটি ধারাবাহিক OOS ভাগে পরীক্ষা করা হয়। প্রতিটি ভাগের আগে থাকা ৬০টি 5M Candle শুধু Indicator প্রস্তুত করতে ব্যবহৃত হয়, ফলাফলের হিসাবে ধরা হয় না। সব ভাগে একই স্থির Profile ব্যবহৃত হয়; তাই এটি নতুন করে Parameter Optimise করা Walk-Forward Test নয়। কোনো Profile-এ Training চলাকালে অন্তত পাঁচটি Trade না হলে Balanced Baseline ব্যবহার করা হয় এবং সেটি Fallback হিসেবে চিহ্নিত থাকে।'});
+    }catch(e){setError(e.message||'Multi-Timeframe যাচাই সম্পন্ন হয়নি।');}finally{setRunning(false);}
   };
-  const metric=x=>x?((x.returnPct>=0?'+':'')+fmt(x.returnPct)+'% · '+x.tradeCount+' trades · '+fmt(x.winRate)+'% wins · PF '+(x.profitFactor===null?'∞':fmt(x.profitFactor))+' · DD '+fmt(x.maxDrawdown)+'%'):'—';
+  const metric=x=>x?((x.returnPct>=0?'+':'')+fmt(x.returnPct)+'% · '+x.tradeCount+'টি Trade · '+fmt(x.winRate)+'% জয়ের হার · Profit Factor '+(x.profitFactor===null?'∞':fmt(x.profitFactor))+' · সর্বোচ্চ Drawdown '+fmt(x.maxDrawdown)+'%'):'—';
   return <section className="panel backtest-panel">
-    <div className="panel-title"><div><h3>Advanced multi-timeframe validation</h3><p>4H trend → 1H alignment → 15M setup → 5M entry · chronological train/test split · sequential out-of-sample folds</p></div><span className="tiny-live">RESEARCH MODE</span></div>
+    <div className="panel-title"><div><h3>উন্নত Multi-Timeframe যাচাই</h3><p>4H ট্রেন্ড → 1H মিল → 15M সেটআপ → 5M এন্ট্রি · সময়ের ক্রম অনুযায়ী Train/Test ভাগ · ধারাবাহিক Out-of-Sample পরীক্ষা</p></div><span className="tiny-live">RESEARCH MODE</span></div>
     <div className="backtest-controls">
-      <label>EXECUTION TIMEFRAME<select value={tf} onChange={e=>setTf(e.target.value)}><option value="5m">5m (required)</option></select></label>
-      <label>HISTORY<select value={days} onChange={e=>setDays(e.target.value)}><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
-      <label>TRADING FEE (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label>
-      <label>SLIPPAGE (%)<input type="number" min="0" max="1" step="0.01" value={slippage} onChange={e=>setSlippage(e.target.value)}/></label>
-      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'Validating…':'Run MTF validation'}</button>
+      <label>ট্রেড কার্যকর করার Timeframe<select value={tf} onChange={e=>setTf(e.target.value)}><option value="5m">5m (আবশ্যক)</option></select></label>
+      <label>ঐতিহাসিক ডেটার সময়সীমা<select value={days} onChange={e=>setDays(e.target.value)}><option value="7">৭ দিন</option><option value="30">৩০ দিন</option><option value="90">৯০ দিন</option><option value="180">১৮০ দিন</option></select></label>
+      <label>Trading Fee (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label>
+      <label>Slippage (%)<input type="number" min="0" max="1" step="0.01" value={slippage} onChange={e=>setSlippage(e.target.value)}/></label>
+      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'যাচাই হচ্ছে…':'MTF যাচাই চালাও'}</button>
     </div>
     {error&&<div className="backtest-error">{error}</div>}
     {result&&<>
-      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} completed 5M candles</span></div>
-      <div className="backtest-meta"><span>4H: {result.coverage['4h']} · 1H: {result.coverage['1h']} · 15M: {result.coverage['15m']} · 5M: {result.coverage['5m']} candles</span><span>{result.warmupCandles.toLocaleString()} extra 5M warm-up candles excluded from metrics</span></div>
+      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} টি সম্পূর্ণ 5M Candle</span></div>
+      <div className="backtest-meta"><span>4H: {result.coverage['4h']} · 1H: {result.coverage['1h']} · 15M: {result.coverage['15m']} · 5M: {result.coverage['5m']} টি Candle</span><span>{result.warmupCandles.toLocaleString()} টি অতিরিক্ত 5M প্রস্তুতিমূলক Candle; ফলাফলের হিসাবে ধরা হয়নি</span></div>
       <div className="backtest-metrics">
-        <div><span>OUT-OF-SAMPLE RETURN</span><b className={result.outOfSample.returnPct>=0?'positive':'negative'}>{result.outOfSample.returnPct>=0?'+':''}{fmt(result.outOfSample.returnPct)}%</b></div>
-        <div><span>OOS WIN RATE</span><b>{fmt(result.outOfSample.winRate)}%</b></div><div><span>OOS TRADES</span><b>{result.outOfSample.tradeCount}</b></div>
-        <div><span>OOS PROFIT FACTOR</span><b>{result.outOfSample.profitFactor===null?'∞':fmt(result.outOfSample.profitFactor)}</b></div>
-        <div><span>OOS MAX DRAWDOWN</span><b className="negative">{fmt(result.outOfSample.maxDrawdown)}%</b></div>
-        <div><span>OOS EXPECTANCY / TRADE</span><b className={result.outOfSample.expectancy>=0?'positive':'negative'}>&#36;{fmt(result.outOfSample.expectancy)}</b></div>
-        <div><span>OOS ENDING EQUITY</span><b>&#36;{fmt(result.outOfSample.equity)}</b></div>
-        <div><span>OOS SIGNALS</span><b>{result.outOfSample.signals}</b></div>
-        <div><span>TRAINING RETURN</span><b className={result.training.returnPct>=0?'positive':'negative'}>{result.training.returnPct>=0?'+':''}{fmt(result.training.returnPct)}%</b></div>
+        <div><span>অব্যবহৃত ডেটায় Return</span><b className={result.outOfSample.returnPct>=0?'positive':'negative'}>{result.outOfSample.returnPct>=0?'+':''}{fmt(result.outOfSample.returnPct)}%</b></div>
+        <div><span>অব্যবহৃত ডেটায় জয়ের হার</span><b>{fmt(result.outOfSample.winRate)}%</b></div><div><span>অব্যবহৃত ডেটায় মোট Trade</span><b>{result.outOfSample.tradeCount}</b></div>
+        <div><span>অব্যবহৃত ডেটায় Profit Factor</span><b>{result.outOfSample.profitFactor===null?'∞':fmt(result.outOfSample.profitFactor)}</b></div>
+        <div><span>অব্যবহৃত ডেটায় সর্বোচ্চ Drawdown</span><b className="negative">{fmt(result.outOfSample.maxDrawdown)}%</b></div>
+        <div><span>প্রতি Trade-এর প্রত্যাশিত ফল</span><b className={result.outOfSample.expectancy>=0?'positive':'negative'}>&#36;{fmt(result.outOfSample.expectancy)}</b></div>
+        <div><span>শেষের মোট Balance</span><b>&#36;{fmt(result.outOfSample.equity)}</b></div>
+        <div><span>অব্যবহৃত ডেটায় সিগন্যাল</span><b>{result.outOfSample.signals}</b></div>
+        <div><span>Training পর্যায়ের Return</span><b className={result.training.returnPct>=0?'positive':'negative'}>{result.training.returnPct>=0?'+':''}{fmt(result.training.returnPct)}%</b></div>
       </div>
-      <div className="backtest-meta"><span>TRAIN: {new Date(result.from).toLocaleDateString()} – {new Date(result.splitAt).toLocaleDateString()}</span><span>UNSEEN TEST: {new Date(result.splitAt).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span></div>
-      <div className="mtf-reasons"><span>Selected training profile: {result.selected.name}</span><span>Training: {metric(result.training)}</span><span>Out-of-sample: {metric(result.outOfSample)}</span></div>
-      <h4 className="section-subtitle">Selected parameters (frozen before test)</h4><div className="backtest-meta"><span>ADX 15M ≥ {result.selected.adx15} · ADX trend ≥ {result.selected.adxTrend}</span><span>RSI LONG ≥ {result.selected.rsiLong} · RSI SHORT ≤ {result.selected.rsiShort}</span><span>Volume ≥ {result.selected.volume}× · Taker ratio ≥ {result.selected.taker}</span></div>
-      <h4 className="section-subtitle">Training-only candidate ranking</h4><div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>PROFILE</th><th>TRAIN RETURN</th><th>TRADES</th><th>WIN RATE</th><th>PROFIT FACTOR</th><th>MAX DD</th></tr></thead><tbody>{result.candidates.map(x=><tr key={x.name}><td>{x.name}</td><td className={x.returnPct>=0?'positive':'negative'}>{x.returnPct>=0?'+':''}{fmt(x.returnPct)}%</td><td>{x.tradeCount}</td><td>{fmt(x.winRate)}%</td><td>{x.profitFactor===null?'∞':fmt(x.profitFactor)}</td><td>{fmt(x.maxDrawdown)}%</td></tr>)}</tbody></table></div>
-      <h4 className="section-subtitle">Sequential out-of-sample folds</h4>
-      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>FOLD</th><th>TEST PERIOD</th><th>RETURN</th><th>TRADES</th><th>WIN RATE</th><th>PROFIT FACTOR</th><th>MAX DD</th></tr></thead><tbody>{result.folds.map(x=><tr key={x.label}><td>{x.label}</td><td>{new Date(x.from).toLocaleDateString()} – {new Date(x.to).toLocaleDateString()}</td><td className={x.returnPct>=0?'positive':'negative'}>{x.returnPct>=0?'+':''}{fmt(x.returnPct)}%</td><td>{x.tradeCount}</td><td>{fmt(x.winRate)}%</td><td>{x.profitFactor===null?'∞':fmt(x.profitFactor)}</td><td className="negative">{fmt(x.maxDrawdown)}%</td></tr>)}</tbody></table></div>
-      <p className="backtest-assumption">{result.assumption} Starting equity resets to $10,000 per segment. Fee {fmt(Number(fee),3)}% and slippage {fmt(Number(slippage),3)}% are charged per side. Stop/target both touched in one candle assumes stop first. ATR stop 1.5x / target 3x; risk 1% per trade; Futures notional cap 3x. Historical order-book snapshots are unavailable, so the live engine's top-20 depth confirmation is not tested; 5M candle taker-buy volume is used as a proxy. Funding, liquidation, spread, partial fills and market impact are not modelled. Results are research, not proof of future profitability.</p>
-      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>OOS SIDE</th><th>ENTRY</th><th>EXIT</th><th>NET P&L</th><th>EXIT REASON</th></tr></thead><tbody>{result.tradeList.map((t,i)=><tr key={i}><td>{t.side}</td><td>{fmt(t.entry,t.entry<1?5:3)}</td><td>{fmt(t.exit,t.exit<1?5:3)}</td><td className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}{String.fromCharCode(36)}{fmt(t.pnl)}</td><td>{t.reason}</td></tr>)}</tbody></table></div>
+      <div className="backtest-meta"><span>Training: {new Date(result.from).toLocaleDateString()} – {new Date(result.splitAt).toLocaleDateString()}</span><span>অদেখা Test: {new Date(result.splitAt).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span></div>
+      <div className="mtf-reasons"><span>নির্বাচিত Training Profile: {profileName(result.selected.name)}</span><span>Training ফলাফল: {metric(result.training)}</span><span>অব্যবহৃত ডেটায় ফলাফল: {metric(result.outOfSample)}</span></div>
+      <h4 className="section-subtitle">পরীক্ষার আগে স্থির করা Parameters</h4><div className="backtest-meta"><span>ADX 15M ≥ {result.selected.adx15} · ADX trend ≥ {result.selected.adxTrend}</span><span>RSI LONG ≥ {result.selected.rsiLong} · RSI SHORT ≤ {result.selected.rsiShort}</span><span>Volume ≥ {result.selected.volume}× · Taker ratio ≥ {result.selected.taker}</span></div>
+      <h4 className="section-subtitle">শুধু Training ডেটায় Candidate-এর ক্রম</h4><div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>Profile</th><th>Training Return</th><th>Trade সংখ্যা</th><th>জয়ের হার</th><th>Profit Factor</th><th>সর্বোচ্চ Drawdown</th></tr></thead><tbody>{result.candidates.map(x=><tr key={x.name}><td>{profileName(x.name)}</td><td className={x.returnPct>=0?'positive':'negative'}>{x.returnPct>=0?'+':''}{fmt(x.returnPct)}%</td><td>{x.tradeCount}</td><td>{fmt(x.winRate)}%</td><td>{x.profitFactor===null?'∞':fmt(x.profitFactor)}</td><td>{fmt(x.maxDrawdown)}%</td></tr>)}</tbody></table></div>
+      <h4 className="section-subtitle">ধারাবাহিক Out-of-Sample ভাগ</h4>
+      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>পরীক্ষার ধাপ</th><th>পরীক্ষার সময়সীমা</th><th>Return</th><th>Trade সংখ্যা</th><th>জয়ের হার</th><th>Profit Factor</th><th>সর্বোচ্চ Drawdown</th></tr></thead><tbody>{result.folds.map(x=><tr key={x.label}><td>{x.label}</td><td>{new Date(x.from).toLocaleDateString()} – {new Date(x.to).toLocaleDateString()}</td><td className={x.returnPct>=0?'positive':'negative'}>{x.returnPct>=0?'+':''}{fmt(x.returnPct)}%</td><td>{x.tradeCount}</td><td>{fmt(x.winRate)}%</td><td>{x.profitFactor===null?'∞':fmt(x.profitFactor)}</td><td className="negative">{fmt(x.maxDrawdown)}%</td></tr>)}</tbody></table></div>
+      <p className="backtest-assumption">{result.assumption} প্রতিটি ভাগে প্রারম্ভিক Balance ১০,০০০ USDT ধরা হয়। প্রতি পাশে Fee {fmt(Number(fee),3)}% এবং Slippage {fmt(Number(slippage),3)}% হিসাব করা হয়। একই Candle-এ Stop ও Target দুটিই স্পর্শ করলে Stop আগে কার্যকর হয়েছে ধরা হয়। ATR Stop ১.৫ গুণ, Target ৩ গুণ, প্রতি Trade-এ Risk ১%, Futures Notional সীমা ৩ গুণ। পুরোনো Order Book Snapshot পাওয়া যায় না, তাই Live Engine-এর Top-20 Depth Confirmation পরীক্ষা করা হয়নি; 5M Candle-এর Taker Buy Volume বিকল্প মাপকাঠি হিসেবে ব্যবহৃত হয়েছে। Funding, Liquidation, Spread, Partial Fill ও Market Impact হিসাবের অন্তর্ভুক্ত নয়। এটি গবেষণামূলক ফলাফল—ভবিষ্যৎ লাভের নিশ্চয়তা নয়।</p>
+      <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>OOS দিক</th><th>Entry</th><th>Exit</th><th>নিট লাভ/ক্ষতি</th><th>বন্ধ হওয়ার কারণ</th></tr></thead><tbody>{result.tradeList.map((t,i)=><tr key={i}><td>{t.side}</td><td>{fmt(t.entry,t.entry<1?5:3)}</td><td>{fmt(t.exit,t.exit<1?5:3)}</td><td className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}{String.fromCharCode(36)}{fmt(t.pnl)}</td><td>{t.reason}</td></tr>)}</tbody></table></div>
     </>}
-    <div className="backtest-disclaimer"><ShieldCheck size={14}/> Paginated historical MTF simulation with 30-day indicator warm-up. It avoids future-candle look-ahead and reports unseen test folds, but omits historical order-book depth and several real execution costs. No verified win rate or profitability is claimed.</div>
+    <div className="backtest-disclaimer"><ShieldCheck size={14}/> ৩০ দিনের Indicator প্রস্তুতির ডেটাসহ ঐতিহাসিক MTF Simulation। ভবিষ্যতের Candle আগেভাগে ব্যবহার করা হয় না এবং অদেখা Test ভাগের ফল দেখানো হয়। তবে ঐতিহাসিক Order Book Depth ও বাস্তব Trade-এর কয়েকটি খরচ এতে নেই। জয়ের হার বা লাভজনকতার কোনো নিশ্চয়তা দেওয়া হচ্ছে না।</div>
   </section>;
 }
 function StrategyOptimizer({symbol,market}) {
@@ -243,7 +251,7 @@ function StrategyOptimizer({symbol,market}) {
   const [running,setRunning]=useState(false),[result,setResult]=useState(null),[error,setError]=useState('');
   const [history,setHistory]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.strategyRuns')||'[]');}catch{return [];}});
   useEffect(()=>{try{localStorage.setItem('cryptobot.strategyRuns',JSON.stringify(history.slice(0,10)));}catch{}},[history]);
-  const exportCsv=()=>{if(!result)return;const rows=[['Rank','Symbol','Market','Timeframe','Fast SMA','Slow SMA','Stop ATR','Target ATR','Train Return %','Train Max Drawdown %','Test Return %','Test Max Drawdown %','Test Win Rate %','Test Trades','Test Profit Factor'],...result.ranked.map((x,i)=>[i+1,result.symbol,result.market,result.tf,x.fast,x.slow,x.sl,x.tp,x.train.returnPct,x.train.maxDD,x.test.returnPct,x.test.maxDD,x.test.winRate,x.test.trades,x.test.profitFactor===null?'Infinity':x.test.profitFactor])];const csv=rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='cryptobot-strategy-'+result.symbol+'-'+result.tf+'-'+Date.now()+'.csv';a.click();URL.revokeObjectURL(url);};
+  const exportCsv=()=>{if(!result)return;const rows=[['ক্রম','Symbol','Market','Timeframe','দ্রুত SMA','ধীর SMA','Stop ATR','Target ATR','Training Return %','Training সর্বোচ্চ Drawdown %','Test Return %','Test সর্বোচ্চ Drawdown %','Test জয়ের হার %','Test Trade সংখ্যা','Test Profit Factor'],...result.ranked.map((x,i)=>[i+1,result.symbol,result.market,result.tf,x.fast,x.slow,x.sl,x.tp,x.train.returnPct,x.train.maxDD,x.test.returnPct,x.test.maxDD,x.test.winRate,x.test.trades,x.test.profitFactor===null?'Infinity':x.test.profitFactor])];const csv=rows.map(row=>row.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='cryptobot-strategy-'+result.symbol+'-'+result.tf+'-'+Date.now()+'.csv';a.click();URL.revokeObjectURL(url);};
   const run=async()=>{
     setRunning(true);setError('');setResult(null);
     try{
@@ -259,7 +267,7 @@ function StrategyOptimizer({symbol,market}) {
         raw=raw.concat(batch);cursor=Number(batch[batch.length-1][0])+ms;if(batch.length<1000)break;
       }
       const data=raw.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).slice(0,5000).map(k=>({time:k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
-      if(data.length<180)throw new Error('At least 180 candles are required. Choose a longer history or timeframe.');
+      if(data.length<180)throw new Error('কমপক্ষে ১৮০টি Candle প্রয়োজন। বেশি সময়ের History অথবা অন্য Timeframe বেছে নাও।');
       const feeRate=Math.max(0,Math.min(1,Number(fee)||0))/100,slipRate=Math.max(0,Math.min(1,Number(slippage)||0))/100;
       const split=Math.floor(data.length*.7),starting=10000;
       const configs=[];
@@ -289,33 +297,33 @@ function StrategyOptimizer({symbol,market}) {
         return {trades:trades.length,winRate:trades.length?wins.length/trades.length*100:0,net:equity-starting,returnPct:(equity-starting)/starting*100,maxDD,profitFactor:gl?gp/gl:gp>0?null:0,expectancy:trades.length?(equity-starting)/trades.length:0};
       };
       const tested=configs.map(cfg=>({...cfg,train:simulate(cfg,0,split)})).filter(x=>x.train.trades>=5);
-      if(!tested.length)throw new Error('No parameter set produced at least 5 training trades. Try a longer history or another timeframe.');
+      if(!tested.length)throw new Error('কোনো Parameter-ই Training ডেটায় অন্তত ৫টি Trade তৈরি করতে পারেনি। বেশি সময়ের History অথবা অন্য Timeframe বেছে নাও।');
       tested.sort((a,b)=>{
         const score=x=>(x.train.profitFactor===null?3:x.train.profitFactor)+x.train.returnPct*.015-x.train.maxDD*.08;
         return score(b)-score(a);
       });
       const ranked=tested.slice(0,8).map(x=>({...x,test:simulate(x,split,data.length)}));
       const completed={id:Date.now(),createdAt:new Date().toISOString(),symbol,market,tf,days,candles:data.length,actualDays:(data.at(-1).time-data[0].time)/86400000,from:data[0].time,split:data[split].time,to:data[data.length-1].time,trainingCandles:split,testCandles:data.length-split,ranked,feeRate,slipRate};setResult(completed);setHistory(prev=>[completed,...prev.filter(x=>x.id!==completed.id)].slice(0,10));
-    }catch(e){setError(e.message||'Optimization failed. Please retry.');}
+    }catch(e){setError(e.message||'Parameter যাচাই ব্যর্থ হয়েছে। আবার চেষ্টা করো।');}
     finally{setRunning(false);}
   };
   return <section className="panel optimizer-panel">
-    <div className="panel-title"><div><h3>Strategy optimization & validation</h3><p>Parameter search on the first 70% · independent validation on the final 30%</p></div><span className="tiny-live">RESEARCH MODE</span></div>
+    <div className="panel-title"><div><h3>Strategy-এর Parameter খোঁজা ও যাচাই</h3><p>প্রথম ৭০% ডেটায় Parameter নির্বাচন · শেষ ৩০% ডেটায় আলাদা যাচাই</p></div><span className="tiny-live">RESEARCH MODE</span></div>
     <div className="backtest-controls optimizer-controls">
-      <label>TIMEFRAME<select value={tf} onChange={e=>setTf(e.target.value)}>{['5m','15m','1h','4h','1d'].map(x=><option key={x}>{x}</option>)}</select></label>
-      <label>HISTORY<select value={days} onChange={e=>setDays(e.target.value)}><option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option></select></label>
-      <label>FEE (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label>
-      <label>SLIPPAGE (%)<input type="number" min="0" max="1" step="0.01" value={slippage} onChange={e=>setSlippage(e.target.value)}/></label>
-      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'Testing…':'Optimize strategy'}</button>
+      <label>Timeframe<select value={tf} onChange={e=>setTf(e.target.value)}>{['5m','15m','1h','4h','1d'].map(x=><option key={x}>{x}</option>)}</select></label>
+      <label>ঐতিহাসিক ডেটার সময়সীমা<select value={days} onChange={e=>setDays(e.target.value)}><option value="7">৭ দিন</option><option value="30">৩০ দিন</option><option value="90">৯০ দিন</option><option value="180">১৮০ দিন</option></select></label>
+      <label>ফি (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label>
+      <label>Slippage (%)<input type="number" min="0" max="1" step="0.01" value={slippage} onChange={e=>setSlippage(e.target.value)}/></label>
+      <button className="primary-btn" disabled={running} onClick={run}><Play size={14}/>{running?'পরীক্ষা চলছে…':'Strategy যাচাই করো'}</button>
     </div>
     {error&&<div className="backtest-error">{error}</div>}
     {result&&<>
-      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} completed candles · {fmt(result.actualDays,1)} days actual coverage · {result.ranked.length} candidates ranked</span></div>
-      <div className="validation-split"><div><b>IN-SAMPLE · 70%</b><span>{result.trainingCandles} candles · used to rank settings</span></div><div><b>OUT-OF-SAMPLE · 30%</b><span>{result.testCandles} candles · unseen validation period</span></div></div>
-      <div className="backtest-table-wrap"><table className="backtest-table optimizer-table"><thead><tr><th>Rank</th><th>Parameters (Fast / Slow)</th><th>SL × ATR</th><th>TP × ATR</th><th>Train return</th><th>Train DD</th><th>Test return</th><th>Test DD</th><th>Test win rate</th><th>Test trades</th><th>Test PF</th></tr></thead><tbody>{result.ranked.map((x,i)=><tr key={x.fast+'-'+x.slow+'-'+x.sl+'-'+x.tp}><td>{i+1}</td><td>SMA {x.fast}/{x.slow}</td><td>{x.sl}×</td><td>{x.tp}×</td><td className={x.train.returnPct>=0?'positive':'negative'}>{x.train.returnPct>=0?'+':''}{fmt(x.train.returnPct)}%</td><td>{fmt(x.train.maxDD)}%</td><td className={x.test.returnPct>=0?'positive':'negative'}>{x.test.returnPct>=0?'+':''}{fmt(x.test.returnPct)}%</td><td className='negative'>{fmt(x.test.maxDD)}%</td><td>{fmt(x.test.winRate)}%</td><td>{x.test.trades}</td><td>{x.test.profitFactor===null?'∞':fmt(x.test.profitFactor)}</td></tr>)}</tbody></table></div>
-      <p className="backtest-assumption">Ranking uses training-period results only. The final 30% is evaluated after selecting candidates and is not used to rank them. Starting capital $10,000 per simulation; 1% risk budget per trade; Futures notional capped at 3×. Fees and slippage applied on entry/exit. Funding, liquidation, spread, partial fills and market impact are excluded. Up to 5,000 recent candles.</p>
+      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} টি সম্পূর্ণ Candle · {fmt(result.actualDays,1)} দিনের প্রকৃত ডেটা · {result.ranked.length} টি Candidate মূল্যায়ন</span></div>
+      <div className="validation-split"><div><b>Training ডেটা · ৭০%</b><span>{result.trainingCandles} টি Candle · Parameter সাজাতে ব্যবহৃত</span></div><div><b>অদেখা Test ডেটা · ৩০%</b><span>{result.testCandles} টি Candle · আগে ব্যবহার না করা যাচাইয়ের সময়</span></div></div>
+      <div className="backtest-table-wrap"><table className="backtest-table optimizer-table"><thead><tr><th>ক্রম</th><th>Parameter (Fast / Slow)</th><th>Stop Loss × ATR</th><th>Take Profit × ATR</th><th>Training Return</th><th>Training Drawdown</th><th>Test Return</th><th>Test Drawdown</th><th>Test জয়ের হার</th><th>Test Trade</th><th>Test Profit Factor</th></tr></thead><tbody>{result.ranked.map((x,i)=><tr key={x.fast+'-'+x.slow+'-'+x.sl+'-'+x.tp}><td>{i+1}</td><td>SMA {x.fast}/{x.slow}</td><td>{x.sl}×</td><td>{x.tp}×</td><td className={x.train.returnPct>=0?'positive':'negative'}>{x.train.returnPct>=0?'+':''}{fmt(x.train.returnPct)}%</td><td>{fmt(x.train.maxDD)}%</td><td className={x.test.returnPct>=0?'positive':'negative'}>{x.test.returnPct>=0?'+':''}{fmt(x.test.returnPct)}%</td><td className='negative'>{fmt(x.test.maxDD)}%</td><td>{fmt(x.test.winRate)}%</td><td>{x.test.trades}</td><td>{x.test.profitFactor===null?'∞':fmt(x.test.profitFactor)}</td></tr>)}</tbody></table></div>
+      <p className="backtest-assumption">Parameter-এর ক্রম নির্ধারণে শুধু Training সময়ের ফল ব্যবহার করা হয়। Candidate বাছাইয়ের পর শেষ ৩০% ডেটা দিয়ে আলাদা পরীক্ষা করা হয়; এই অংশ Ranking-এ ব্যবহার করা হয় না। প্রতিটি Simulation-এর প্রারম্ভিক মূলধন ১০,০০০ USDT, প্রতি Trade-এ Risk Budget ১% এবং Futures Notional সীমা ৩ গুণ। Entry ও Exit—দুই পাশেই Fee ও Slippage ধরা হয়। Funding, Liquidation, Spread, Partial Fill ও Market Impact হিসাবের অন্তর্ভুক্ত নয়। সর্বোচ্চ ৫,০০০টি সাম্প্রতিক Candle ব্যবহার করা হয়।</p>
     </>}
-    {history.length>0&&<div className="optimizer-history"><div className="optimizer-history-head"><div><h4>Saved optimization runs</h4><p>Stored locally in this browser · latest 10 runs</p></div><button className="icon-btn" title="Clear saved runs" onClick={()=>{if(window.confirm('Clear all saved Strategy Lab runs from this browser?'))setHistory([]);}}><Trash2 size={15}/></button></div><div className="optimizer-history-list">{history.map(item=><button key={item.id} className={`optimizer-history-item ${result?.id===item.id?'active':''}`} onClick={()=>setResult(item)}><span><b>{item.symbol.replace('USDT','')}/USDT · {item.market}</b><small>{item.tf} · {new Date(item.createdAt).toLocaleString()}</small></span><span><b className={(item.ranked[0]?.test.returnPct??0)>=0?'positive':'negative'}>{item.ranked[0]?((item.ranked[0].test.returnPct>=0?'+':'')+fmt(item.ranked[0].test.returnPct)+'%'):'—'}</b><small>Top candidate OOS return</small></span></button>)}</div></div>}\n    <div className="backtest-disclaimer"><ShieldCheck size={14}/> This is a parameter sensitivity experiment, not proof of a trading edge. Small samples and historical regimes can mislead; compare out-of-sample results and drawdown before drawing conclusions.</div>
+    {history.length>0&&<div className="optimizer-history"><div className="optimizer-history-head"><div><h4>সংরক্ষিত Strategy পরীক্ষার ফল</h4><p>এই Browser-এ সংরক্ষিত · সর্বশেষ ১০টি পরীক্ষা</p></div><button className="icon-btn" title="Clear saved runs" onClick={()=>{if(window.confirm('এই Browser থেকে Strategy Lab-এর সব সংরক্ষিত ফল মুছে ফেলবে?'))setHistory([]);}}><Trash2 size={15}/></button></div><div className="optimizer-history-list">{history.map(item=><button key={item.id} className={`optimizer-history-item ${result?.id===item.id?'active':''}`} onClick={()=>setResult(item)}><span><b>{item.symbol.replace('USDT','')}/USDT · {item.market}</b><small>{item.tf} · {new Date(item.createdAt).toLocaleString()}</small></span><span><b className={(item.ranked[0]?.test.returnPct??0)>=0?'positive':'negative'}>{item.ranked[0]?((item.ranked[0].test.returnPct>=0?'+':'')+fmt(item.ranked[0].test.returnPct)+'%'):'—'}</b><small>সেরা Candidate-এর অদেখা ডেটায় Return</small></span></button>)}</div></div>}\n    <div className="backtest-disclaimer"><ShieldCheck size={14}/> এটি বিভিন্ন Parameter-এর প্রভাব যাচাইয়ের পরীক্ষা; কোনো নিশ্চিত Trading সুবিধার প্রমাণ নয়। অল্প Sample ও অতীতের Market Regime ভুল ধারণা দিতে পারে। সিদ্ধান্ত নেওয়ার আগে অদেখা ডেটার ফল ও Drawdown তুলনা করো।</div>
   </section>;
 }
 
@@ -324,7 +332,7 @@ function MultiAssetScanner({market}) {
  const [tfs,setTfs]=useState(['15m','1h','4h']),[fee,setFee]=useState('0.05'),[slip,setSlip]=useState('0.02'),[busy,setBusy]=useState(false),[rows,setRows]=useState([]),[error,setError]=useState(''),[sort,setSort]=useState('returnPct'),[done,setDone]=useState(false);
  const toggle=tf=>setTfs(v=>v.includes(tf)?v.filter(x=>x!==tf):[...v,tf]);
  const run=async()=>{
-  if(!tfs.length){setError('Select at least one timeframe.');return;}
+  if(!tfs.length){setError('অন্তত একটি Timeframe নির্বাচন করো।');return;}
   setBusy(true);setError('');setRows([]);setDone(false);
   const base=market==='Futures'?'https://fapi.binance.com':'https://api.binance.com',path=market==='Futures'?'/fapi/v1/klines':'/api/v3/klines',feeRate=Math.max(0,Math.min(1,+fee||0))/100,slipRate=Math.max(0,Math.min(1,+slip||0))/100;
   const jobs=WATCH.flatMap(a=>tfs.map(tf=>({a,tf}))),all=[];
@@ -358,16 +366,16 @@ function MultiAssetScanner({market}) {
   finally{setBusy(false);}
  };
  const sorted=[...rows].sort((a,b)=>a.error?1:b.error?-1:(b[sort]??0)-(a[sort]??0));
- const exportCsv=()=>{const fields=['Asset','Symbol','Market','Timeframe','Price','Bias','Score','Return %','Max Drawdown %','Win Rate %','Trades','Profit Factor','Candles','Start','End'];const csv=[fields,...rows.map(x=>[x.name,x.symbol,market,x.tf,x.price,x.bias,x.score,x.returnPct,x.maxDD,x.winRate,x.trades,x.pf,x.candles,x.start?new Date(x.start).toISOString():'',x.end?new Date(x.end).toISOString():''])].map(r=>r.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\\r\\n');const blob=new Blob(['\\ufeff'+csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='cryptobot-multi-asset.csv';a.click();URL.revokeObjectURL(url);};
+ const exportCsv=()=>{const fields=['Asset','Symbol','Market','Timeframe','Price','দিক','Score','Return %','সর্বোচ্চ Drawdown %','জয়ের হার %','Trade সংখ্যা','Profit Factor','Candle সংখ্যা','শুরু','শেষ'];const csv=[fields,...rows.map(x=>[x.name,x.symbol,market,x.tf,x.price,x.bias,x.score,x.returnPct,x.maxDD,x.winRate,x.trades,x.pf,x.candles,x.start?new Date(x.start).toISOString():'',x.end?new Date(x.end).toISOString():''])].map(r=>r.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\\r\\n');const blob=new Blob(['\\ufeff'+csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='cryptobot-multi-asset.csv';a.click();URL.revokeObjectURL(url);};
  return <section className="panel multi-scanner-panel">
-  <div className="panel-title"><div><h3>Multi-asset strategy scanner</h3><p>Same SMA 20/50 + momentum + ATR rules across all 12 watchlist assets</p></div><span className="tiny-live">RESEARCH MODE</span></div>
-  <div className="scanner-controls"><div className="scanner-control-group"><span>TIMEFRAMES</span><div className="scanner-chips">{['5m','15m','1h','4h','1d'].map(tf=><button key={tf} className={tfs.includes(tf)?'active':''} onClick={()=>toggle(tf)}>{tf}</button>)}</div></div><label>FEE (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label><label>SLIPPAGE (%)<input type="number" min="0" max="1" step="0.01" value={slip} onChange={e=>setSlip(e.target.value)}/></label><button className="primary-btn" disabled={busy} onClick={run}><Play size={14}/>{busy?'Scanning…':'Run market scan'}</button></div>
+  <div className="panel-title"><div><h3>একাধিক Asset-এর Strategy Scanner</h3><p>Watchlist-এর ১২টি Asset-এ একই SMA 20/50, Momentum ও ATR নিয়ম প্রয়োগ করা হয়</p></div><span className="tiny-live">RESEARCH MODE</span></div>
+  <div className="scanner-controls"><div className="scanner-control-group"><span>টাইমফ্রেম</span><div className="scanner-chips">{['5m','15m','1h','4h','1d'].map(tf=><button key={tf} className={tfs.includes(tf)?'active':''} onClick={()=>toggle(tf)}>{tf}</button>)}</div></div><label>ফি (%)<input type="number" min="0" max="1" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label><label>Slippage (%)<input type="number" min="0" max="1" step="0.01" value={slip} onChange={e=>setSlip(e.target.value)}/></label><button className="primary-btn" disabled={busy} onClick={run}><Play size={14}/>{busy?'Scan চলছে…':'Market Scan চালাও'}</button></div>
   {error&&<div className="backtest-error">{error}</div>}
-  {busy&&<div className="scanner-progress"><span>Processed {rows.length} / {WATCH.length*tfs.length} asset/timeframe pairs</span><div><i style={{width:(rows.length/(WATCH.length*tfs.length)*100)+'%'}}/></div></div>}
-  {done&&<div className="scanner-summary"><span>{rows.filter(x=>!x.error).length} / {rows.length} pairs scanned · {market}</span><button className="secondary-btn" onClick={exportCsv}><Download size={14}/> Export CSV</button></div>}
-  {rows.length>0&&<div className="backtest-table-wrap"><table className="backtest-table scanner-table"><thead><tr><th>Asset</th><th>TF</th><th>Price</th><th>Current bias</th><th>Score</th><th><button onClick={()=>setSort('returnPct')}>Return ↕</button></th><th><button onClick={()=>setSort('maxDD')}>Max DD ↕</button></th><th><button onClick={()=>setSort('winRate')}>Win rate ↕</button></th><th>Trades</th><th>PF</th></tr></thead><tbody>{sorted.map(x=><tr key={x.symbol+x.tf}><td><b>{x.ticker}</b><small>{x.name}</small></td><td>{x.tf}</td>{x.error?<td colSpan="8" className="negative">{x.error}</td>:<><td>{"$"+fmt(x.price,x.price<1?6:3)}</td><td><span className={'scanner-bias '+x.bias.toLowerCase()}>{x.bias}</span></td><td>{x.score}/100</td><td className={x.returnPct>=0?'positive':'negative'}>{x.returnPct>=0?'+':''}{fmt(x.returnPct)}%</td><td className="negative">{fmt(x.maxDD)}%</td><td>{fmt(x.winRate)}%</td><td>{x.trades}</td><td>{x.pf===null?'∞':fmt(x.pf)}</td></>}</tr>)}</tbody></table></div>}
-  <p className="backtest-assumption">Each pair uses up to 500 recent Binance candles; actual date range is included in the CSV. Each simulation starts with $10,000, risks 1% per trade, uses 1.5× ATR stop and 3× ATR target, and applies fee/slippage on both sides. Futures uses a 3× notional cap. Funding, liquidation, spread and partial fills are not modelled.</p>
-  <div className="backtest-disclaimer"><ShieldCheck size={14}/> Historical comparisons only. A current LONG/SHORT label is a rule-based snapshot, not a forecast or recommendation. No strategy edge or future profitability is established.</div>
+  {busy&&<div className="scanner-progress"><span>প্রক্রিয়াকরণ হয়েছে {rows.length} / {WATCH.length*tfs.length} asset/timeframe pairs</span><div><i style={{width:(rows.length/(WATCH.length*tfs.length)*100)+'%'}}/></div></div>}
+  {done&&<div className="scanner-summary"><span>{rows.filter(x=>!x.error).length} / {rows.length}টি Pair Scan হয়েছে · {market}</span><button className="secondary-btn" onClick={exportCsv}><Download size={14}/> CSV Export</button></div>}
+  {rows.length>0&&<div className="backtest-table-wrap"><table className="backtest-table scanner-table"><thead><tr><th>Asset</th><th>TF</th><th>Price</th><th>বর্তমান দিক</th><th>Score</th><th><button onClick={()=>setSort('returnPct')}>Return ↕</button></th><th><button onClick={()=>setSort('maxDD')}>সর্বোচ্চ Drawdown ↕</button></th><th><button onClick={()=>setSort('winRate')}>জয়ের হার ↕</button></th><th>Trades</th><th>PF</th></tr></thead><tbody>{sorted.map(x=><tr key={x.symbol+x.tf}><td><b>{x.ticker}</b><small>{x.name}</small></td><td>{x.tf}</td>{x.error?<td colSpan="8" className="negative">{x.error}</td>:<><td>{"$"+fmt(x.price,x.price<1?6:3)}</td><td><span className={'scanner-bias '+x.bias.toLowerCase()}>{x.bias}</span></td><td>{x.score}/100</td><td className={x.returnPct>=0?'positive':'negative'}>{x.returnPct>=0?'+':''}{fmt(x.returnPct)}%</td><td className="negative">{fmt(x.maxDD)}%</td><td>{fmt(x.winRate)}%</td><td>{x.trades}</td><td>{x.pf===null?'∞':fmt(x.pf)}</td></>}</tr>)}</tbody></table></div>}
+  <p className="backtest-assumption">প্রতিটি Pair-এর জন্য Binance-এর সর্বশেষ ৫০০টি পর্যন্ত Candle ব্যবহার করা হয়; CSV-তে প্রকৃত সময়সীমা থাকে। প্রতিটি Simulation ১০,০০০ USDT দিয়ে শুরু হয়, প্রতি Trade-এ ১% Risk নেয়, ATR-এর ১.৫ গুণ Stop ও ৩ গুণ Target ব্যবহার করে এবং Entry/Exit—দুই পাশে Fee ও Slippage ধরে। Futures-এ Notional সীমা ৩ গুণ। Funding, Liquidation, Spread ও Partial Fill হিসাব করা হয় না।</p>
+  <div className="backtest-disclaimer"><ShieldCheck size={14}/> এগুলো শুধু অতীতের ডেটার তুলনা। বর্তমান LONG/SHORT লেবেল নিয়মভিত্তিক Snapshot—ভবিষ্যদ্বাণী বা বিনিয়োগের পরামর্শ নয়। কোনো Strategy-এর বাড়তি সুবিধা বা ভবিষ্যৎ লাভ প্রমাণিত নয়।</div>
  </section>;
 }
 
@@ -423,14 +431,14 @@ function MarketRegimeScanner({market}) {
  const counts=['TRENDING','RANGING','HIGH VOLATILITY','TRANSITION'].map(name=>({name,count:rows.filter(x=>x.regime===name).length}));
  const regimeClass=v=>v==='TRENDING'?'long':v==='HIGH VOLATILITY'?'short':v==='RANGING'?'wait':'mixed';
  return <section className="panel regime-panel">
-  <div className="panel-title"><div><h3>Market regime detection</h3><p>ADX trend strength · ATR volatility percentile · Bollinger bandwidth · completed candles only</p></div><span className="tiny-live">MARKET CONTEXT</span></div>
-  <div className="scanner-controls"><div className="scanner-control-group"><span>TIMEFRAME</span><div className="scanner-chips">{['15m','1h','4h','1d'].map(x=><button key={x} className={tf===x?'active':''} onClick={()=>setTf(x)}>{x}</button>)}</div></div><button className="primary-btn" disabled={busy} onClick={run}><Play size={14}/>{busy?'Analysing…':'Detect market regimes'}</button></div>
+  <div className="panel-title"><div><h3>Market Regime শনাক্তকরণ</h3><p>ADX দিয়ে Trend-এর শক্তি · ATR দিয়ে Volatility-এর অবস্থান · Bollinger Band-এর প্রস্থ · শুধু সম্পূর্ণ হওয়া Candle</p></div><span className="tiny-live">MARKET CONTEXT</span></div>
+  <div className="scanner-controls"><div className="scanner-control-group"><span>Timeframe</span><div className="scanner-chips">{['15m','1h','4h','1d'].map(x=><button key={x} className={tf===x?'active':''} onClick={()=>setTf(x)}>{x}</button>)}</div></div><button className="primary-btn" disabled={busy} onClick={run}><Play size={14}/>{busy?'বিশ্লেষণ চলছে…':'Market Regime শনাক্ত করো'}</button></div>
   {error&&<div className="backtest-error">{error}</div>}
-  {busy&&<div className="scanner-progress"><span>Analysed {rows.length} / {WATCH.length} markets</span><div><i style={{width:(rows.length/WATCH.length*100)+'%'}}/></div></div>}
-  {done&&<><div className="regime-counts">{counts.map(x=><div key={x.name}><span>{x.name}</span><b>{x.count}</b></div>)}</div><div className="scanner-summary"><span>{rows.filter(x=>!x.error).length} / {rows.length} assets · Binance {market} · {tf}</span><span>Updated {new Date().toLocaleTimeString()}</span></div></>}
-  {rows.length>0&&<div className="backtest-table-wrap"><table className="backtest-table regime-table"><thead><tr><th>Asset</th><th>Regime</th><th>Direction</th><th><button onClick={()=>setSort('adx')}>ADX ↕</button></th><th><button onClick={()=>setSort('atrPct')}>ATR % ↕</button></th><th>ATR rank</th><th>BB width</th><th>Price</th></tr></thead><tbody>{sorted.map(x=><tr key={x.symbol}>{x.error?<><td><b>{x.ticker}</b></td><td colSpan="7" className="negative">{x.error}</td></>:<><td><b>{x.ticker}</b><small>{x.name}</small></td><td><span className={'scanner-bias '+regimeClass(x.regime)}>{x.regime}</span></td><td>{x.direction}</td><td>{fmt(x.adx,1)}</td><td>{fmt(x.atrPct,3)}%</td><td>{fmt(x.atrRank,0)}th</td><td>{fmt(x.bbWidth,2)}%</td><td>{'$'+fmt(x.price,x.price<1?6:3)}</td></>}</tr>)}</tbody></table></div>}
-  <div className="regime-guide"><b>Regime rules</b><span><strong>Trending:</strong> ADX ≥ 22 and directional moving-average spread.</span><span><strong>Ranging:</strong> ADX below 18.</span><span><strong>High volatility:</strong> ATR percentile ≥ 80 or ATR% at least 1.6× recent median.</span><span><strong>Transition:</strong> mixed conditions; wait for clearer structure.</span></div>
-  <p className="backtest-assumption">12 watchlist assets · up to 219 completed candles per market. Indicators describe current conditions; regimes can change quickly. High volatility is a risk warning, not a trade signal. This module does not open trades.</p>
+  {busy&&<div className="scanner-progress"><span>বিশ্লেষণ হয়েছে {rows.length} / {WATCH.length}টি Market</span><div><i style={{width:(rows.length/WATCH.length*100)+'%'}}/></div></div>}
+  {done&&<><div className="regime-counts">{counts.map(x=><div key={x.name}><span>{regimeLabel(x.name)}</span><b>{x.count}</b></div>)}</div><div className="scanner-summary"><span>{rows.filter(x=>!x.error).length} / {rows.length} assets · Binance {market} · {tf}</span><span>সর্বশেষ হালনাগাদ {new Date().toLocaleTimeString()}</span></div></>}
+  {rows.length>0&&<div className="backtest-table-wrap"><table className="backtest-table regime-table"><thead><tr><th>Asset</th><th>Regime</th><th>Direction</th><th><button onClick={()=>setSort('adx')}>ADX ↕</button></th><th><button onClick={()=>setSort('atrPct')}>ATR % ↕</button></th><th>ATR rank</th><th>BB width</th><th>Price</th></tr></thead><tbody>{sorted.map(x=><tr key={x.symbol}>{x.error?<><td><b>{x.ticker}</b></td><td colSpan="7" className="negative">{x.error}</td></>:<><td><b>{x.ticker}</b><small>{x.name}</small></td><td><span className={'scanner-bias '+regimeClass(x.regime)}>{regimeLabel(x.regime)}</span></td><td>{directionLabel(x.direction)}</td><td>{fmt(x.adx,1)}</td><td>{fmt(x.atrPct,3)}%</td><td>{fmt(x.atrRank,0)}th</td><td>{fmt(x.bbWidth,2)}%</td><td>{'$'+fmt(x.price,x.price<1?6:3)}</td></>}</tr>)}</tbody></table></div>}
+  <div className="regime-guide"><b>Market Regime নির্ধারণের নিয়ম</b><span><strong>Trend চলমান:</strong> ADX ≥ ২২ এবং Moving Average-এর পার্থক্য একই দিক নির্দেশ করে।</span><span><strong>একটি সীমার মধ্যে:</strong> ADX ১৮-এর নিচে।</span><span><strong>অতিরিক্ত Volatility:</strong> ATR Percentile ≥ ৮০ অথবা ATR% সাম্প্রতিক Median-এর অন্তত ১.৬ গুণ।</span><span><strong>পরিবর্তনশীল অবস্থা:</strong> শর্তগুলো মিশ্র; পরিষ্কার Market Structure না পাওয়া পর্যন্ত অপেক্ষা করো।</span></div>
+  <p className="backtest-assumption">Watchlist-এর ১২টি Asset · প্রতি Market-এ সর্বোচ্চ ২১৯টি সম্পূর্ণ Candle। Indicator বর্তমান অবস্থা দেখায়; Market Regime দ্রুত বদলাতে পারে। অতিরিক্ত Volatility ঝুঁকির সতর্কতা, Trade Signal নয়। এই অংশ কোনো Trade খোলে না।</p>
  </section>;
 }
 
@@ -442,10 +450,10 @@ function MarketStructureScanner({market}) {
  const r=await fetch(base+ep+'?symbol='+a[0]+'&interval='+tf+'&limit=300');if(!r.ok)throw Error('Binance HTTP '+r.status);const raw=await r.json();if(raw.length<80)throw Error('Insufficient candles');
  const d=raw.slice(0,-1).map(k=>({time:+k[0],open:+k[1],high:+k[2],low:+k[3],close:+k[4]})),piv=findConfirmedSwingPivots(d,3);
  const highs=piv.filter(x=>x.type==='H'),lows=piv.filter(x=>x.type==='L');
-  const last=d.at(-1),events=evaluateStructureEvent(d,piv),structure=events.structure+' STRUCTURE';
+  const last=d.at(-1),events=evaluateStructureEvent(d,piv),structure=events.structure+' Structure';
   const bos=events.bos==='NONE'?'—':events.bos+' '+(events.choch!=='NONE'?'CHoCH':'BOS');
   const choch=events.choch==='NONE'?'—':events.choch+' CHoCH';
-  const sweep=events.sweep==='NONE'?'NONE':events.sweep+' SWEEP';
+  const sweep=events.sweep==='NONE'?'NONE':events.sweep+' Sweep';
  const near=(xs)=>xs.filter(x=>x.index>=d.length-100).sort((x,y)=>Math.abs(x.price-last.close)-Math.abs(y.price-last.close))[0]?.price??null;
  let fvg=null;for(let i=Math.max(2,d.length-80);i<d.length-1;i++){if(d[i].low>d[i-2].high)fvg={type:'BULLISH FVG',low:d[i-2].high,high:d[i].low};if(d[i].high<d[i-2].low)fvg={type:'BEARISH FVG',low:d[i].high,high:d[i-2].low};}
  let ob=null;if(events.bos!=='NONE'){const bullishBreak=events.bos==='BULLISH';for(let i=d.length-2;i>=Math.max(0,d.length-25);i--){if((bullishBreak&&d[i].close<d[i].open)||(!bullishBreak&&d[i].close>d[i].open)){ob={type:bullishBreak?'BULLISH OB':'BEARISH OB',low:d[i].low,high:d[i].high};break;}}}
@@ -454,16 +462,16 @@ function MarketStructureScanner({market}) {
  }catch(e){setError(e.message||'Scan failed');}finally{setBusy(false);}};
  const active=rows.find(x=>x.symbol===selected)||rows.find(x=>!x.error);
  const money=v=>v==null?'—':'$'+fmt(v,v<1?6:3);
- const exportCsv=()=>{const h=['Symbol','Price','Structure','BOS','CHoCH','Sweep','Support','Resistance','FVG','OB'];const data=rows.map(x=>[x.symbol,x.price,x.structure,x.bos,x.choch,x.sweep,x.support,x.resistance,x.fvg?.type,x.ob?.type]);const blob=new Blob([h.concat(data).map(r=>r.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\n')],{type:'text/csv'});const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='cryptobot-structure-'+tf+'.csv';a.click();URL.revokeObjectURL(u);};
+ const exportCsv=()=>{const h=['Symbol','Price','Structure','BOS','CHoCH','Liquidity Sweep','Support','Resistance','FVG','Order Block'];const data=rows.map(x=>[x.symbol,x.price,x.structure,x.bos,x.choch,x.sweep,x.support,x.resistance,x.fvg?.type,x.ob?.type]);const blob=new Blob([h.concat(data).map(r=>r.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\n')],{type:'text/csv'});const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='cryptobot-structure-'+tf+'.csv';a.click();URL.revokeObjectURL(u);};
  return <section className="panel structure-panel">
- <div className="panel-title"><div><h3>Market structure & liquidity</h3><p>BOS / CHoCH · swing pivots · liquidity sweeps · FVG · order blocks</p></div><span className="tiny-live">PRICE ACTION</span></div>
- <div className="scanner-controls"><div className="scanner-control-group"><span>TIMEFRAME</span><div className="scanner-chips">{['5m','15m','1h','4h','1d'].map(x=><button key={x} className={tf===x?'active':''} onClick={()=>setTf(x)}>{x}</button>)}</div></div><button className="primary-btn" disabled={busy} onClick={scan}><Play size={14}/>{busy?'Scanning…':'Scan market structure'}</button>{rows.length>0&&<button className="secondary-btn" onClick={exportCsv}><Download size={14}/> Export CSV</button>}</div>
+ <div className="panel-title"><div><h3>Market Structure ও Liquidity</h3><p>BOS / CHoCH · Swing Pivot · Liquidity Sweep · FVG · Order Block</p></div><span className="tiny-live">PRICE ACTION</span></div>
+ <div className="scanner-controls"><div className="scanner-control-group"><span>Timeframe</span><div className="scanner-chips">{['5m','15m','1h','4h','1d'].map(x=><button key={x} className={tf===x?'active':''} onClick={()=>setTf(x)}>{x}</button>)}</div></div><button className="primary-btn" disabled={busy} onClick={scan}><Play size={14}/>{busy?'Scan চলছে…':'Market Structure Scan করো'}</button>{rows.length>0&&<button className="secondary-btn" onClick={exportCsv}><Download size={14}/> CSV Export</button>}</div>
  {error&&<div className="backtest-error">{error}</div>}
- {busy&&<div className="scanner-progress"><span>Processed {rows.length} / {WATCH.length}</span><div><i style={{width:rows.length/WATCH.length*100+'%'}}/></div></div>}
- {rows.length>0&&<><div className="scanner-summary"><span>{rows.filter(x=>!x.error).length} assets · Binance {market} · {tf}</span><span>Completed candles only</span></div><div className="backtest-table-wrap"><table className="backtest-table structure-table"><thead><tr><th>Asset</th><th>Structure</th><th>BOS</th><th>CHoCH</th><th>Liquidity sweep</th><th>Price</th></tr></thead><tbody>{rows.map(x=><tr key={x.symbol} onClick={()=>!x.error&&setSelected(x.symbol)} className={selected===x.symbol?'structure-selected':''}><td><b>{x.ticker}</b></td>{x.error?<td colSpan="5" className="negative">{x.error}</td>:<><td>{x.structure}</td><td>{x.bos}</td><td>{x.choch}</td><td>{x.sweep}</td><td>{money(x.price)}</td></>}</tr>)}</tbody></table></div></>}
- {active&&!active.error&&<div className="structure-detail"><div className="structure-detail-head"><div><b>{active.name} / USDT</b><small>{active.ticker} · {tf} · {active.candles} completed candles</small></div><b>{money(active.price)}</b></div><div className="structure-levels"><div><span>NEAREST SUPPORT</span><b>{money(active.support)}</b></div><div><span>NEAREST RESISTANCE</span><b>{money(active.resistance)}</b></div><div><span>LATEST FVG</span><b>{active.fvg?.type||'None found'}</b><small>{active.fvg?money(active.fvg.low)+' – '+money(active.fvg.high):'No recent gap'}</small></div><div><span>ORDER BLOCK HEURISTIC</span><b>{active.ob?.type||'No recent BOS'}</b><small>{active.ob?money(active.ob.low)+' – '+money(active.ob.high):'No qualifying candle'}</small></div></div></div>}
- <div className="regime-guide"><b>How the scan works</b><span><strong>BOS:</strong> completed candle closes beyond a confirmed swing pivot.</span><span><strong>CHoCH:</strong> break against recent pivot trend; not proof of reversal.</span><span><strong>Liquidity sweep:</strong> wick crosses a prior swing then closes back inside.</span><span><strong>FVG:</strong> three-candle gap. Order block is a simplified last-opposite-candle heuristic before a break.</span><span>Three candles on the right are required to confirm each swing pivot.</span></div>
- <p className="backtest-assumption">Rules-based approximation, not actual order-flow or resting-order data. No liquidation clusters or institutional positions are read. Levels may fail quickly; no trades are placed.</p>
+ {busy&&<div className="scanner-progress"><span>প্রক্রিয়াকরণ হয়েছে {rows.length} / {WATCH.length}</span><div><i style={{width:rows.length/WATCH.length*100+'%'}}/></div></div>}
+ {rows.length>0&&<><div className="scanner-summary"><span>{rows.filter(x=>!x.error).length} assets · Binance {market} · {tf}</span><span>শুধু সম্পূর্ণ হওয়া Candle</span></div><div className="backtest-table-wrap"><table className="backtest-table structure-table"><thead><tr><th>Asset</th><th>Structure</th><th>BOS</th><th>CHoCH</th><th>Liquidity Sweep</th><th>Price</th></tr></thead><tbody>{rows.map(x=><tr key={x.symbol} onClick={()=>!x.error&&setSelected(x.symbol)} className={selected===x.symbol?'structure-selected':''}><td><b>{x.ticker}</b></td>{x.error?<td colSpan="5" className="negative">{x.error}</td>:<><td>{structureLabel(x.structure)}</td><td>{structureLabel(x.bos)}</td><td>{structureLabel(x.choch)}</td><td>{structureLabel(x.sweep)}</td><td>{money(x.price)}</td></>}</tr>)}</tbody></table></div></>}
+ {active&&!active.error&&<div className="structure-detail"><div className="structure-detail-head"><div><b>{active.name} / USDT</b><small>{active.ticker} · {tf} · {active.candles} টি সম্পূর্ণ Candle</small></div><b>{money(active.price)}</b></div><div className="structure-levels"><div><span>নিকটতম Support</span><b>{money(active.support)}</b></div><div><span>নিকটতম Resistance</span><b>{money(active.resistance)}</b></div><div><span>সর্বশেষ FVG</span><b>{structureLabel(active.fvg?.type)||'পাওয়া যায়নি'}</b><small>{active.fvg?money(active.fvg.low)+' – '+money(active.fvg.high):'সাম্প্রতিক Gap নেই'}</small></div><div><span>Order Block নির্ণয়ের পদ্ধতি</span><b>{structureLabel(active.ob?.type)||'সাম্প্রতিক BOS নেই'}</b><small>{active.ob?money(active.ob.low)+' – '+money(active.ob.high):'উপযুক্ত Candle পাওয়া যায়নি'}</small></div></div></div>}
+ <div className="regime-guide"><b>Scan যেভাবে কাজ করে</b><span><strong>BOS:</strong> সম্পূর্ণ হওয়া Candle নিশ্চিত Swing Pivot-এর বাইরে Close হলে সেটি শনাক্ত হয়।</span><span><strong>CHoCH:</strong> সাম্প্রতিক Pivot Trend-এর বিপরীতে Break; এটি Trend পরিবর্তনের নিশ্চিত প্রমাণ নয়।</span><span><strong>Liquidity Sweep:</strong> Candle-এর Wick আগের Swing অতিক্রম করে আবার ভেতরে Close হলে সেটি শনাক্ত হয়।</span><span><strong>FVG:</strong> তিনটি Candle-এর মধ্যে তৈরি Gap। Order Block হলো Break-এর আগে বিপরীত দিকের শেষ Candle-কে সরল নিয়মে চিহ্নিত করা।</span><span>প্রতিটি Swing Pivot নিশ্চিত করতে ডান পাশে আরও তিনটি সম্পূর্ণ Candle প্রয়োজন।</span></div>
+ <p className="backtest-assumption">এটি নিয়মভিত্তিক আনুমানিক বিশ্লেষণ; প্রকৃত Order Flow বা অপেক্ষমাণ Order-এর ডেটা নয়। Liquidation Cluster বা প্রাতিষ্ঠানিক Position পড়া হয় না। Support/Resistance দ্রুত ভেঙে যেতে পারে; কোনো Trade খোলা হয় না।</p>
  </section>;
 }
 
@@ -514,20 +522,20 @@ function PublicDerivativesPanel({symbol}) {
   const ratioText=n=>Number.isFinite(n)?n.toFixed(3):'—';
   const depthTotal=(data.bids||0)+(data.asks||0),bidPct=depthTotal?data.bids/depthTotal*100:0;
   return <section className="panel public-derivatives-panel">
-    <div className="panel-title"><div><h3>Live derivatives & order flow</h3><p>{symbol.replace('USDT','')}/USDT · Binance Futures public endpoints</p></div><span className={'tiny-live '+(status==='LIVE'?'':'data-status-warn')}>{status}</span></div>
+    <div className="panel-title"><div><h3>Live Derivatives ও Order Flow</h3><p>{symbol.replace('USDT','')}/USDT · Binance Futures Public API</p></div><span className={'tiny-live '+(status==='LIVE'?'':'data-status-warn')}>{status}</span></div>
     <div className="public-data-grid">
-      <div className="public-data-card"><span>ORDER BOOK BID VALUE</span><b className="positive">{data.bids!==null?String.fromCharCode(36)+money(data.bids):'—'}</b><small>Top 20 bid levels</small></div>
-      <div className="public-data-card"><span>ORDER BOOK ASK VALUE</span><b className="negative">{data.asks!==null?String.fromCharCode(36)+money(data.asks):'—'}</b><small>Top 20 ask levels</small></div>
-      <div className="public-data-card"><span>GLOBAL LONG / SHORT</span><b>{ratioText(data.globalRatio)}</b><small>Accounts · 5 minute</small></div>
-      <div className="public-data-card"><span>TOP TRADER POSITION RATIO</span><b>{ratioText(data.topRatio)}</b><small>Positions · 5 minute</small></div>
-      <div className="public-data-card"><span>TAKER BUY / SELL RATIO</span><b>{ratioText(data.takerRatio)}</b><small>Above 1 = more taker buy volume</small></div>
-      <div className="public-data-card"><span>OPEN INTEREST CHANGE</span><b className={data.oiChange===null?'':data.oiChange>=0?'positive':'negative'}>{data.oiChange===null?'—':(data.oiChange>=0?'+':'')+data.oiChange.toFixed(3)+'%'}</b><small>Latest 5m interval vs previous</small></div>
+      <div className="public-data-card"><span>Order Book-এর Bid Value</span><b className="positive">{data.bids!==null?String.fromCharCode(36)+money(data.bids):'—'}</b><small>শীর্ষ ২০টি Bid Level</small></div>
+      <div className="public-data-card"><span>Order Book-এর Ask Value</span><b className="negative">{data.asks!==null?String.fromCharCode(36)+money(data.asks):'—'}</b><small>শীর্ষ ২০টি Ask Level</small></div>
+      <div className="public-data-card"><span>সামগ্রিক Long / Short অনুপাত</span><b>{ratioText(data.globalRatio)}</b><small>Account · ৫ মিনিট</small></div>
+      <div className="public-data-card"><span>শীর্ষ Trader-এর Position অনুপাত</span><b>{ratioText(data.topRatio)}</b><small>Position · ৫ মিনিট</small></div>
+      <div className="public-data-card"><span>Taker Buy / Sell অনুপাত</span><b>{ratioText(data.takerRatio)}</b><small>১-এর বেশি = Taker Buy Volume বেশি</small></div>
+      <div className="public-data-card"><span>Open Interest-এর পরিবর্তন</span><b className={data.oiChange===null?'':data.oiChange>=0?'positive':'negative'}>{data.oiChange===null?'—':(data.oiChange>=0?'+':'')+data.oiChange.toFixed(3)+'%'}</b><small>সর্বশেষ ৫ মিনিট বনাম আগের ৫ মিনিট</small></div>
     </div>
-    <div className="depth-balance"><div><span>ORDER BOOK DEPTH BALANCE</span><b>{depthTotal?bidPct.toFixed(1)+'% bids / '+(100-bidPct).toFixed(1)+'% asks':'Waiting for depth data'}</b></div><div className="depth-track"><i style={{width:bidPct+'%'}}/></div></div>
+    <div className="depth-balance"><div><span>Order Book Depth-এর ভারসাম্য</span><b>{depthTotal?bidPct.toFixed(1)+'% bids / '+(100-bidPct).toFixed(1)+'% asks':'Depth ডেটার অপেক্ষায়'}</b></div><div className="depth-track"><i style={{width:bidPct+'%'}}/></div></div>
     {error&&<p className="public-data-error">{error}</p>}
-    <div className="liquidation-head"><div><b>Recent liquidation feed</b><small>Symbol-specific Binance force-order stream · Live events only</small></div><span>{liquidations.length} events</span></div>
-    {liquidations.length===0?<div className="liquidation-empty">Waiting for liquidation events. No event does not mean there are no liquidations across the wider market.</div>:<div className="liquidation-list">{liquidations.map(x=><div className="liquidation-row" key={x.id}><b className={x.side.startsWith('LONG')?'negative':'positive'}>{x.side}</b><span>{x.qty.toLocaleString('en-US',{maximumFractionDigits:4})} {symbol.replace('USDT','')}</span><span>{String.fromCharCode(36)}{x.price.toLocaleString('en-US',{maximumFractionDigits:5})}</span><small>{x.time.toLocaleTimeString()}</small></div>)}</div>}
-    <p className="public-data-foot">Updated: {data.updated?data.updated.toLocaleTimeString():'Waiting…'} · Public endpoints can be delayed, rate-limited or unavailable. Order book is a top-20 snapshot, not full market liquidity. Liquidation feed is not a complete market-wide liquidation history.</p>
+    <div className="liquidation-head"><div><b>সাম্প্রতিক Liquidation Feed</b><small>নির্বাচিত Symbol-এর Binance Force-Order Stream · শুধু Live Event</small></div><span>{liquidations.length}টি Event</span></div>
+    {liquidations.length===0?<div className="liquidation-empty">Liquidation Event-এর অপেক্ষায়। এখানে কোনো Event না দেখালেই পুরো Market-এ Liquidation হয়নি—এমন নয়।</div>:<div className="liquidation-list">{liquidations.map(x=><div className="liquidation-row" key={x.id}><b className={x.side.startsWith('LONG')?'negative':'positive'}>{liquidationLabel(x.side)}</b><span>{x.qty.toLocaleString('en-US',{maximumFractionDigits:4})} {symbol.replace('USDT','')}</span><span>{String.fromCharCode(36)}{x.price.toLocaleString('en-US',{maximumFractionDigits:5})}</span><small>{x.time.toLocaleTimeString()}</small></div>)}</div>}
+    <p className="public-data-foot">সর্বশেষ হালনাগাদ: {data.updated?data.updated.toLocaleTimeString():'Waiting…'} · Public API দেরি করতে পারে, Rate Limit-এ পড়তে পারে অথবা সাময়িক বন্ধ থাকতে পারে। Order Book শুধু শীর্ষ ২০টি Level-এর Snapshot, পুরো Market-এর Liquidity নয়। Liquidation Feed-ও পুরো Market-এর সম্পূর্ণ ইতিহাস দেখায় না।</p>
   </section>;
 }
 
@@ -536,7 +544,7 @@ function PublicDerivativesPanel({symbol}) {
 
 function evaluateTimeframe(candles,timeframe) {
   const rows=candles.filter(k=>Number(k[6])<Date.now()&&Number(k[6])>Number(k[0])).map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],takerBuy:+(k[9]||0)}));
-  if(rows.length<60) throw new Error('Not enough completed candles');
+  if(rows.length<60) throw new Error('Not enough টি সম্পূর্ণ Candle');
   const closes=rows.map(x=>x.close);
   const ema=(period)=>{const alpha=2/(period+1);let value=closes.slice(0,period).reduce((a,b)=>a+b,0)/period;for(let i=period;i<closes.length;i++)value=closes[i]*alpha+value*(1-alpha);return value;};
   const indicators=calculateWilderIndicators(rows,14),rsi=indicators.rsi;
@@ -557,7 +565,7 @@ function evaluateTimeframe(candles,timeframe) {
   const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-61),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
   return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio,flowValid:flowMetrics.valid};
 }
-function MultiTimeframeSignal({symbol,market,onSignal}) {
+function Multiটাইমফ্রেমignal({symbol,market,onSignal}) {
   const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
   useEffect(()=>{onSignal?.(result);},[result,onSignal]);
   useEffect(()=>{
@@ -600,7 +608,7 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
         });
         const {decision,score,reasons,riskPlan,gates}=evaluated;
         setResult({symbol,market,decision,score,data,riskPlan,gates,flow:{bidValue,askValue,depthRatio,takerRatio,externalTakerRatio,depthRequestMs:depth.requestDurationMs},reasons,updated:new Date(),status:'READY'});
-        setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const referenceEntry=m5.close,entry=applyAdverseSlippage(referenceEntry,decision,'ENTRY',0.0002),atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,referenceEntry,entryType:'COMPLETED_5M_CLOSE_WITH_ESTIMATED_SLIPPAGE',feeRate:0.0005,slippageRate:0.0002,stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
+        setTracked(previous=>{let next=previous.filter(x=>x.status==='PENDING'||Date.now()-x.createdAt<30*86400000);const candleTime=m5.candleTime;if((decision==='LONG'||decision==='SHORT')&&candleTime&&!next.some(x=>x.id===symbol+'_'+market+'_'+candleTime)){const referenceEntry=m5.close,entry=applyAdverseSlippage(referenceEntry,decision,'Entry',0.0002),atr=m5.atr;next.unshift({id:symbol+'_'+market+'_'+candleTime,symbol,market,side:decision,entry,referenceEntry,entryType:'COMPLETED_5M_CLOSE_WITH_ESTIMATED_SLIPPAGE',feeRate:0.0005,slippageRate:0.0002,stop:decision==='LONG'?entry-atr*1.5:entry+atr*1.5,target:decision==='LONG'?entry+atr*3:entry-atr*3,atr,candleTime,createdAt:Date.now(),score,status:'PENDING',bars:0});}next=next.slice(0,200);try{localStorage.setItem('cryptobot.liveSignalLog',JSON.stringify(next));}catch{}return next;});
       }catch(e){if(live){setResult({symbol,market,decision:'NO TRADE',score:0,data:null,flow:null,reasons:['NO TRADE: প্রয়োজনীয় টাইমফ্রেমের ক্যান্ডেল অথবা order-book ডেটা পাওয়া যায়নি। সংযোগ, Binance API বা rate limit সমস্যার কারণে বিশ্লেষণ সম্পূর্ণ হয়নি। বিস্তারিত: '+(e.message||'অজানা ডেটা সমস্যা')],updated:new Date(),status:'BLOCKED'});setError('বিশ্লেষণ সম্পন্ন হয়নি: '+(e.message||'Binance ডেটা পাওয়া যায়নি।'));}}
       finally{if(live)setLoading(false);}
     };
@@ -636,9 +644,9 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
               const hi=Number(k[2]),lo=Number(k[3]),cl=Number(k[4]);
               const stop=sig.side==='LONG'?lo<=sig.stop:hi>=sig.stop;
               const target=sig.side==='LONG'?hi>=sig.target:lo<=sig.target;
-              if(stop){exit=sig.stop;reason='STOP LOSS';break;}
-              if(target){exit=sig.target;reason='TAKE PROFIT';break;}
-              if(bars>=12){exit=cl;reason='12-CANDLE TIME EXIT';break;}
+              if(stop){exit=sig.stop;reason='স্টপ লস';break;}
+              if(target){exit=sig.target;reason='টেক প্রফিট';break;}
+              if(bars>=12){exit=cl;reason='12-CANDLE TIME Exit';break;}
               expected+=300000;
             }
             if(review){changed=true;return {...sig,bars,status:'REVIEW',reason:'DATA GAP — outcome not scored',reviewedAt:Date.now()};}
@@ -657,15 +665,15 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
   const closedTracked=tracked.filter(x=>x.status==='CLOSED'),trackedWins=closedTracked.filter(x=>x.netPct>0).length,trackedNet=closedTracked.reduce((s,x)=>s+x.netPct,0);
   const ratio=n=>n==null||!Number.isFinite(n)?'—':n.toFixed(2)+'x';
   return <section className="panel mtf-panel">
-    <div className="panel-title"><div><h3>Advanced multi-timeframe signal engine</h3><p>4H trend → 1H alignment → 15M setup → 5M timing · ADX / BOS / sweep / flow · Refreshes every 60s</p></div><span className={'tiny-live '+(result?.status==='READY'?'':'data-status-warn')}>{loading?'SCANNING':result?.status||'WAITING'}</span></div>
-    <div className="mtf-decision"><div><span>ENGINE DECISION</span><b className={result?.decision==='LONG'?'positive':result?.decision==='SHORT'?'negative':''}>{result?.decision||'NO TRADE'}</b></div><div><span>CONFLUENCE SCORE</span><b>{result?.score??0}/100</b></div><div><span>LAST CHECK</span><b>{result?.updated?result.updated.toLocaleTimeString():'—'}</b></div></div>
-    <div className="mtf-table-wrap"><table className="mtf-table"><thead><tr><th>TIMEFRAME</th><th>TREND</th><th>ADX</th><th>STRUCTURE</th><th>BOS</th><th>CHoCH</th><th>SWEEP</th><th>RSI</th><th>VOL / AVG</th></tr></thead><tbody>{rows.map(([tf,x])=><tr key={tf}><td>{tf.toUpperCase()}</td><td className={x.trend==='BULLISH'?'positive':x.trend==='BEARISH'?'negative':''}>{x.trend}</td><td>{fmt(x.adx,1)}</td><td>{x.structure}</td><td>{x.bos==='NONE'?'—':x.bos}</td><td>{x.choch==='NONE'?'—':x.choch}</td><td>{x.sweep==='NONE'?'—':x.sweep}</td><td>{fmt(x.rsi,1)}</td><td>{fmt(x.volumeRatio,2)}x</td></tr>)}</tbody></table></div>
-    {result?.flow&&<div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TAKER BUY / SELL</span><b>{ratio(result.flow.takerRatio)}</b><small>Completed 5m kline · taker-buy base volume</small></div><div className="public-data-card"><span>TOP-20 DEPTH BID / ASK</span><b>{ratio(result.flow.depthRatio)}</b><small>Top-20 snapshot · {result.flow.depthRequestMs}ms request · not full order flow</small></div><div className="public-data-card"><span>ADX REGIME</span><b>{result.data['4h'].adx>=15&&result.data['1h'].adx>=15?'TREND-ELIGIBLE':'WEAK / MIXED'}</b><small>ADX is a strength filter, not direction</small></div></div>}
+    <div className="panel-title"><div><h3>উন্নত Multi-Timeframe Signal Engine</h3><p>4H Trend → 1H মিল → 15M Setup → 5M Timing · ADX / BOS / Sweep / Flow · প্রতি ৬০ সেকেন্ডে হালনাগাদ</p></div><span className={'tiny-live '+(result?.status==='READY'?'':'data-status-warn')}>{loading?'SCANNING':result?.status||'WAITING'}</span></div>
+    <div className="mtf-decision"><div><span>Engine-এর সিদ্ধান্ত</span><b className={result?.decision==='LONG'?'positive':result?.decision==='SHORT'?'negative':''}>{result?.decision||'NO TRADE'}</b></div><div><span>সম্মিলিত শর্তের Score</span><b>{result?.score??0}/100</b></div><div><span>সর্বশেষ যাচাই</span><b>{result?.updated?result.updated.toLocaleTimeString():'—'}</b></div></div>
+    <div className="mtf-table-wrap"><table className="mtf-table"><thead><tr><th>Timeframe</th><th>Trend</th><th>ADX</th><th>Structure</th><th>BOS</th><th>CHoCH</th><th>Sweep</th><th>RSI</th><th>Volume / গড়</th></tr></thead><tbody>{rows.map(([tf,x])=><tr key={tf}><td>{tf.toUpperCase()}</td><td className={x.trend==='BULLISH'?'positive':x.trend==='BEARISH'?'negative':''}>{trendLabel(x.trend)}</td><td>{fmt(x.adx,1)}</td><td>{structureLabel(x.structure)}</td><td>{structureLabel(x.bos==='NONE'?'—':x.bos)}</td><td>{structureLabel(x.choch==='NONE'?'—':x.choch)}</td><td>{structureLabel(x.sweep==='NONE'?'—':x.sweep)}</td><td>{fmt(x.rsi,1)}</td><td>{fmt(x.volumeRatio,2)}x</td></tr>)}</tbody></table></div>
+    {result?.flow&&<div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>Taker Buy / Sell</span><b>{ratio(result.flow.takerRatio)}</b><small>সম্পূর্ণ 5M Candle · Taker Buy Base Volume</small></div><div className="public-data-card"><span>শীর্ষ ২০টি Depth-এর Bid / Ask</span><b>{ratio(result.flow.depthRatio)}</b><small>শীর্ষ ২০টি Level-এর Snapshot · {result.flow.depthRequestMs}ms request · সম্পূর্ণ Order Flow নয়</small></div><div className="public-data-card"><span>ADX-এর অবস্থা</span><b>{result.data['4h'].adx>=15&&result.data['1h'].adx>=15?'Trend-এর জন্য গ্রহণযোগ্য':'দুর্বল / মিশ্র'}</b><small>ADX Trend-এর শক্তি মাপে, দিক নয়</small></div></div>}
     {error&&<p className="public-data-error">{error}</p>}
-    <div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>TRACKED LIVE SIGNALS</span><b>{tracked.length}</b><small>Saved in this browser</small></div><div className="public-data-card"><span>CLOSED SIGNAL WIN RATE</span><b>{closedTracked.length?fmt(trackedWins/closedTracked.length*100,1)+'%':'—'}</b><small>{closedTracked.length} resolved · {tracked.filter(x=>x.status==='REVIEW').length} need review</small></div><div className="public-data-card"><span>NET TRACKED RETURN</span><b className={trackedNet>=0?'positive':'negative'}>{closedTracked.length?(trackedNet>=0?'+':'')+fmt(trackedNet,2)+'%':'—'}</b><small>Equal-weight price return proxy</small></div></div>
-    {tracked.length>0&&<div className="mtf-reasons">{tracked.slice(0,8).map(x=><span key={x.id}>{x.symbol} {x.side} · {x.status==='PENDING'?'PENDING '+x.bars+'/12':x.status==='REVIEW'?x.reason:x.reason+' · '+(x.netPct>=0?'+':'')+fmt(x.netPct,2)+'%'}</span>)}</div>}
+    <div className="public-data-grid mtf-flow-grid"><div className="public-data-card"><span>সংরক্ষিত Live Signal</span><b>{tracked.length}</b><small>এই Browser-এ সংরক্ষিত</small></div><div className="public-data-card"><span>বন্ধ Signal-এর জয়ের হার</span><b>{closedTracked.length?fmt(trackedWins/closedTracked.length*100,1)+'%':'—'}</b><small>{closedTracked.length}টি নিষ্পত্তি হয়েছে · {tracked.filter(x=>x.status==='REVIEW').length}টি পুনরায় যাচাই প্রয়োজন</small></div><div className="public-data-card"><span>সংরক্ষিত Signal-এর নিট Return</span><b className={trackedNet>=0?'positive':'negative'}>{closedTracked.length?(trackedNet>=0?'+':'')+fmt(trackedNet,2)+'%':'—'}</b><small>সমান ওজনের Price Return-এর আনুমানিক হিসাব</small></div></div>
+    {tracked.length>0&&<div className="mtf-reasons">{tracked.slice(0,8).map(x=><span key={x.id}>{x.symbol} {x.side} · {x.status==='PENDING'?'অপেক্ষমাণ '+x.bars+'/12':x.status==='REVIEW'?x.reason:x.reason+' · '+(x.netPct>=0?'+':'')+fmt(x.netPct,2)+'%'}</span>)}</div>}
     <h4 className="section-subtitle">সিগন্যালের কারণ ও NO TRADE-এর ব্যাখ্যা</h4><div className="mtf-reasons">{(result?.reasons||['সম্পূর্ণ ক্যান্ডেল ও order-book ডেটার জন্য অপেক্ষা করা হচ্ছে।']).map((x,i)=><span key={i}>{x}</span>)}</div>
-    <p className="public-data-foot">Research-only rule set. Signal log is browser-local and tracks only emitted LONG/SHORT decisions for the selected symbol/market; pending signals for another selection pause until revisited. Entry is the completed 5M candle close reference, not a guaranteed next-open fill. Outcomes use a 1.5x ATR stop, 3x ATR target, or 12 completed 5M candles, stop-first same-candle handling and a fixed 0.14% round-trip cost assumption. Missing 5M intervals are marked REVIEW and excluded from win-rate calculations. This is a monitoring proxy, not a broker fill or independently validated win rate. ADX uses Wilder-style smoothing; pivots require three right-side closed candles. Order book is a single top-20 snapshot. No orders are placed.</p>
+    <p className="public-data-foot">শুধু গবেষণার জন্য তৈরি নিয়মভিত্তিক ব্যবস্থা। Signal Log এই Browser-এ থাকে এবং নির্বাচিত Symbol/Market-এর LONG/SHORT Signal সংরক্ষণ করে; অন্য Symbol নির্বাচন করলে সেখানকার অপেক্ষমাণ Signal-এর হিসাব সাময়িক থেমে থাকে। Entry হলো সম্পূর্ণ হওয়া 5M Candle-এর Close Price—পরের Candle-এ ওই দামে Trade হবে, এমন নিশ্চয়তা নেই। ফলাফল নির্ধারণে ATR-এর ১.৫ গুণ Stop, ৩ গুণ Target অথবা ১২টি সম্পূর্ণ 5M Candle ব্যবহার করা হয়; একই Candle-এ Stop ও Target লাগলে Stop আগে ধরা হয় এবং দুই পাশ মিলিয়ে ০.১৪% খরচ ধরা হয়। 5M Candle-এর ধারাবাহিকতায় Gap থাকলে সেটি REVIEW হিসেবে চিহ্নিত হয় এবং Win Rate থেকে বাদ যায়। এটি শুধু পর্যবেক্ষণভিত্তিক হিসাব; Broker-এর প্রকৃত Fill বা স্বাধীনভাবে যাচাই করা Win Rate নয়। ADX-এ Wilder পদ্ধতির Smoothing ব্যবহার করা হয়; Pivot নিশ্চিত করতে ডান পাশে তিনটি সম্পূর্ণ Candle লাগে। Order Book-এর একটি Top-20 Snapshot নেওয়া হয়। কোনো বাস্তব Order পাঠানো হয় না।</p>
   </section>;
 }
 
@@ -683,8 +691,12 @@ function App() {
   const [tab,setTab] = useState('Overview');
   const [mobileNav,setMobileNav] = useState(false);
   const [watchOnly,setWatchOnly] = useState(false);
-  const [demoBalance,setDemoBalance] = useState(()=>{try{return Number(localStorage.getItem('cryptobot.demoBalance'))||10000;}catch{return 10000;}});
+  const [demoBalances,setDemoBalances] = useState(()=>{try{const saved=JSON.parse(localStorage.getItem('cryptobot.demoBalances')||'null');if(saved&&Number.isFinite(saved.Spot)&&Number.isFinite(saved.Futures))return saved;const legacy=Number(localStorage.getItem('cryptobot.demoBalance'))||10000;return {Spot:10000,Futures:legacy};}catch{return {Spot:10000,Futures:10000};}});
+  const demoBalance=demoBalances[market]||10000;
   const [paperTrades,setPaperTrades] = useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.paperTrades')||'[]');}catch{return [];}});
+  const [paperMarginInput,setPaperMarginInput]=useState('100');
+  const [paperLeverageInput,setPaperLeverageInput]=useState('3');
+  const [paperPrices,setPaperPrices]=useState({});
   const closingIds=useRef(new Set());
   const [notice,setNotice] = useState('');
   const [mtfSignal,setMtfSignal] = useState(null);
@@ -805,16 +817,37 @@ function App() {
      const bias=mtfSignal.decision==='LONG'||mtfSignal.decision==='SHORT'?mtfSignal.decision:'WAIT';
      if(bias==='WAIT')return {bias,score:mtfSignal.score??0,atr:m5.atr,stop:null,target:null,positionSize:0,riskUsd:0,ready:true,reason:(mtfSignal.reasons||['NO TRADE']).join(' ')};
      const riskPlan=validateSignalRiskPlan({side:bias,entry:price,atr:m5.atr,market,accountBalance:demoBalance});
-     if(!riskPlan.ok)return {bias:'WAIT',score:0,atr:m5.atr,stop:null,target:null,positionSize:0,riskUsd:0,ready:false,reason:'NO TRADE — Risk Validation Gate: '+riskPlan.reason+'.'};
+     if(!riskPlan.ok)return {bias:'WAIT',score:0,atr:m5.atr,stop:null,target:null,positionSize:0,riskUsd:0,ready:false,reason:'NO TRADE — Risk যাচাইয়ের শর্ত: '+riskPlan.reason+'.'};
      return {bias,score:mtfSignal.score??0,atr:m5.atr,stop:riskPlan.stop,target:riskPlan.target,positionSize:riskPlan.quantity,riskUsd:riskPlan.riskUsd,netRR:riskPlan.netRR,ready:true,reason:(mtfSignal.reasons||['MTF analysis completed.']).join(' ')};
   },[mtfSignal,symbol,market,feedClock,price,demoBalance,signalHealth.hasTicker,signalHealth.priceFresh,signalHealth.reconciliationOk]);
+  const suggestedLeverage=market==='Futures'&&analysis.ready&&analysis.bias!=='WAIT'?suggestConservativeLeverage({entry:price,atr:analysis.atr}):null;
+  const resetDemoFunds=()=>{if(paperTrades.some(t=>t.status==='OPEN'&&t.market===market)){showNotice('Close all open '+market+' paper trades before resetting this account balance.');return;}if(window.confirm('Reset '+market+' demo balance to 10,000 USDT? Closed trade history will be kept.')){updateMarketBalance(market,10000);showNotice(market+' demo balance reset to 10,000 USDT. Trade history was preserved.');}};
   const navItems=[['Overview',Activity],['Market Scanner',Compass],['Spot Analysis',CandlestickChart],['Futures Analysis',Layers3],['Paper Trading',Wallet],['Trade Journal',BookOpen],['Backtesting',BarChart3],['Strategy Lab',SlidersHorizontal],['Multi-Asset Scanner',Globe2],['Market Regime',Activity],['Market Structure',Layers3],['News & Events',Newspaper]];
   const showNotice = msg => {setNotice(msg);setTimeout(()=>setNotice(''),4200);};
-  useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalance',String(demoBalance));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalance,paperTrades]);
-  const closeTrade=(id,exitPrice,reason='MANUAL')=>{
+  const updateMarketBalance=(marketKey,updater)=>setDemoBalances(prev=>({...prev,[marketKey]:Math.max(0,typeof updater==='function'?updater(prev[marketKey]||10000):updater)}));
+  useEffect(()=>{try{localStorage.setItem('cryptobot.demoBalances',JSON.stringify(demoBalances));localStorage.setItem('cryptobot.paperTrades',JSON.stringify(paperTrades));}catch{showNotice('Browser storage unavailable; paper trade history may not persist.');}},[demoBalances,paperTrades]);
+  useEffect(()=>{
+    let live=true;
+    const refresh=async()=>{
+      const open=paperTrades.filter(t=>t.status==='OPEN');
+      const unique=[...new Map(open.map(t=>[t.market+':'+t.symbol,{market:t.market,symbol:t.symbol}])).values()];
+      await Promise.all(unique.map(async item=>{
+        try{
+          const base=item.market==='Futures'?'https://fapi.binance.com/fapi/v1/ticker/price':'https://api.binance.com/api/v3/ticker/price';
+          const response=await fetch(base+'?symbol='+item.symbol,{cache:'no-store'});
+          if(!response.ok)throw new Error('price unavailable');
+          const data=await response.json(),lastPrice=Number(data.price);
+          if(live&&Number.isFinite(lastPrice)&&lastPrice>0)setPaperPrices(prev=>({...prev,[item.market+':'+item.symbol]:{lastPrice,updatedAt:Date.now()}}));
+        }catch{}
+      }));
+    };
+    refresh();const timer=window.setInterval(refresh,4000);
+    return()=>{live=false;clearInterval(timer);};
+  },[paperTrades.filter(t=>t.status==='OPEN').map(t=>t.market+':'+t.symbol).sort().join('|')]);
+  const closeTrade=(id,exitPrice,reason='ম্যানুয়ালি বন্ধ')=>{
     const t=paperTrades.find(x=>x.id===id);if(!t||t.status!=='OPEN')return;
     const feeRate=Number(t.feeRate??0.0005),slippageRate=Number(t.slippageRate??0.0002),filledExit=applyAdverseSlippage(exitPrice,t.side,'EXIT',slippageRate),accounting=calculateTradePnl({side:t.side,entry:t.entry,exit:filledExit,quantity:t.quantity,feeRate,entryFee:Number(t.entryFee||0)});if(!accounting.ok)return;
-    setDemoBalance(b=>b+(t.margin||t.entry*t.quantity/(t.leverage||1))+accounting.grossPnl-accounting.exitFee);
+    updateMarketBalance(t.market,b=>b+(t.margin||t.entry*t.quantity/(t.leverage||1))+accounting.grossPnl-accounting.exitFee);
     setPaperTrades(rows=>rows.map(x=>x.id===id?{...x,status:'CLOSED',exit:filledExit,rawExit:exitPrice,pnl:accounting.netPnl,grossPnl:accounting.grossPnl,entryFee:accounting.entryFee,exitFee:accounting.exitFee,closedAt:Date.now(),exitReason:reason}:x));
     closingIds.current.delete(id);
   };
@@ -822,29 +855,31 @@ function App() {
     if(!analysis.ready||analysis.bias==='WAIT'||!analysis.atr){showNotice('Paper trade blocked: the current MTF signal or live price is not valid. Wait for a fresh, fully checked LONG/SHORT setup.');return;}
     if(!price){showNotice('Market price is not available yet.');return;}
     if(analysis.bias==='WAIT'||!analysis.atr){showNotice('No trade opened: setup is WAIT or ATR data is unavailable.');return;}
-    if(paperTrades.some(t=>t.status==='OPEN'&&t.market!==market)){showNotice('Close open paper positions in the other market before opening a new one.');return;}
     if(market==='Spot'&&analysis.bias==='SHORT'){showNotice('Spot mode cannot open short positions. Switch to Futures or wait for a LONG setup.');return;}
-    const side=analysis.bias,leverage=market==='Futures'?3:1,feeRate=0.0005,slippageRate=0.0002,entry=applyAdverseSlippage(price,side,'ENTRY',slippageRate);
+    const side=analysis.bias,leverage=market==='Futures'?Math.max(1,Math.min(10,Math.floor(Number(paperLeverageInput)||1))):1,requestedMargin=Math.max(0,Number(paperMarginInput)),feeRate=0.0005,slippageRate=0.0002,entry=applyAdverseSlippage(price,side,'Entry',slippageRate);
+    if(!Number.isFinite(requestedMargin)||requestedMargin<=0){showNotice('Enter a valid paper margin amount.');return;}
+    if(requestedMargin>demoBalance){showNotice('Requested margin is higher than the available '+market+' demo balance.');return;}
     const stop=side==='LONG'?entry-analysis.atr*1.5:entry+analysis.atr*1.5;
     const target=side==='LONG'?entry+analysis.atr*3:entry-analysis.atr*3;
-    const paperRiskPlan=validateSignalRiskPlan({side,entry,atr:analysis.atr,market,accountBalance:demoBalance,feeRate,slippageRate});if(!paperRiskPlan.ok){showNotice('Paper trade blocked by cost-aware risk sizing: '+paperRiskPlan.reason);return;}const riskQuantity=Math.min(analysis.positionSize||paperRiskPlan.quantity,paperRiskPlan.quantity),affordableQuantity=demoBalance/(entry/leverage+entry*feeRate);
-    const quantity=Math.min(riskQuantity,affordableQuantity);
+    const paperRiskPlan=validateSignalRiskPlan({side,entry,atr:analysis.atr,market,accountBalance:demoBalance,feeRate,slippageRate});if(!paperRiskPlan.ok){showNotice('Paper trade blocked by cost-aware risk sizing: '+paperRiskPlan.reason);return;}
+    const riskQuantity=Math.min(analysis.positionSize||paperRiskPlan.quantity,paperRiskPlan.quantity);
+    const quantity=calculatePaperQuantity({entry,margin:requestedMargin,leverage,feeRate,riskQuantity,availableBalance:demoBalance});
     if(!Number.isFinite(quantity)||quantity<=0){showNotice('Insufficient demo balance for this position.');return;}
     const margin=entry*quantity/leverage,entryFee=entry*quantity*feeRate;
     if(margin+entryFee>demoBalance){showNotice('Insufficient demo balance.');return;}
-    const trade={id:Date.now()+'_'+symbol,symbol,side,market,entry,referenceEntry:price,quantity,stop,target,leverage,margin,entryFee,status:'OPEN',time:new Date().toLocaleString(),openedAt:Date.now(),feeRate,slippageRate};
-    setPaperTrades(rows=>[trade,...rows]);setDemoBalance(b=>b-margin-entryFee);
-    showNotice('Paper '+side+' opened with '+leverage+'x leverage and a 1% risk cap.');
+    const trade={id:Date.now()+'_'+market+'_'+symbol,symbol,side,market,entry,referenceEntry:price,quantity,stop,target,leverage,margin,requestedMargin,entryFee,status:'OPEN',time:new Date().toLocaleString(),openedAt:Date.now(),feeRate,slippageRate};
+    setPaperTrades(rows=>[trade,...rows]);updateMarketBalance(market,b=>b-margin-entryFee);
+    showNotice('Paper '+side+' opened on '+market+' with '+leverage+'x leverage. Position size remains capped by the risk plan.');
   };
   useEffect(()=>{
     paperTrades.filter(t=>t.status==='OPEN').forEach(t=>{
-      const live=Number(prices[t.symbol]?.lastPrice||0);if(!live||closingIds.current.has(t.id))return;
+      const live=Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||0);if(!live||closingIds.current.has(t.id))return;
       const stopHit=t.side==='LONG'?live<=t.stop:live>=t.stop,targetHit=t.side==='LONG'?live>=t.target:live<=t.target;
       if(stopHit||targetHit){closingIds.current.add(t.id);closeTrade(t.id,stopHit?live:t.target,stopHit?'STOP LOSS':'TAKE PROFIT');}
     });
-  },[prices,paperTrades]);
+  },[prices,paperPrices,paperTrades,market]);
 
-  const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN').reduce((sum,t)=>{const live=Number(prices[t.symbol]?.lastPrice||t.entry),exitFill=applyAdverseSlippage(live,t.side,'EXIT',Number(t.slippageRate??0.0002)),accounting=calculateTradePnl({side:t.side,entry:t.entry,exit:exitFill,quantity:t.quantity,feeRate:Number(t.feeRate??0.0005),entryFee:Number(t.entryFee||0)});return sum+(accounting.ok?accounting.netPnl:0);},0);
+  const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN'&&t.market===market).reduce((sum,t)=>{const live=Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry),exitFill=applyAdverseSlippage(live,t.side,'EXIT',Number(t.slippageRate??0.0002)),accounting=calculateTradePnl({side:t.side,entry:t.entry,exit:exitFill,quantity:t.quantity,feeRate:Number(t.feeRate??0.0005),entryFee:Number(t.entryFee||0)});return sum+(accounting.ok?accounting.netPnl:0);},0);
   return <div className={`app ${theme}`}>
     <aside className={`sidebar ${mobileNav?'open':''}`}>
       <div className="brand"><div className="brand-mark"><Activity size={19}/></div><div><b>Crypto<span>Bot</span></b><small>TRADING TERMINAL</small></div><button className="icon-btn mobile-close" onClick={()=>setMobileNav(false)}><X size={17}/></button></div>
@@ -870,7 +905,7 @@ function App() {
             <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
           </div><p>Age is measured from browser receipt time. This check cannot guarantee zero exchange/network latency.</p>
         </section>
-        <MultiTimeframeSignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
+        <Multiটাইমফ্রেমignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
         <section className="market-strip">
           <div className="market-stat"><span>BTC / USDT</span><b>{prices.BTCUSDT?'$'+fmt(prices.BTCUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.BTCUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.BTCUSDT?fmt(prices.BTCUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat"><span>ETH / USDT</span><b>{prices.ETHUSDT?'$'+fmt(prices.ETHUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.ETHUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.ETHUSDT?fmt(prices.ETHUSDT.priceChangePercent)+'%':'—'}</em></div>
@@ -878,7 +913,7 @@ function App() {
           <div className="market-stat"><span>SOL / USDT</span><b>{prices.SOLUSDT?'$'+fmt(prices.SOLUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.SOLUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.SOLUSDT?fmt(prices.SOLUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat market-update"><span>DATA UPDATED</span><b>{updated?updated.toLocaleTimeString():'Connecting…'}</b><small><span className={`pulse ${feedStatus==='LIVE'?'':'feed-warn'}`}/> Binance {feedStatus==='LIVE'?'WebSocket':'REST fallback'}</small></div>
         </section>
-        <div className="section-row"><div><h2>Market workspace</h2><p>Live {market.toLowerCase()} prices and multi-timeframe chart analysis</p></div><div className="market-actions"><button className="sui-focus-btn" onClick={()=>setSymbol('SUIUSDT')}>SUI / USDT <span>FOCUS</span></button><div className="market-toggle"><button className={market==='Spot'?'active':''} onClick={()=>{if(paperTrades.some(t=>t.status==='OPEN'&&t.market!=='Spot')){showNotice('Close open Futures paper positions before switching to Spot.');return;}setMarket('Spot');}}>Spot</button><button className={market==='Futures'?'active':''} onClick={()=>{if(paperTrades.some(t=>t.status==='OPEN'&&t.market!=='Futures')){showNotice('Close open Spot paper positions before switching to Futures.');return;}setMarket('Futures');}}>Futures</button></div></div></div>
+        <div className="section-row"><div><h2>Market workspace</h2><p>Live {market.toLowerCase()} prices and multi-timeframe chart analysis</p></div><div className="market-actions"><button className="sui-focus-btn" onClick={()=>setSymbol('SUIUSDT')}>SUI / USDT <span>FOCUS</span></button><div className="market-toggle"><button className={market==='Spot'?'active':''} onClick={()=>setMarket('Spot')}>Spot</button><button className={market==='Futures'?'active':''} onClick={()=>setMarket('Futures')}>Futures</button></div></div></div>
         <section className="workspace-grid">
           <div className="panel chart-panel">
             <div className="panel-head"><div className="asset-title"><div className="coin-icon">{active[2].slice(0,1)}</div><div><b>{active[1]} <span>{active[2]}/USDT</span></b><small>Binance · {market} market</small></div><ChevronDown size={14}/></div><div className="chart-tools">{intervals.map(i=><button key={i} className={interval===i?'chosen':''} onClick={()=>setTimeframe(i)}>{i}</button>)}<button className="tool-icon" onClick={()=>showNotice('চার্টে EMA 20 ও EMA 50 চালু আছে; দুটিই চলমান ক্যান্ডেলের সঙ্গে WebSocket আপডেটে পুনর্গণনা হয়।')}><SlidersHorizontal size={15}/></button></div></div>
@@ -887,7 +922,7 @@ function App() {
             <div className="chart-foot"><span><span className="legend-dot"/> Candlesticks</span><span>Timeframe: {interval}</span><span>Source: Binance public API</span></div>
           </div>
           <div className="right-stack">
-            <div className="panel signal-panel"><div className="panel-title"><div><h3>Setup assessment</h3><p>Closed-candle rules · Data-gated</p></div><span className="tiny-live">{analysis.bias==="WAIT"?"BLOCKED":"CHECKED"}</span></div><div className={`signal-badge ${analysis.bias.toLowerCase()}`}>{analysis.bias==='LONG'?<TrendingUp size={19}/>:analysis.bias==='SHORT'?<TrendingDown size={19}/>:<Crosshair size={19}/>}<b>{analysis.bias}</b></div><div className="score-row"><span>Directional score</span><b>{analysis.score}/100</b></div><div className="score-track"><i style={{width:analysis.score+'%'}}/></div><p className="analysis-reason">{analysis.reason}</p><div className="signal-warning"><ShieldCheck size={15}/><span>Signal engine is preliminary. No backtested edge or verified win rate is claimed.</span></div><button className="outline-btn full" onClick={()=>setTab('Futures Analysis')}>View analysis details <ArrowUpRight size={15}/></button></div>
+            <div className="panel signal-panel"><div className="panel-title"><div><h3>সেটআপ মূল্যায়ন</h3><p>সম্পূর্ণ Candle-ভিত্তিক নিয়ম · ডেটা যাচাই সাপেক্ষে</p></div><span className="tiny-live">{analysis.bias==="WAIT"?"BLOCKED":"CHECKED"}</span></div><div className={`signal-badge ${analysis.bias.toLowerCase()}`}>{analysis.bias==='LONG'?<TrendingUp size={19}/>:analysis.bias==='SHORT'?<TrendingDown size={19}/>:<Crosshair size={19}/>}<b>{analysis.bias}</b></div><div className="score-row"><span>দিকনির্দেশক Score</span><b>{analysis.score}/100</b></div><div className="score-track"><i style={{width:analysis.score+'%'}}/></div><p className="analysis-reason">{analysis.reason}</p>{market==='Futures'&&analysis.bias!=='WAIT'&&suggestedLeverage&&<div className="suggested-leverage"><span>ঝুঁকি অনুযায়ী Leverage প্রস্তাব</span><b>{suggestedLeverage}x</b><small>সতর্ক Volatility হিসাব · Paper Trading-এর Leverage নিজে বেছে নাও</small></div>}<div className="signal-warning"><ShieldCheck size={15}/><span>Signal Engine এখনো প্রাথমিক পর্যায়ে। Backtest-এ প্রমাণিত বাড়তি সুবিধা বা যাচাই করা Win Rate দাবি করা হচ্ছে না।</span></div><button className="outline-btn full" onClick={()=>setTab('Futures Analysis')}>বিশ্লেষণের বিস্তারিত দেখো <ArrowUpRight size={15}/></button></div>
             <div className="panel metrics-panel"><div className="panel-title"><div><h3>Market metrics</h3><p>{active[2]} · 24 hour</p></div><BarChart3 size={17}/></div><div className="metric-row"><span>24h Volume (USDT)</span><b>{ticker?compact(+ticker.quoteVolume):'—'}</b></div><div className="metric-row"><span>24h High</span><b className="positive">{ticker?'$'+fmt(ticker.highPrice):'—'}</b></div><div className="metric-row"><span>24h Low</span><b className="negative">{ticker?'$'+fmt(ticker.lowPrice):'—'}</b></div><div className="metric-row"><span>24h Trades</span><b>{ticker?compact(+ticker.count):'—'}</b></div><div className="metric-row"><span>Market source</span><b className="source-label">Binance {market}</b></div>{market==='Futures'&&<><div className="metric-row"><span>Open interest</span><b>{futuresMetrics.openInterest?compact(+futuresMetrics.openInterest):'—'}</b></div><div className="metric-row"><span>Funding rate</span><b className={Number(futuresMetrics.fundingRate)>=0?'positive':'negative'}>{futuresMetrics.fundingRate!==null?fmt(Number(futuresMetrics.fundingRate)*100,4)+'%':'—'}</b></div></>}</div>
           </div>
         </section>
@@ -900,32 +935,36 @@ function App() {
         {tab==='Futures Analysis'&&(
           <section className="panel risk-panel">
             <div className="panel-title">
-              <div><h3>Futures risk plan</h3><p>{active[2]}/USDT · {interval} timeframe · ATR-based levels</p></div>
+              <div><h3>Futures Risk Plan</h3><p>{active[2]}/USDT · {interval} timeframe · ATR-based levels</p></div>
               <ShieldCheck size={18}/>
             </div>
             <div className="risk-grid">
               <div><span>SETUP</span><b className={analysis.bias==='LONG'?'positive':analysis.bias==='SHORT'?'negative':''}>{analysis.bias}</b></div>
-              <div><span>ENTRY REFERENCE</span><b>{price ? '$'+fmt(price,price<1?5:4) : '—'}</b></div>
+              <div><span>Entry REFERENCE</span><b>{price ? '$'+fmt(price,price<1?5:4) : '—'}</b></div>
               <div><span>STOP LOSS</span><b>{analysis.stop ? '$'+fmt(analysis.stop,price<1?5:4) : '—'}</b></div>
               <div><span>TAKE PROFIT (2R)</span><b>{analysis.target ? '$'+fmt(analysis.target,price<1?5:4) : '—'}</b></div>
-              <div><span>RISK BUDGET (1%)</span><b>$ {fmt(analysis.riskUsd)}</b></div>
-              <div><span>EST. POSITION SIZE</span><b>{analysis.positionSize ? fmt(analysis.positionSize,3)+' '+active[2] : '—'}</b></div>
+              <div><span>Risk Budget (১%)</span><b>$ {fmt(analysis.riskUsd)}</b></div>
+              <div><span>আনুমানিক Position Size</span><b>{analysis.positionSize ? fmt(analysis.positionSize,3)+' '+active[2] : '—'}</b></div><div><span>প্রস্তাবিত Leverage</span><b>{suggestedLeverage? suggestedLeverage+'x':'—'}</b></div>
               <div><span>OPEN INTEREST</span><b>{futuresMetrics.openInterest ? compact(+futuresMetrics.openInterest) : '—'}</b></div>
               <div><span>FUNDING RATE</span><b>{futuresMetrics.fundingRate!==null ? fmt(+futuresMetrics.fundingRate*100,4)+'%' : '—'}</b></div>
             </div>
-            <p className="risk-note">Risk sizing uses a simulated $10,000 account and a 1% risk budget. Stop and target are volatility-based estimates, not guaranteed execution prices. Funding and open interest are informational; verify liquidity and slippage before any manual trade.</p>
-            <div className="signal-warning"><ShieldCheck size={15}/><span>Not a validated strategy. No win probability is claimed. If the setup says WAIT, do not force a trade.</span></div>
+            <p className="risk-note">Risk হিসাবের জন্য ১০,০০০ USDT-এর Demo Account এবং ১% Risk Budget ধরা হয়েছে। Stop ও Target Volatility-ভিত্তিক আনুমানিক Price—নিশ্চিত Execution Price নয়। Funding ও Open Interest তথ্য হিসেবে দেখানো হয়; Manual Trade-এর আগে Liquidity ও Slippage যাচাই করো।</p>
+            <div className="signal-warning"><ShieldCheck size={15}/><span>এটি যাচাইকৃত Strategy নয় এবং জয়ের কোনো সম্ভাবনা দাবি করা হচ্ছে না। Setup-এ WAIT দেখালে জোর করে Trade নিও না।</span></div>
           </section>
         )}
         <section className="lower-grid">
-          <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>Selected liquid markets</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Live WebSocket stream · REST fallback · {filtered.length} assets shown</div></div>
-          <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USD</span><span>Starting balance: $10,000</span></div><div className="paper-stats"><div><span>OPEN TRADES</span><b>{paperTrades.filter(t=>t.status==='OPEN').length}</b></div><div><span>EST. NET UNREALIZED P&L</span><b className={unrealizedPnl>=0?'positive':'negative'}>{unrealizedPnl>=0?'+':''}${fmt(unrealizedPnl)}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation. Stop exits use the latest observed trade price to avoid optimistic fills after price gaps; target exits are capped at the target. Monitoring depends on this page receiving Binance updates. If the page or connection is offline, the exact intraperiod path can be missed. Futures funding and liquidation are not simulated.</p></div>
+          <div className="panel watch-panel"><div className="panel-title"><div><h3>Watchlist</h3><p>নির্বাচিত Liquid Market</p></div><button className="icon-btn" onClick={()=>setWatchOnly(!watchOnly)}><Filter size={16}/></button></div><div className="watch-search"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search assets…"/></div><div className="watch-table"><div className="watch-header"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span></div>{filtered.map(c=>{const p=prices[c[0]];const up=Number(p?.priceChangePercent)>=0;return <button className={`watch-row ${symbol===c[0]?'active':''}`} key={c[0]} onClick={()=>setSymbol(c[0])}><span className="watch-asset"><i>{c[2][0]}</i><b>{c[2]} <small>{c[1]}</small></b></span><b>{p?'$'+fmt(p.lastPrice,p.lastPrice<1?5:2):'—'}</b><em className={up?'positive':'negative'}>{p?(up?'+':'')+fmt(p.priceChangePercent)+'%':'—'}</em></button>})}</div><div className="table-foot">Live WebSocket stream · REST fallback · {filtered.length} assets shown</div></div>
+          <div className="panel paper-panel"><div className="panel-title"><div><h3>Paper account</h3><p>Simulated balance · No real funds</p></div><Wallet size={17}/></div><div className="balance-label">AVAILABLE BALANCE</div><div className="balance-value">${fmt(demoBalance)}</div><div className="balance-change"><span className="positive">Virtual USDT · {market}</span><span>Starting balance: $10,000</span></div><button className="secondary-btn full reset-funds-btn" onClick={resetDemoFunds}>Reset {market} demo funds</button><div className="paper-stats"><div><span>OPEN {market.toUpperCase()} Trade সংখ্যা</span><b>{paperTrades.filter(t=>t.status==='OPEN'&&t.market===market).length}</b></div><div><span>EST. NET UNREALIZED P&L</span><b className={unrealizedPnl>=0?'positive':'negative'}>{unrealizedPnl>=0?'+':''}${fmt(unrealizedPnl)}</b></div></div><button className="primary-btn full" onClick={()=>setTab('Paper Trading')}>Open paper trading <ArrowUpRight size={15}/></button><p className="disclaimer">Paper trading is a simulation. Stop exits use the latest observed trade price to avoid optimistic fills after price gaps; target exits are capped at the target. Monitoring depends on this page receiving Binance updates. If the page or connection is offline, the exact intraperiod path can be missed. Futures funding and liquidation are not simulated.</p></div>
         </section>
         {(tab==='Paper Trading'||tab==='Trade Journal')&&(
           <section className="panel journal-panel">
             <div className="panel-title">
-              <div><h3>Paper trade journal</h3><p>Auto SL/TP while page is open · Saved in this browser</p></div>
-              <button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button>
+              <div><h3>Paper trade journal</h3><p>Auto SL/TP while page is open · এই Browser-এ সংরক্ষিত</p></div>
+              <div className="paper-open-controls">
+                <label>Margin / Fund (USDT)<input type="number" min="1" step="1" value={paperMarginInput} onChange={e=>setPaperMarginInput(e.target.value)}/></label>
+                <label>Leverage{market==='Spot'?<input value="1x · Spot" disabled/>:<select value={paperLeverageInput} onChange={e=>setPaperLeverageInput(e.target.value)}>{[1,2,3,4,5,6,7,8,9,10].map(x=><option key={x} value={x}>{x}x</option>)}</select>}</label>
+                <button className="primary-btn" onClick={addPaperTrade}><Plus size={15}/> Open {analysis.bias==='WAIT'?'trade':' '+analysis.bias}</button>
+              </div>
             </div>
             {paperTrades.length===0?<div className="empty-state">No paper trades yet. A trade can only be opened when the setup assessment is LONG or SHORT.</div>:(
               <div className="trade-list">
@@ -933,10 +972,10 @@ function App() {
                   <div className="trade-row" key={t.id}>
                     <b>{t.symbol.replace('USDT','')}/USDT <small>{t.side}</small></b>
                     <span>Entry: ${fmt(t.entry)}</span>
-                    <span>{t.status==='OPEN'?('Live: $'+fmt(prices[t.symbol]?.lastPrice||t.entry)):('Exit: $'+fmt(t.exit))}</span>
-                    <span>SL: ${fmt(t.stop)} · TP: ${fmt(t.target)}</span>
+                    <span>{t.status==='OPEN'?('Live: $'+fmt(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry)):('Exit: $'+fmt(t.exit))}</span>
+                    <span>SL: ${fmt(t.stop)} · TP: ${fmt(t.target)} · {t.market} · {t.leverage}x</span>
                     {t.status==='OPEN'
-                      ? <button className="secondary-btn" onClick={()=>closeTrade(t.id,Number(prices[t.symbol]?.lastPrice||t.entry),'MANUAL')}>Close at market</button>
+                      ? <button className="secondary-btn" disabled={!Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0))} onClick={()=>closeTrade(t.id,Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)),'MANUAL')}>Close at market</button>
                       : <b className={t.pnl>=0?'positive':'negative'}>{t.pnl>=0?'+':''}${fmt(t.pnl)} <small>{t.exitReason||'CLOSED'}</small></b>}
                   </div>
                 ))}
