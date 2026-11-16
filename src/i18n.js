@@ -155,6 +155,17 @@ const EN = {
 'REST ও WebSocket Price-এর পার্থক্য গ্রহণযোগ্য সীমার বাইরে।':'REST and WebSocket prices differ beyond the allowed threshold. ',
 'টি Candle interval অনুপস্থিত।':' candle interval(s) are missing. ',
 'সব Data Integrity Check পাস করেছে।':'All data integrity checks passed.'
+,
+'Signal Timeframe':'Signal Timeframe',
+'AUTO BEST':'AUTO BEST',
+'সব Candidate যাচাই করে যোগ্য Signal-এর মধ্যে সেরা Timeframe নির্বাচন করা হয়।':'All candidates are checked and the best eligible signal timeframe is selected.',
+'Manual mode: নির্বাচিত Timeframe-এর Signal যাচাই করা হচ্ছে।':'Manual mode: checking the selected timeframe signal.',
+'নির্বাচিত Timeframe':'Selected Timeframe',
+'বিভিন্ন Timeframe-এ বিপরীতমুখী যোগ্য Signal পাওয়া গেছে। স্বয়ংক্রিয়ভাবে কোনো একটিকে বেছে না নিয়ে NO TRADE রাখা হয়েছে।':'Eligible signals disagree across timeframes. No trade is selected automatically.',
+'কোনো Timeframe-এই সব বাধ্যতামূলক Signal ও Risk শর্ত পূরণ হয়নি।':'No timeframe passed all mandatory signal and risk checks.',
+'অন্য Timeframe-এ বিপরীত Signal পাওয়া গেছে; দ্বন্দ্ব থাকায় চূড়ান্ত সিদ্ধান্ত NO TRADE।':'An opposing signal exists on another timeframe; the final decision is NO TRADE.',
+'ডেটা প্রস্তুত নয়':'Data unavailable',
+'Context ':'Context '
 
 };
 const sorted=Object.keys(EN).sort((a,b)=>b.length-a.length);
