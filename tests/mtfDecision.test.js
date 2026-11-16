@@ -68,6 +68,14 @@ test('blocks weak volume, ADX, setup, timing and structure independently', () =>
   for(const mutate of cases){const data=bullishData();mutate(data);const result=evaluateMtfDecision({data,flow:{takerRatio:1.2,depthRatio:1.1},entry:100});assert.equal(result.decision,'NO TRADE');}
 });
 
+test('allows strong volume to substitute for a recent structure print while taker flow confirms direction', () => {
+  const data=bullishData();
+  data['15m'].bos='NONE';data['15m'].choch='NONE';data['15m'].sweep='NONE';
+  data['5m'].bos='NONE';data['5m'].choch='NONE';data['5m'].sweep='NONE';
+  const result=evaluateMtfDecision({data,flow:{takerRatio:1.2,depthRatio:1.1},entry:100});
+  assert.equal(result.decision,'LONG');
+});
+
 test('blocks when both market structure and directional flow confirmation are absent', () => {
   const data=bullishData();
   data['15m'].bos='NONE';data['15m'].choch='NONE';data['15m'].sweep='NONE';
