@@ -38,7 +38,7 @@ export function simulateTimeframeProfile({
   if (!profile || !interval || typeof evaluateFrame !== 'function' ||
       !Number.isFinite(feeRate) || feeRate < 0 ||
       !Number.isFinite(slippageRate) || slippageRate < 0 ||
-      !Number.isFinite(accountBalance) || accountBalance <= 0) {
+      !Number.isFinite(accountBalance) || accountBalance <= 0 ||\n      !(Number.isFinite(startTime) || startTime === -Infinity) ||\n      !(Number.isFinite(endTime) || endTime === Infinity) || endTime <= startTime) {
     return { ok: false, reason: 'Backtest configuration is invalid.' };
   }
   for (const frame of REQUIRED_FRAMES) {
@@ -72,7 +72,7 @@ export function simulateTimeframeProfile({
 
   for (let i = 60; i < data.length - 1; i++) {
     const candle = data[i];
-    const decisionTime = candle.closeTime;
+    if (candle.time < startTime) continue;\n    if (candle.time >= endTime) break;\n    const decisionTime = candle.closeTime;
     const snapshots = Object.fromEntries(frames.map(frame => [
       frame, selectClosedCandlesAsOf(dataByFrame[frame], decisionTime, 120),
     ]));
@@ -143,7 +143,7 @@ export function simulateTimeframeProfile({
     maxDrawdown = Math.max(maxDrawdown, peak > 0 ? (peak - marked) / peak * 100 : 0);
   }
 
-  if (position) closePosition(data.at(-1).close, 'END OF TEST', data.at(-1).time);
+  const finalCandle = [...data].reverse().find(candle => candle.time < endTime);\n  if (position && finalCandle) closePosition(finalCandle.close, 'END OF TEST', finalCandle.time);
   const wins = trades.filter(trade => trade.pnl > 0);
   const losses = trades.filter(trade => trade.pnl < 0);
   const grossProfit = wins.reduce((sum, trade) => sum + trade.pnl, 0);
