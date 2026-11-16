@@ -36,7 +36,7 @@ test('historical mode uses taker proxy but explicitly does not require unavailab
   assert.equal(result.decision,'LONG');
   assert.equal(result.diagnostics.flowMode,'historical');
   assert.equal(result.diagnostics.depthRatio,null);
-  assert.ok(result.reasons.some(x=>x.includes('পুরোনো ডেটায় Order Book Depth পাওয়া যায় না')));
+  assert.ok(result.reasons.some(x=>x.includes('Order Book Depth না থাকায় Flow-এর Score কম রাখা হয়েছে')));
 });
 
 test('SHORT requires bearish alignment and bearish taker flow', () => {
