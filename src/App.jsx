@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { translateText } from './i18n.js';
 import { validateSignalRiskPlan } from './riskValidation.js';
 import { evaluateMtfDecision } from './mtfDecision.js';
 import { calculateCandleFlow, calculateOrderBookDepth } from './flowMetrics.js';
@@ -709,6 +710,7 @@ function App() {
   const [interval,setTimeframe] = useState('15m');
   const [market,setMarket] = useState('Futures');
   const [theme,setTheme] = useState('dark');
+  const [language,setLanguage] = useState(()=>{try{return localStorage.getItem('cryptobot.language')==='en'?'en':'bn';}catch{return 'bn';}});
   const [prices,setPrices] = useState({});
   const [candles,setCandles] = useState([]);
   const [chartResetKey,setChartResetKey] = useState(0);
@@ -728,6 +730,46 @@ function App() {
   const [notice,setNotice] = useState('');
   const [mtfSignal,setMtfSignal] = useState(null);
 
+  useEffect(()=>{
+    try{localStorage.setItem('cryptobot.language',language);}catch{}
+    const root=document.querySelector('.app');
+    if(!root)return;
+    const records=new WeakMap();
+    const renderText=node=>{
+      const current=node.nodeValue;
+      let record=records.get(node);
+      if(!record){record={source:current,rendered:null};records.set(node,record);}
+      else if(current!==record.rendered&&current!==record.source){record.source=current;}
+      const next=language==='en'?translateText(record.source):record.source;
+      if(current!==next){record.rendered=next;node.nodeValue=next;}else record.rendered=current;
+    };
+    const renderElement=el=>{
+      for(const attr of ['placeholder','title','aria-label']){
+        if(!el.hasAttribute?.(attr))continue;
+        const current=el.getAttribute(attr),key=el.tagName+':'+attr;
+        let attrs=records.get(el);if(!attrs){attrs={};records.set(el,attrs);}
+        let rec=attrs[key];if(!rec){rec={source:current,rendered:null};attrs[key]=rec;}else if(current!==rec.rendered&&current!==rec.source){rec.source=current;}
+        const next=language==='en'?translateText(rec.source):rec.source;
+        if(current!==next){el.setAttribute(attr,next);rec.rendered=next;}else rec.rendered=current;
+      }
+    };
+    const scan=node=>{
+      if(node.nodeType===Node.TEXT_NODE){renderText(node);return;}
+      if(node.nodeType!==Node.ELEMENT_NODE&&node!==root)return;
+      if(node.nodeType===Node.ELEMENT_NODE)renderElement(node);
+      node.childNodes?.forEach(scan);
+    };
+    scan(root);
+    const observer=new MutationObserver(recordsList=>{
+      for(const mutation of recordsList){
+        if(mutation.type==='characterData')renderText(mutation.target);
+        else if(mutation.type==='attributes')renderElement(mutation.target);
+        else mutation.addedNodes.forEach(scan);
+      }
+    });
+    observer.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['placeholder','title','aria-label']});
+    return()=>observer.disconnect();
+  },[language]);
   const active = WATCH.find(c=>c[0]===symbol) || WATCH[0];
   const ticker = prices[symbol];
   const price = Number(ticker?.lastPrice || 0);
@@ -917,7 +959,7 @@ function App() {
   },[prices,paperPrices,paperTrades,market]);
 
   const unrealizedPnl=paperTrades.filter(t=>t.status==='OPEN'&&t.market===market).reduce((sum,t)=>{const live=Number(paperPrices[t.market+':'+t.symbol]?.lastPrice||((t.market===market)?prices[t.symbol]?.lastPrice:0)||t.entry),exitFill=applyAdverseSlippage(live,t.side,'EXIT',Number(t.slippageRate??0.0002)),accounting=calculateTradePnl({side:t.side,entry:t.entry,exit:exitFill,quantity:t.quantity,feeRate:Number(t.feeRate??0.0005),entryFee:Number(t.entryFee||0)});return sum+(accounting.ok?accounting.netPnl:0);},0);
-  return <div className={`app ${theme}`}>
+  return <div className={`app ${theme}`} data-language={language}>
     <aside className={`sidebar ${mobileNav?'open':''}`}>
       <div className="brand"><div className="brand-mark"><Activity size={19}/></div><div><b>Crypto<span>Bot</span></b><small>TRADING TERMINAL</small></div><button className="icon-btn mobile-close" onClick={()=>setMobileNav(false)}><X size={17}/></button></div>
       <div className="workspace"><div className="workspace-icon"><Command size={16}/></div><div><b>Market Desk</b><small>Personal workspace</small></div><ChevronDown size={14}/></div>
@@ -927,7 +969,7 @@ function App() {
     </aside>
     {mobileNav&&<div className="scrim" onClick={()=>setMobileNav(false)}/>}
     <main className="main">
-      <header className="topbar"><div className="top-left"><button className="icon-btn mobile-menu" onClick={()=>setMobileNav(true)}><Menu size={19}/></button><span className="crumb">Workspace</span><span className="slash">/</span><b>{tab}</b></div><div className="top-actions"><div className="feed"><span className={`pulse ${feedStatus==='LIVE'?'':'feed-warn'}`}/> <span>{feedStatus}</span></div><button className="icon-btn" onClick={()=>setTheme(t=>t==='dark'?'light':'dark')} title="Toggle theme">{theme==='dark'?<Sun size={17}/>:<Moon size={17}/>}</button><button className="icon-btn" onClick={()=>showNotice('Notifications are not configured yet.')}><Bell size={17}/></button><div className="top-avatar">M</div></div></header>
+      <header className="topbar"><div className="top-left"><button className="icon-btn mobile-menu" onClick={()=>setMobileNav(true)}><Menu size={19}/></button><span className="crumb">Workspace</span><span className="slash">/</span><b>{tab}</b></div><div className="top-actions"><div className="feed"><span className={`pulse ${feedStatus==='LIVE'?'':'feed-warn'}`}/> <span>{feedStatus}</span></div><button className="icon-btn" onClick={()=>setTheme(t=>t==='dark'?'light':'dark')} title="Toggle theme">{theme==='dark'?<Sun size={17}/>:<Moon size={17}/>}</button><button className="secondary-btn language-toggle" onClick={()=>setLanguage(l=>l==='bn'?'en':'bn')} title="Switch interface language">{language==='bn'?'EN':'বাংলা'}</button><button className="icon-btn" onClick={()=>showNotice('Notifications are not configured yet.')}><Bell size={17}/></button><div className="top-avatar">M</div></div></header>
       <div className="content">
         <div className="page-heading"><div><div className="eyebrow">WEDNESDAY, NOVEMBER 11, 2026 <span>·</span> MARKET OVERVIEW</div><h1>{tab==='Overview'?'Market overview':tab}</h1><p>Read the market. Respect the risk. Trade with a plan.</p></div><div className="heading-actions"><button className="secondary-btn" onClick={()=>{setLoading(true);fetch(candleUrl).then(r=>r.json()).then(rows=>setCandles(rows.filter(k=>Number(k[6])>Number(k[0])).map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],closeTime:Number(k[6]),isClosed:Number(k[6])<Date.now()})))).finally(()=>setLoading(false));}}><RefreshCw size={15}/> Refresh</button><button className="primary-btn" onClick={()=>setTab('Paper Trading')}><Plus size={16}/> New paper trade</button></div></div>
         {notice&&<div className="notice"><CircleHelp size={15}/>{notice}<button onClick={()=>setNotice('')}><X size={14}/></button></div>}
