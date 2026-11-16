@@ -82,7 +82,7 @@ const EN = {
 'সংরক্ষিত Strategy পরীক্ষার ফল':'Saved Strategy Runs','সেরা Candidate-এর অদেখা ডেটায় Return':'Best Candidate Out-of-Sample Return',
 'এটি গবেষণামূলক ফলাফল—ভবিষ্যৎ লাভের নিশ্চয়তা নয়।':'Research results only — not a guarantee of future profit.',
 'এটি নিয়মভিত্তিক আনুমানিক বিশ্লেষণ; প্রকৃত Order Flow বা অপেক্ষমাণ Order-এর ডেটা নয়।':'This is rule-based approximate analysis, not actual order-flow or resting-order data.',
-'কোনো বাস্তব Order পাঠানো হয় না।':'No real orders are placed.'
+'কোনো বাস্তব Order পাঠানো হয় না।':'No real orders are placed.',
 
 '4H ও 1H ট্রেন্ড একই দিকে: ':'4H and 1H trends align: ',
 'NO TRADE: 4H ও 1H-এর Trend একই দিকে নেই।':'NO TRADE: 4H and 1H trends are not aligned.',
