@@ -16,3 +16,11 @@ export function calculatePaperQuantity({
   const quantity = Math.min(riskQuantity, quantityWithinMargin);
   return Number.isFinite(quantity) && quantity > 0 ? quantity : 0;
 }
+
+
+/** Return a paper quote only while its timestamp is within the freshness budget. */
+export function getFreshPaperPrice(quote, now = Date.now(), maxAgeMs = 15000) {
+  if (!quote || !Number.isFinite(quote.lastPrice) || quote.lastPrice <= 0 || !Number.isFinite(quote.updatedAt) || !Number.isFinite(now) || !Number.isFinite(maxAgeMs) || maxAgeMs < 0) return null;
+  const age = now - quote.updatedAt;
+  return age >= 0 && age <= maxAgeMs ? quote.lastPrice : null;
+}

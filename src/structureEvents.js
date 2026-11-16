@@ -15,7 +15,7 @@ export function evaluateStructureEvent(rows, pivots = findConfirmedSwingPivots(r
     return { structure: 'NEUTRAL', bos: 'NONE', choch: 'NONE', sweep: 'NONE' };
   }
   const highs = pivots.filter(p => p.type === 'H' && p.confirmationIndex < rows.length - 1);
-  const lows = pivots.filter(p => p.type === 'L' && p.confirmationIndex < rows.length);
+  const lows = pivots.filter(p => p.type === 'L' && p.confirmationIndex < rows.length - 1);
   const lastHigh = highs.at(-1);
   const lastLow = lows.at(-1);
   const priorHigh = highs.at(-2);

@@ -20,3 +20,13 @@ test('manual paper quantity rejects invalid or unaffordable margin',()=>{
   assert.equal(calculatePaperQuantity({entry:100,margin:200,leverage:3,feeRate:0.001,riskQuantity:10,availableBalance:100}),0);
   assert.equal(calculatePaperQuantity({entry:100,margin:100,leverage:0,feeRate:0.001,riskQuantity:10,availableBalance:100}),0);
 });
+
+
+test('paper quotes are rejected when missing, stale, future-dated, or malformed', async () => {
+  const { getFreshPaperPrice } = await import('../src/paperTrading.js');
+  assert.equal(getFreshPaperPrice({ lastPrice: 100, updatedAt: 9000 }, 10000), 100);
+  assert.equal(getFreshPaperPrice({ lastPrice: 100, updatedAt: 0 }, 16000), null);
+  assert.equal(getFreshPaperPrice({ lastPrice: 100, updatedAt: 11000 }, 10000), null);
+  assert.equal(getFreshPaperPrice({ lastPrice: 0, updatedAt: 9000 }, 10000), null);
+  assert.equal(getFreshPaperPrice({ lastPrice: 100 }, 10000), null);
+});
