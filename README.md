@@ -29,3 +29,10 @@ npm run build
 ```
 
 Designed by Mishad.
+
+
+## Volume / taker-flow validation
+- Live and historical MTF analysis share strict completed-candle volume and taker-buy calculations.
+- Missing or inconsistent candle volume data blocks flow confirmation; Futures aggregate taker ratio is display-only because its newest interval may be incomplete.
+- Live signals require a structurally valid top-20 order-book snapshot fetched within an 8-second request window. Binance's response does not expose an exchange event timestamp here, so server-side freshness is not guaranteed.
+- See `docs/volume-taker-flow-audit.md` for assumptions and limitations.
