@@ -216,7 +216,7 @@ function BacktestPanel({symbol,market,defaultInterval}) {
     </div>
     {error&&<div className="backtest-error">{error}</div>}
     {result&&<>
-      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} completed 5M candles</span></div>
+      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} টি সম্পূর্ণ 5M Candle</span></div>
       <div className="backtest-meta"><span>4H: {result.coverage['4h']} · 1H: {result.coverage['1h']} · 15M: {result.coverage['15m']} · 5M: {result.coverage['5m']} candles</span><span>{result.warmupCandles.toLocaleString()} extra 5M warm-up candles excluded from metrics</span></div>
       <div className="backtest-metrics">
         <div><span>অব্যবহৃত ডেটায় Return</span><b className={result.outOfSample.returnPct>=0?'positive':'negative'}>{result.outOfSample.returnPct>=0?'+':''}{fmt(result.outOfSample.returnPct)}%</b></div>
@@ -229,7 +229,7 @@ function BacktestPanel({symbol,market,defaultInterval}) {
         <div><span>Training পর্যায়ের Return</span><b className={result.training.returnPct>=0?'positive':'negative'}>{result.training.returnPct>=0?'+':''}{fmt(result.training.returnPct)}%</b></div>
       </div>
       <div className="backtest-meta"><span>TRAIN: {new Date(result.from).toLocaleDateString()} – {new Date(result.splitAt).toLocaleDateString()}</span><span>UNSEEN TEST: {new Date(result.splitAt).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span></div>
-      <div className="mtf-reasons"><span>নির্বাচিত Training Profile: {result.selected.name}</span><span>Training ফলাফল: {metric(result.training)}</span><span>অব্যবহৃত ডেটায় ফলাফল: {metric(result.outOfSample)}</span></div>
+      <div className="mtf-reasons"><span>নির্বাচিত Training Profile: {profileName(result.selected.name)}</span><span>Training ফলাফল: {metric(result.training)}</span><span>অব্যবহৃত ডেটায় ফলাফল: {metric(result.outOfSample)}</span></div>
       <h4 className="section-subtitle">পরীক্ষার আগে স্থির করা Parameters</h4><div className="backtest-meta"><span>ADX 15M ≥ {result.selected.adx15} · ADX trend ≥ {result.selected.adxTrend}</span><span>RSI LONG ≥ {result.selected.rsiLong} · RSI SHORT ≤ {result.selected.rsiShort}</span><span>Volume ≥ {result.selected.volume}× · Taker ratio ≥ {result.selected.taker}</span></div>
       <h4 className="section-subtitle">শুধু Training ডেটায় Candidate-এর ক্রম</h4><div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>Profile</th><th>Training Return</th><th>Trade সংখ্যা</th><th>জয়ের হার</th><th>Profit Factor</th><th>সর্বোচ্চ Drawdown</th></tr></thead><tbody>{result.candidates.map(x=><tr key={x.name}><td>{profileName(x.name)}</td><td className={x.returnPct>=0?'positive':'negative'}>{x.returnPct>=0?'+':''}{fmt(x.returnPct)}%</td><td>{x.tradeCount}</td><td>{fmt(x.winRate)}%</td><td>{x.profitFactor===null?'∞':fmt(x.profitFactor)}</td><td>{fmt(x.maxDrawdown)}%</td></tr>)}</tbody></table></div>
       <h4 className="section-subtitle">ধারাবাহিক Out-of-Sample ভাগ</h4>
@@ -312,7 +312,7 @@ function StrategyOptimizer({symbol,market}) {
     </div>
     {error&&<div className="backtest-error">{error}</div>}
     {result&&<>
-      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} completed candles · {fmt(result.actualDays,1)} days actual coverage · {result.ranked.length} candidates ranked</span></div>
+      <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.from).toLocaleDateString()} – {new Date(result.to).toLocaleDateString()}</span><span>{result.candles} টি সম্পূর্ণ Candle · {fmt(result.actualDays,1)} দিনের প্রকৃত ডেটা · {result.ranked.length} টি Candidate মূল্যায়ন</span></div>
       <div className="validation-split"><div><b>Training ডেটা · ৭০%</b><span>{result.trainingCandles} টি Candle · Parameter সাজাতে ব্যবহৃত</span></div><div><b>অদেখা Test ডেটা · ৩০%</b><span>{result.testCandles} টি Candle · আগে ব্যবহার না করা যাচাইয়ের সময়</span></div></div>
       <div className="backtest-table-wrap"><table className="backtest-table optimizer-table"><thead><tr><th>ক্রম</th><th>Parameter (Fast / Slow)</th><th>Stop Loss × ATR</th><th>Take Profit × ATR</th><th>Training Return</th><th>Training Drawdown</th><th>Test Return</th><th>Test Drawdown</th><th>Test জয়ের হার</th><th>Test Trade</th><th>Test Profit Factor</th></tr></thead><tbody>{result.ranked.map((x,i)=><tr key={x.fast+'-'+x.slow+'-'+x.sl+'-'+x.tp}><td>{i+1}</td><td>SMA {x.fast}/{x.slow}</td><td>{x.sl}×</td><td>{x.tp}×</td><td className={x.train.returnPct>=0?'positive':'negative'}>{x.train.returnPct>=0?'+':''}{fmt(x.train.returnPct)}%</td><td>{fmt(x.train.maxDD)}%</td><td className={x.test.returnPct>=0?'positive':'negative'}>{x.test.returnPct>=0?'+':''}{fmt(x.test.returnPct)}%</td><td className='negative'>{fmt(x.test.maxDD)}%</td><td>{fmt(x.test.winRate)}%</td><td>{x.test.trades}</td><td>{x.test.profitFactor===null?'∞':fmt(x.test.profitFactor)}</td></tr>)}</tbody></table></div>
       <p className="backtest-assumption">Parameter-এর ক্রম নির্ধারণে শুধু Training সময়ের ফল ব্যবহার করা হয়। Candidate বাছাইয়ের পর শেষ ৩০% ডেটা দিয়ে আলাদা পরীক্ষা করা হয়; এই অংশ Ranking-এ ব্যবহার করা হয় না। প্রতিটি Simulation-এর প্রারম্ভিক মূলধন ১০,০০০ USDT, প্রতি Trade-এ Risk Budget ১% এবং Futures Notional সীমা ৩ গুণ। Entry ও Exit—দুই পাশেই Fee ও Slippage ধরা হয়। Funding, Liquidation, Spread, Partial Fill ও Market Impact হিসাবের অন্তর্ভুক্ত নয়। সর্বোচ্চ ৫,০০০টি সাম্প্রতিক Candle ব্যবহার করা হয়।</p>
@@ -559,7 +559,7 @@ function evaluateTimeframe(candles,timeframe) {
   const frameMs={'4h':14400000,'1h':3600000,'15m':900000,'5m':300000}[timeframe],recentRows=rows.slice(-61),candleGaps=recentRows.slice(1).filter((x,i)=>x.time-recentRows[i].time!==frameMs).length;
   return {trend,rsi,volumeRatio,close:last.close,ema20:e20,ema50:e50,momentum,candles:rows.length,adx,atrPct,atr,candleTime:last.time,closeTime:last.closeTime,candleGaps,structure,bos,choch,sweep,takerRatio,flowValid:flowMetrics.valid};
 }
-function MultiTimeframeSignal({symbol,market,onSignal}) {
+function Multiটাইমফ্রেমignal({symbol,market,onSignal}) {
   const [result,setResult]=useState(null),[loading,setLoading]=useState(false),[error,setError]=useState(''),[tracked,setTracked]=useState(()=>{try{return JSON.parse(localStorage.getItem('cryptobot.liveSignalLog')||'[]');}catch{return [];}});
   useEffect(()=>{onSignal?.(result);},[result,onSignal]);
   useEffect(()=>{
@@ -638,8 +638,8 @@ function MultiTimeframeSignal({symbol,market,onSignal}) {
               const hi=Number(k[2]),lo=Number(k[3]),cl=Number(k[4]);
               const stop=sig.side==='LONG'?lo<=sig.stop:hi>=sig.stop;
               const target=sig.side==='LONG'?hi>=sig.target:lo<=sig.target;
-              if(stop){exit=sig.stop;reason='STOP LOSS';break;}
-              if(target){exit=sig.target;reason='TAKE PROFIT';break;}
+              if(stop){exit=sig.stop;reason='স্টপ লস';break;}
+              if(target){exit=sig.target;reason='টেক প্রফিট';break;}
               if(bars>=12){exit=cl;reason='12-CANDLE TIME Exit';break;}
               expected+=300000;
             }
@@ -838,7 +838,7 @@ function App() {
     refresh();const timer=window.setInterval(refresh,4000);
     return()=>{live=false;clearInterval(timer);};
   },[paperTrades.filter(t=>t.status==='OPEN').map(t=>t.market+':'+t.symbol).sort().join('|')]);
-  const closeTrade=(id,exitPrice,reason='MANUAL')=>{
+  const closeTrade=(id,exitPrice,reason='ম্যানুয়ালি বন্ধ')=>{
     const t=paperTrades.find(x=>x.id===id);if(!t||t.status!=='OPEN')return;
     const feeRate=Number(t.feeRate??0.0005),slippageRate=Number(t.slippageRate??0.0002),filledExit=applyAdverseSlippage(exitPrice,t.side,'EXIT',slippageRate),accounting=calculateTradePnl({side:t.side,entry:t.entry,exit:filledExit,quantity:t.quantity,feeRate,entryFee:Number(t.entryFee||0)});if(!accounting.ok)return;
     updateMarketBalance(t.market,b=>b+(t.margin||t.entry*t.quantity/(t.leverage||1))+accounting.grossPnl-accounting.exitFee);
@@ -899,7 +899,7 @@ function App() {
             <div><span>DECISION</span><b>{analysis.bias==="WAIT"?"NO TRADE":analysis.bias}</b><small>30s freshness limit</small></div>
           </div><p>Age is measured from browser receipt time. This check cannot guarantee zero exchange/network latency.</p>
         </section>
-        <MultiTimeframeSignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
+        <Multiটাইমফ্রেমignal symbol={symbol} market={market} onSignal={setMtfSignal}/>
         <section className="market-strip">
           <div className="market-stat"><span>BTC / USDT</span><b>{prices.BTCUSDT?'$'+fmt(prices.BTCUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.BTCUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.BTCUSDT?fmt(prices.BTCUSDT.priceChangePercent)+'%':'—'}</em></div>
           <div className="market-stat"><span>ETH / USDT</span><b>{prices.ETHUSDT?'$'+fmt(prices.ETHUSDT.lastPrice):'Loading…'}</b><em className={Number(prices.ETHUSDT?.priceChangePercent)>=0?'positive':'negative'}>{prices.ETHUSDT?fmt(prices.ETHUSDT.priceChangePercent)+'%':'—'}</em></div>
