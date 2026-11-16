@@ -7,7 +7,7 @@ import { calculateCandleFlow, calculateOrderBookDepth } from './flowMetrics.js';
 import { applyAdverseSlippage, calculateTradePnl, resolveIntrabarExit } from './tradeExecution.js';
 import { selectClosedCandlesAsOf } from './historicalData.js';
 import { createSequentialOosFolds } from './walkForward.js';
-import { simulateTimeframeProfile } from './timeframeBacktest.js';
+import { simulateTimeframeProfile, simulateAutoTimeframeSelection } from './timeframeBacktest.js';
 import { findConfirmedSwingPivots } from './marketStructure.js';
 import { evaluateStructureEvent } from './structureEvents.js';
 import { suggestConservativeLeverage, calculatePaperQuantity, getFreshPaperPrice } from './paperTrading.js';
@@ -322,7 +322,11 @@ function AutoTimeframeValidationPanel({symbol,market}) {
         if(!outOfSample.ok)throw new Error(timeframe+' OOS: '+outOfSample.reason);
         return {timeframe,training,outOfSample};
       });
-      setResult({symbol,market,days,periodStart,splitAt,now,coverage:Object.fromEntries(frames.map((frame,index)=>[frame,fetched[index].length])),candidates,selected:candidates.slice().sort((a,b)=>b.training.returnPct-a.training.returnPct)[0]?.timeframe||null});
+      const autoTraining=simulateAutoTimeframeSelection({dataByFrame,market,feeRate,slippageRate,startTime:periodStart,endTime:splitAt,evaluateFrame});
+      const autoOutOfSample=simulateAutoTimeframeSelection({dataByFrame,market,feeRate,slippageRate,startTime:splitAt,endTime:now,evaluateFrame});
+      if(!autoTraining.ok)throw new Error('AUTO Training: '+autoTraining.reason);
+      if(!autoOutOfSample.ok)throw new Error('AUTO OOS: '+autoOutOfSample.reason);
+      setResult({symbol,market,days,periodStart,splitAt,now,coverage:Object.fromEntries(frames.map((frame,index)=>[frame,fetched[index].length])),candidates,auto:{training:autoTraining,outOfSample:autoOutOfSample},selected:candidates.slice().sort((a,b)=>b.training.returnPct-a.training.returnPct)[0]?.timeframe||null});
     }catch(e){setError(e.message||'AUTO timeframe historical validation failed.');}
     finally{setRunning(false);}
   };
@@ -340,7 +344,14 @@ function AutoTimeframeValidationPanel({symbol,market}) {
       <div className="backtest-meta"><span>{result.symbol.replace('USDT','')}/USDT · Binance {result.market}</span><span>{new Date(result.periodStart).toLocaleDateString()} – {new Date(result.now).toLocaleDateString()}</span><span>Training / OOS split: {new Date(result.splitAt).toLocaleDateString()}</span></div>
       <div className="backtest-meta"><span>Fetched candles: {Object.entries(result.coverage).map(([frame,count])=>frame+': '+count).join(' · ')}</span><span>প্রাথমিক training return অনুযায়ী সেরা: {result.selected}</span></div>
       <div className="backtest-table-wrap"><table className="backtest-table"><thead><tr><th>Entry profile</th><th>Training result (70%)</th><th>Out-of-sample result (30%)</th><th>OOS trades</th></tr></thead><tbody>{result.candidates.map(x=><tr key={x.timeframe}><td>{x.timeframe}</td><td>{metric(x.training)}</td><td className={x.outOfSample.returnPct>=0?'positive':'negative'}>{metric(x.outOfSample)}</td><td>{x.outOfSample.tradeCount}</td></tr>)}</tbody></table></div>
-      <p className="backtest-assumption">প্রতিটি profile-এর জন্য একই 70/30 তারিখভিত্তিক split ব্যবহার করা হয়েছে। Training এবং OOS আলাদা ১০,০০০ USDT balance দিয়ে শুরু হয়; OOS-এ training-এর পরের কোনো candle signal তৈরিতে ব্যবহার হয় না। Profile ranking এখানে training return দিয়ে দেখানো; এটি AUTO-এর live score-based timeframe selector-এর historical replay নয়। Order-book depth, funding, liquidation, spread ও partial fills পুরোপুরি মডেল করা হয়নি। ফলাফল গবেষণামূলক, লাভের নিশ্চয়তা নয়।</p>
+      <h4 className="section-subtitle">Combined AUTO selector replay</h4>
+      <div className="backtest-metrics">
+        <div><span>AUTO Training (70%)</span><b className={result.auto.training.returnPct>=0?'positive':'negative'}>{metric(result.auto.training)}</b></div>
+        <div><span>AUTO Out-of-Sample (30%)</span><b className={result.auto.outOfSample.returnPct>=0?'positive':'negative'}>{metric(result.auto.outOfSample)}</b></div>
+        <div><span>OOS timeframe selection</span><b>5m: {result.auto.outOfSample.selectedCounts['5m']} · 15m: {result.auto.outOfSample.selectedCounts['15m']} · 1h: {result.auto.outOfSample.selectedCounts['1h']}</b></div>
+        <div><span>OOS cross-timeframe conflicts</span><b>{result.auto.outOfSample.conflicts}</b></div>
+      </div>
+      <p className="backtest-assumption">প্রতিটি profile-এর জন্য একই 70/30 তারিখভিত্তিক split ব্যবহার করা হয়েছে। Combined AUTO replay-তে 5m candle close-কে common event clock ধরা হয়; 15m ও 1h candidate কেবল তখনই eligible হয় যখন তার নিজের entry candle-ও ওই event-এ বন্ধ হয়। বিপরীতমুখী eligible signal থাকলে AUTO NO TRADE করে। Training এবং OOS আলাদা ১০,০০০ USDT balance দিয়ে শুরু হয়; OOS-এ training-এর পরের candle signal তৈরিতে ব্যবহার হয় না। আলাদা profile-এর ফল এবং combined selector-এর ফল পৃথকভাবে দেখানো হয়েছে। Historical Order Book depth, funding, liquidation, spread ও partial fills পুরোপুরি মডেল করা হয়নি। ফলাফল গবেষণামূলক, লাভের নিশ্চয়তা নয়।</p>
     </>}
   </section>;
 }
