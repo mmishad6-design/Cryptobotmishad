@@ -75,13 +75,13 @@ export function validateSignalRiskPlan({
     riskUsd = quantity * riskPerUnit;
     if (!Number.isFinite(quantity) || quantity <= 0 ||
         !Number.isFinite(riskUsd) || riskUsd <= 0 || riskUsd > riskBudget * 1.000001) {
-      return fail('Position sizing failed the 1% risk budget', { stop, target, roundTripCost, netRR });
+      return fail('Position Size নির্ধারণে ১% Risk Budget অতিক্রম হচ্ছে', { stop, target, roundTripCost, netRR });
     }
   }
 
   return {
     ok: true,
-    reason: 'Risk plan valid',
+    reason: 'Risk Plan সঠিক',
     entry, stop, target, stopDistance, rewardDistance, roundTripCost,
     netRR, quantity, riskUsd, riskBudget, riskBudgetPct: 1, maxNotional,
   };
