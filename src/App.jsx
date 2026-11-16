@@ -826,8 +826,12 @@ function App() {
   const closedCandleAge=Number.isFinite(latestClosedCandleAt)?feedClock-latestClosedCandleAt:Infinity;
   const expectedCandleMs={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000}[interval];
   const candleGaps=validClosed.slice(1).filter((c,i)=>c.time-validClosed[i].time!==expectedCandleMs/1000).length;
-  const restReferenceFresh=Boolean(activeFeed.restAt&&feedClock-activeFeed.restAt<=60000&&Number(activeFeed.restPrice)>0);
-  const reconciliationOk=restReferenceFresh&&Number.isFinite(activeFeed.divergencePct)&&activeFeed.divergencePct<=0.5;
+  const restReferenceAge=activeFeed.restAt?feedClock-activeFeed.restAt:Infinity;
+  const restReferenceFresh=Boolean(restReferenceAge<=60000&&Number(activeFeed.restPrice)>0);
+  const websocketPriceFresh=Boolean(activeFeed.wsAt&&feedClock-activeFeed.wsAt<=15000);
+  // Compare only near-simultaneous REST/stream observations; a 30s-old REST snapshot
+  // naturally differs from a live trade price during volatile moves.
+  const reconciliationOk=restReferenceFresh&&(!websocketPriceFresh||restReferenceAge>10000||!Number.isFinite(activeFeed.divergencePct)||activeFeed.divergencePct<=0.75);
   const signalHealth = { priceFresh:priceAge<=30000, candleFresh:candleAge<=30000&&closedCandleAge<=expectedCandleMs+30000, hasTicker:Number.isFinite(Number(prices[symbol]?.lastPrice))&&Number(prices[symbol]?.lastPrice)>0, hasClosedCandles:validClosed.length>=50, reconciliationOk, candleGaps };
   const analysis = useMemo(()=>{
      const matches=mtfSignal?.symbol===symbol&&mtfSignal?.market===market;
