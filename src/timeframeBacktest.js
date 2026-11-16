@@ -84,6 +84,13 @@ export function simulateTimeframeProfile({
     );
     const roles = buildTimeframeRoleData(evaluated, timeframe);
     if (!roles) continue;
+    if (position) {
+      const exit = resolveIntrabarExit({
+        side: position.side, open: candle.open, high: candle.high, low: candle.low,
+        stop: position.stop, target: position.target,
+      });
+      if (exit) closePosition(exit.price, exit.reason, candle.time);
+    }
     const labels = {
       contextSlow: profile.contextSlow,
       contextFast: profile.contextFast,
@@ -102,14 +109,6 @@ export function simulateTimeframeProfile({
       slippageRate,
       frameLabels: labels,
     });
-
-    if (position) {
-      const exit = resolveIntrabarExit({
-        side: position.side, open: candle.open, high: candle.high, low: candle.low,
-        stop: position.stop, target: position.target,
-      });
-      if (exit) closePosition(exit.price, exit.reason, candle.time);
-    }
 
     if (decision.decision !== 'NO TRADE') {
       signals++;
