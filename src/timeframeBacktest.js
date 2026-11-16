@@ -77,7 +77,7 @@ export function simulateTimeframeProfile({
   for (let i = 60; i < data.length - 1; i++) {
     const candle = data[i];
     if (candle.time < startTime) continue;
-    if (candle.time >= endTime) break;
+    if (candle.closeTime >= endTime) break;
     const decisionTime = candle.closeTime;
     const snapshots = Object.fromEntries(frames.map(frame => [
       frame, selectClosedCandlesAsOf(dataByFrame[frame], decisionTime, 120),
@@ -147,7 +147,7 @@ export function simulateTimeframeProfile({
     maxDrawdown = Math.max(maxDrawdown, peak > 0 ? (peak - marked) / peak * 100 : 0);
   }
 
-  const finalCandle = [...data].reverse().find(candle => candle.time < endTime);
+  const finalCandle = [...data].reverse().find(candle => candle.time >= startTime && candle.closeTime < endTime);
   if (position && finalCandle) closePosition(finalCandle.close, 'END OF TEST', finalCandle.time);
   const wins = trades.filter(trade => trade.pnl > 0);
   const losses = trades.filter(trade => trade.pnl < 0);
