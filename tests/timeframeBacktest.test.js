@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { simulateTimeframeProfile } from '../src/timeframeBacktest.js';
+import { simulateTimeframeProfile, simulateAutoTimeframeSelection } from '../src/timeframeBacktest.js';
 import { TIMEFRAME_INTERVAL_MS } from '../src/timeframeSelection.js';
 
 function makeRows(frame, count = 150) {
-  const executionStart = 1_700_000_000_000;
+  const weekMs = TIMEFRAME_INTERVAL_MS['1w'];
+  const executionStart = Math.floor(1_700_000_000_000 / weekMs) * weekMs;
   const historyBars = 149;
   const start = executionStart - historyBars * TIMEFRAME_INTERVAL_MS[frame];
   const interval = TIMEFRAME_INTERVAL_MS[frame];
@@ -69,4 +70,16 @@ test('training window never evaluates an entry candle that closes at or after th
   });
   assert.equal(result.ok, true);
   assert.ok(latestDecision < endTime);
+});
+
+
+test('AUTO replay evaluates all three candidates only on their own closed-candle events', () => {
+  const dataByFrame = Object.fromEntries(frames.map(frame => [frame, makeRows(frame)]));
+  const result = simulateAutoTimeframeSelection({ dataByFrame, evaluateFrame });
+  assert.equal(result.ok, true);
+  assert.ok(result.signals > 0);
+  assert.ok(result.selectedCounts['5m'] > 0);
+  assert.ok(result.selectedCounts['15m'] > 0);
+  assert.ok(result.selectedCounts['1h'] > 0);
+  assert.equal(result.conflicts, 0);
 });
