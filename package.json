@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test"
+    "test": "node --test",
+    "deploy:cloudflare": "npm run build && npx wrangler deploy --config wrangler.jsonc",
+    "deploy:cloudflare:preview": "npm run build && npx wrangler deploy --config wrangler.jsonc --name cryptobotmishad-preview"
   },
   "dependencies": {
     "lightweight-charts": "^5.0.8",
