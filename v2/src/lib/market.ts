@@ -67,5 +67,5 @@ export async function getConsensusKlines(symbol:string,interval:string,limit=240
     c.time,String(c.open),String(c.high),String(c.low),String(c.close),String(c.volume),
     c.time+1,"",0,String(c.takerRatio??""),"",""
   ]);
-  return {...response,data:normalizeKlines(data),exchanges:response.data.length?Math.max(...response.data.map(c=>c.sourceCount)):0, maxSpreadPct:Math.max(0,...response.data.map(c=>c.spreadPct))};
+  return {...response,data:normalizeKlines(data),exchanges:response.data.length?Math.max(...response.data.map(c=>c.sourceCount)):0, maxSpreadPct:Math.max(0,...response.data.slice(-3).map(c=>c.spreadPct))};
 }
