@@ -65,13 +65,36 @@ function candleCloseTime(start:number,interval:string):number {
   const duration=interval==="3d"?3*86_400_000:Number.parseInt(interval,10)*(interval.endsWith("m")?60_000:3_600_000);
   return Number.isFinite(duration)&&duration>0?start+duration-1:start;
 }
-export async function getConsensusKlines(symbol:string,interval:string,limit=240,market:"Spot"|"Futures"="Spot"){
-  const response=await request<Array<{time:number;open:number;high:number;low:number;close:number;volume:number;takerRatio:number|null;sourceCount:number;spreadPct:number}>>(
-    `/api/market/consensus?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}&market=${market}`
+type ConsensusCandle={time:number;open:number;high:number;low:number;close:number;volume:number;takerRatio:number|null;sourceCount:number;spreadPct:number};
+export async function getConsensusKlines(symbol:string,interval:string,limit=240,market:"Spot"|"Futures"="Spot",endTime?:number){
+  const cursor=endTime===undefined?"":`&endTime=${Math.floor(endTime)}`;
+  const response=await request<ConsensusCandle[]>(
+    `/api/market/consensus?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}&market=${market}${cursor}`
   );
   const data:Kline[]=response.data.map(c=>[
     c.time,String(c.open),String(c.high),String(c.low),String(c.close),String(c.volume),
     candleCloseTime(c.time,interval),"",0,String(c.takerRatio??""),"",""
   ]);
-  return {...response,data:normalizeKlines(data),exchanges:response.data.length?Math.max(...response.data.map(c=>c.sourceCount)):0, maxSpreadPct:Math.max(0,...response.data.slice(-3).map(c=>c.spreadPct))};
+  return {...response,data:normalizeKlines(data),exchanges:response.data.length?Math.max(...response.data.map(c=>c.sourceCount)):0,maxSpreadPct:Math.max(0,...response.data.slice(-3).map(c=>c.spreadPct))};
+}
+
+/** Fetch a bounded, chronological history by paging backwards across two independent exchanges. */
+export async function getConsensusHistory(symbol:string,interval:string,days:number,market:"Spot"|"Futures"="Spot"){
+  const cutoff=Date.now()-days*86_400_000;
+  let cursor=Date.now(),pages=0,maxSpreadPct=0,exchanges=0;
+  const byTime=new Map<number,Kline>();
+  while(cursor>cutoff&&pages<40){
+    const page=await getConsensusKlines(symbol,interval,300,market,cursor);
+    pages++;
+    if(page.data.length===0)break;
+    exchanges=Math.max(exchanges,page.exchanges);
+    maxSpreadPct=Math.max(maxSpreadPct,page.maxSpreadPct);
+    for(const candle of page.data)if(+candle[0]>=cutoff)byTime.set(+candle[0],candle);
+    const earliest=Math.min(...page.data.map(c=>+c[0]));
+    if(!Number.isFinite(earliest)||earliest>=cursor)break;
+    cursor=earliest-1;
+    if(earliest<=cutoff)break;
+  }
+  const data=[...byTime.values()].sort((a,b)=>+a[0]-+b[0]);
+  return {data,exchanges,maxSpreadPct,pages,receivedAt:new Date().toISOString()};
 }
