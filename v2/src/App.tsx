@@ -1,4 +1,5 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import { CandlestickSeries, ColorType, CrosshairMode, HistogramSeries, createChart, type UTCTimestamp } from "lightweight-charts";
 import type { Session } from "@supabase/supabase-js";
 import {
   Activity, ArrowDownRight, ArrowUpRight, Bell, CandlestickChart,
@@ -9,6 +10,8 @@ import {
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
 import { getMarketTickers, getMarketKlines, type MarketTicker, type Kline } from "./lib/market";
 import { connectTickerStream, connectKlineStream } from "./lib/market-ws";
+
+const CHART_INTERVALS = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w","1M"] as const;
 
 const watchlist = [
   { symbol: "BTC", pair: "BTC / USDT", price: "—", change: "—", up: true },
@@ -497,11 +500,11 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
         </div>
         <div className="section-row"><div><h2>Live Market</h2><p>{marketError ? `Feed error: ${marketError}` : marketUpdatedAt ? `${marketSource} · Last update ${new Date(marketUpdatedAt).toLocaleTimeString()}` : "Connecting to live exchange stream…"}</p></div><div className={marketError ? "market-feed-state offline" : marketUpdatedAt ? "market-feed-state online" : "market-feed-state"}><i/>{marketError ? "FEED ERROR" : marketUpdatedAt ? `LIVE · ${marketWsStatus === "connected" ? "WEBSOCKET" : "REST BACKUP"}` : "CONNECTING"}</div></div>
         <div className="market-table live-market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>24H VOLUME</span><span>STATUS</span></div>{watchlist.map(coin => { const live = marketTickers[`${coin.symbol}USDT`]; const change = live ? Number(live.priceChangePercent) : null; return <button type="button" className="coin-row coin-row-button" key={coin.symbol} onClick={() => { setChartSymbol(`${coin.symbol}USDT`); setActivePage("Market Analysis"); }}><div className="coin-name"><div className="coin-icon">{coin.symbol.slice(0,1)}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live ? Number(live.lastPrice).toLocaleString("en-US", {maximumFractionDigits:8}) : "—"}</b><span className={change !== null && change < 0 ? "negative" : "positive"}>{change === null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</span><span className="market-volume">{live ? (Number(live.quoteVolume)/1e6).toLocaleString("en-US",{maximumFractionDigits:2})+"M USDT" : "—"}</span><span className="market-open"><i/> {live ? "LIVE" : "WAITING"}</span></button>; })}</div>
-        <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Live Candlestick Chart</h2><p>{chartSymbol.replace("USDT"," / USDT")} · {chartInterval} OHLC candles · live WebSocket updates</p></div><button className="select-btn" onClick={() => setActivePage("Market Analysis")}>Open analysis <ArrowUpRight size={14}/></button></div><div className="chart-placeholder"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading live candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length > 0 ? <CandlestickPlot candles={candles}/> : <div className="chart-center"><CandlestickChart size={25}/><b>No candle data</b><span>{marketError || "Waiting for live candle feed."}</span></div>}</div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
+        <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Live Candlestick Chart</h2><p>{chartSymbol.replace("USDT"," / USDT")} · {chartInterval} OHLC candles · live WebSocket updates</p></div><div className="chart-controls compact-chart-controls"><select aria-label="Chart timeframe" value={chartInterval} onChange={e=>setChartInterval(e.target.value)}>{CHART_INTERVALS.map(t=><option key={t} value={t}>{t.toUpperCase()}</option>)}</select><button className="select-btn" onClick={() => setActivePage("Market Analysis")}>Open analysis <ArrowUpRight size={14}/></button></div></div><div className="chart-placeholder"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading live candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length > 0 ? <CandlestickChartView key={`${chartSymbol}-${chartInterval}`} candles={candles}/> : <div className="chart-center"><CandlestickChart size={25}/><b>No candle data</b><span>{marketError || "Waiting for live candle feed."}</span></div>}</div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
         {!adminOpen && activePage !== "Overview" && <div className="user-page">
           <div className="page-heading"><div><div className="eyebrow">{session ? "USER WORKSPACE" : "GUEST WORKSPACE"} <span>•</span> {session?.user.email || "Public access"}</div><h1>{activePage}</h1><p>Live public market data · Manual paper trading only.</p></div></div>
           {activePage === "Market Analysis" && <section className="panel full-market-panel">
-            <div className="market-toolbar"><div><h2>Price analysis</h2><p>Live exchange OHLC candles</p></div><div className="chart-controls"><select value={chartSymbol} onChange={e=>setChartSymbol(e.target.value)}>{["BTCUSDT","ETHUSDT","SUIUSDT","SOLUSDT"].map(s=><option key={s}>{s}</option>)}</select><select value={chartInterval} onChange={e=>setChartInterval(e.target.value)}>{["15m","1h","4h","1d"].map(t=><option key={t}>{t}</option>)}</select></div></div>
+            <div className="market-toolbar"><div><h2>Price analysis</h2><p>Live exchange OHLC candles</p></div><div className="chart-controls"><select value={chartSymbol} onChange={e=>setChartSymbol(e.target.value)}>{["BTCUSDT","ETHUSDT","SUIUSDT","SOLUSDT"].map(s=><option key={s}>{s}</option>)}</select><select value={chartInterval} onChange={e=>setChartInterval(e.target.value)}>{CHART_INTERVALS.map(t=><option key={t} value={t}>{t.toUpperCase()}</option>)}</select></div></div>
             <div className="chart-meta"><span>LAST PRICE <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].lastPrice).toLocaleString("en-US",{maximumFractionDigits:8}) : "—"}</b></span><span>24H CHANGE <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].priceChangePercent).toFixed(2)+"%" : "—"}</b></span><span>24H HIGH <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].highPrice).toLocaleString() : "—"}</b></span><span>24H LOW <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].lowPrice).toLocaleString() : "—"}</b></span><span>24H VOLUME <b>{marketTickers[chartSymbol] ? (Number(marketTickers[chartSymbol].quoteVolume)/1e6).toFixed(2)+"M USDT" : "—"}</b></span></div>
             <div className="live-chart"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading market candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length ? <CandlestickPlot candles={candles}/> : <div className="chart-center">No candle data available.</div>}</div>
             <div className="chart-legend"><span className={marketError ? "market-feed-error" : "market-feed-live"}>{chartError ? "FEED ERROR" : chartWsStatus === "connected" ? "LIVE · WS" : chartUpdatedAt ? "REST BACKUP" : "CONNECTING"}</span> {chartSource} · {candles.length} candles · WebSocket updates · REST backup · last tick {chartUpdatedAt ? new Date(chartUpdatedAt).toLocaleTimeString() : "—"} {chartError ? " · "+chartError : ""}</div>
@@ -519,31 +522,101 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   </div>;
 }
 
-function CandlestickPlot({ candles }: { candles: Kline[] }) {
-  if (!candles.length) return null;
-  const high = Math.max(...candles.map(k => Number(k[2])));
-  const low = Math.min(...candles.map(k => Number(k[3])));
-  const span = high - low || Math.max(Math.abs(high) * 0.001, 1);
-  const y = (price: number) => 12 + ((high - price) / span) * 264;
-  const step = 990 / candles.length;
-  const bodyWidth = Math.max(2, Math.min(8, step * 0.62));
-  return <svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Live candlestick price chart">
-    {candles.map((k, i) => {
-      const open = Number(k[1]);
-      const close = Number(k[4]);
-      const rising = close >= open;
-      const color = rising ? "#39c99a" : "#e16f78";
-      const x = 5 + i * step + step / 2;
-      const openY = y(open);
-      const closeY = y(close);
-      const bodyY = Math.min(openY, closeY);
-      const bodyHeight = Math.max(1.5, Math.abs(closeY - openY));
-      return <g key={String(k[0])}>
-        <line x1={x} x2={x} y1={y(Number(k[2]))} y2={y(Number(k[3]))} stroke={color} strokeWidth="1.2" vectorEffect="non-scaling-stroke"/>
-        <rect x={x - bodyWidth / 2} y={bodyY} width={bodyWidth} height={bodyHeight} fill={color} stroke={color} strokeWidth=".6"/>
-      </g>;
-    })}
-  </svg>;
+function CandlestickChartView({ candles }: { candles: Kline[] }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
+  const candleSeriesRef = useRef<ReturnType<ReturnType<typeof createChart>["addSeries"]> | null>(null);
+  const volumeSeriesRef = useRef<ReturnType<ReturnType<typeof createChart>["addSeries"]> | null>(null);
+  const fittedRef = useRef(false);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const chart = createChart(container, {
+      width: container.clientWidth,
+      height: container.clientHeight,
+      layout: {
+        background: { type: ColorType.Solid, color: "#0b1219" },
+        textColor: "#8496a9",
+        fontFamily: '"DM Mono", ui-monospace, monospace',
+        fontSize: 10,
+      },
+      grid: {
+        vertLines: { color: "#26374655" },
+        horzLines: { color: "#26374655" },
+      },
+      crosshair: { mode: CrosshairMode.Normal },
+      rightPriceScale: { borderColor: "#263746" },
+      timeScale: {
+        borderColor: "#263746",
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 5,
+        barSpacing: 8,
+      },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+    });
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: "#42d2a3",
+      downColor: "#f07883",
+      wickUpColor: "#42d2a3",
+      wickDownColor: "#f07883",
+      borderVisible: false,
+      lastValueVisible: true,
+      priceLineVisible: true,
+    });
+    const volumeSeries = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: "volume" },
+      priceScaleId: "volume",
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    chart.priceScale("volume").applyOptions({
+      scaleMargins: { top: 0.84, bottom: 0 },
+      visible: false,
+    });
+    chartRef.current = chart;
+    candleSeriesRef.current = candleSeries;
+    volumeSeriesRef.current = volumeSeries;
+    const observer = new ResizeObserver(entries => {
+      const rect = entries[0]?.contentRect;
+      if (rect && rect.width > 0 && rect.height > 0) chart.applyOptions({ width: rect.width, height: rect.height });
+    });
+    observer.observe(container);
+    return () => {
+      observer.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
+      fittedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!candles.length || !candleSeriesRef.current || !volumeSeriesRef.current) return;
+    const candleData = candles.map(k => ({
+      time: Math.floor(Number(k[0]) / 1000) as UTCTimestamp,
+      open: Number(k[1]),
+      high: Number(k[2]),
+      low: Number(k[3]),
+      close: Number(k[4]),
+    }));
+    const volumeData = candles.map(k => ({
+      time: Math.floor(Number(k[0]) / 1000) as UTCTimestamp,
+      value: Number(k[5]),
+      color: Number(k[4]) >= Number(k[1]) ? "#42d2a355" : "#f0788355",
+    }));
+    candleSeriesRef.current.setData(candleData);
+    volumeSeriesRef.current.setData(volumeData);
+    if (!fittedRef.current) {
+      chartRef.current?.timeScale().fitContent();
+      fittedRef.current = true;
+    }
+  }, [candles]);
+
+  return <div className="chart-engine" ref={containerRef} role="img" aria-label="Interactive live candlestick chart with volume"/>;
 }
 
 export default function App() {
