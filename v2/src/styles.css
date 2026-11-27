@@ -15,3 +15,19 @@
 .auth-loading{display:flex;align-items:center;gap:12px;color:#a7b7c7;font-size:12px}.env-hint{white-space:pre-wrap;background:#080e15;border:1px solid #293747;border-radius:6px;padding:14px;color:#9fe0c6;font:10px 'DM Mono';line-height:1.8}
 .spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 @media(max-width:480px){.auth-card{padding:25px 20px}.auth-card h1{font-size:24px}}
+
+.admin-nav{width:100%;border:0;background:transparent;cursor:pointer;text-align:left;font-family:inherit}
+.admin-nav.active{background:#14251f;color:#e5f5ef}
+.admin-welcome{display:flex;align-items:center;gap:13px;padding:16px 18px;border:1px solid #285342;background:#11221d;border-radius:8px;color:#70d1ae;margin-bottom:16px}
+.admin-welcome div{display:flex;flex-direction:column;gap:5px;min-width:0}
+.admin-welcome b{font-size:12px;color:#c7f1df}
+.admin-welcome span{font-size:10px;color:#8ca99d;overflow-wrap:anywhere}
+.admin-role-pill{margin-left:auto;border:1px solid #36765e;border-radius:4px;padding:5px 7px;font:8px 'DM Mono';letter-spacing:.7px;white-space:nowrap}
+.admin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
+.admin-card{min-height:168px;padding:19px;background:#0e151f;border:1px solid #1e2a38;border-radius:8px;display:flex;flex-direction:column;align-items:flex-start}
+.admin-card-icon{width:34px;height:34px;display:grid;place-items:center;border:1px solid #29483d;background:#14251f;border-radius:7px;color:#73d0af;margin-bottom:14px}
+.admin-card b{font-size:12px;margin-bottom:7px}
+.admin-card p{font-size:10px;line-height:1.6;max-width:340px}
+.admin-card small{font:8px 'DM Mono';letter-spacing:.7px;color:#9c8452;margin-top:auto;padding-top:15px}
+.admin-security-note{display:flex;align-items:center;gap:9px;color:#8fa0b1;background:#101923;border:1px solid #263443;border-radius:7px;padding:13px 15px;margin-top:14px;font-size:9px;line-height:1.5}
+@media(max-width:680px){.admin-grid{grid-template-columns:1fr}.admin-welcome{align-items:flex-start;flex-wrap:wrap}.admin-role-pill{margin-left:0}}
