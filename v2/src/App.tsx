@@ -8,7 +8,7 @@ import {
   Wallet, LogOut, LockKeyhole, Mail, UserRound, LoaderCircle, Eye, EyeOff
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
-import { getMarketTickers, getMarketKlines, type MarketTicker, type Kline } from "./lib/market";
+import { getMarketTickers, getMarketKlines, normalizeKlines, type MarketTicker, type Kline } from "./lib/market";
 import { connectTickerStream, connectKlineStream, connectOrderBookStream } from "./lib/market-ws";
 import { calculateIndicators, calculateMarketStructure, DEFAULT_INDICATOR_SETTINGS, getEmaTrend, type IndicatorSettings } from "./lib/indicators";
 
@@ -438,10 +438,12 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
     const stopStream = connectKlineStream(chartSymbol, chartInterval, {
       onData: candle => {
         if (!alive) return;
+        const validCandle = normalizeKlines([candle])[0];
+        if (!validCandle) return;
         wsConnected = true;
         setCandles(current => {
           const merged = new Map(current.map(item => [Number(item[0]), item]));
-          merged.set(Number(candle[0]), candle);
+          merged.set(Number(validCandle[0]), validCandle);
           return [...merged.values()].sort((a, b) => Number(a[0]) - Number(b[0])).slice(-120);
         });
         setChartUpdatedAt(new Date().toISOString());
