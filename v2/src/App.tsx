@@ -42,13 +42,12 @@ function AuthScreen() {
         const { data, error: authError } = await supabase.auth.signUp({
           email, password, options: {
             data: { display_name: displayName.trim() },
-            emailRedirectTo: window.location.origin,
           },
         });
         if (authError) throw authError;
         setMessage(data.session
           ? "Account created. Your workspace is ready."
-          : "Account created. Check your email to confirm your address, then sign in.");
+          : "Account created. You can sign in once email confirmation is disabled in project settings.");
       } else {
         const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
         if (authError) throw authError;
@@ -58,29 +57,12 @@ function AuthScreen() {
     } finally { setBusy(false); }
   }
 
-  async function resendConfirmation() {
-    if (!supabase || !email.trim()) {
-      setError("Enter the email address you used to create your account first.");
-      return;
-    }
-    setBusy(true); setError(""); setMessage("");
-    try {
-      const { error: resendError } = await supabase.auth.resend({
-        type: "signup",
-        email: email.trim(),
-        options: { emailRedirectTo: window.location.origin },
-      });
-      if (resendError) throw resendError;
-      setMessage("If this account still needs email confirmation, a new confirmation link has been requested. Check your inbox and Spam folder.");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not request a confirmation email. Please try again later.");
-    } finally { setBusy(false); }
-  }
-
   async function resetPassword() {
     if (!supabase || !email) { setError("Enter your email address first."); return; }
     setBusy(true); setError(""); setMessage("");
-    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email);
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin,
+    });
     setBusy(false);
     if (resetError) setError(resetError.message);
     else setMessage("Password reset instructions have been sent if this email is registered.");
@@ -104,12 +86,45 @@ function AuthScreen() {
         {error && <div className="auth-message error">{error}</div>}
         {message && <div className="auth-message success">{message}</div>}
         <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin"/> : null}{mode === "login" ? "Sign in to CryptoBot" : "Create account"}</button>
-        {mode === "login" && <button type="button" className="forgot-btn" onClick={resendConfirmation} disabled={busy}>Resend confirmation email</button>}
       </form>
       <div className="auth-security"><ShieldCheck size={16}/><span>Public market data only. No exchange API secrets or real-money execution.</span></div>
       <div className="auth-credit">DESIGNED BY MISHAD</div>
     </div>
   </div>;
+}
+
+function PasswordRecoveryScreen({ onComplete }: { onComplete: () => void }) {
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!supabase) return;
+    if (password.length < 8) { setError("Password must be at least 8 characters."); return; }
+    if (password !== confirmPassword) { setError("Passwords do not match."); return; }
+    setBusy(true); setError(""); setMessage("");
+    const { error: updateError } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (updateError) setError(updateError.message);
+    else { setMessage("Password updated successfully."); window.setTimeout(onComplete, 700); }
+  }
+
+  return <div className="auth-shell"><div className="auth-card">
+    <div className="brand auth-brand"><div className="brand-mark">M</div><div><b>CRYPTO<span>BOT</span></b><small>MISHAD EDITION</small></div></div>
+    <div className="auth-kicker">ACCOUNT RECOVERY</div><h1>Set a new password.</h1>
+    <p className="auth-description">Choose a new password for your CryptoBot Mishad account.</p>
+    <form onSubmit={submit} className="auth-form">
+      <label><span><LockKeyhole size={14}/> New password</span><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 8 characters" minLength={8} autoComplete="new-password" required /></label>
+      <label><span><LockKeyhole size={14}/> Confirm password</span><input type="password" value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} placeholder="Enter the new password again" minLength={8} autoComplete="new-password" required /></label>
+      {error && <div className="auth-message error">{error}</div>}
+      {message && <div className="auth-message success">{message}</div>}
+      <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin"/> : null}Update password</button>
+    </form>
+    <div className="auth-credit">DESIGNED BY MISHAD</div>
+  </div></div>;
 }
 
 function Dashboard({ session }: { session: Session }) {
@@ -191,14 +206,19 @@ function Dashboard({ session }: { session: Session }) {
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
+  const [recoveryMode, setRecoveryMode] = useState(false);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     if (!supabase) { setLoading(false); return; }
     supabase.auth.getSession().then(({data}) => { setSession(data.session); setLoading(false); });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      setSession(nextSession);
+      if (event === "PASSWORD_RECOVERY") setRecoveryMode(true);
+    });
     return () => subscription.unsubscribe();
   }, []);
   if (!isSupabaseConfigured) return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark">M</div><div><b>CRYPTO<span>BOT</span></b><small>MISHAD EDITION</small></div></div><h1>Connect your workspace.</h1><p className="auth-description">Add the Supabase project URL and publishable key to the Vite environment before starting the app.</p><pre className="env-hint">VITE_SUPABASE_URL=...{"\n"}VITE_SUPABASE_PUBLISHABLE_KEY=...</pre></div></div>;
   if (loading) return <div className="auth-shell"><div className="auth-loading"><LoaderCircle className="spin" size={24}/> Securing your workspace…</div></div>;
+  if (recoveryMode && session) return <PasswordRecoveryScreen onComplete={() => setRecoveryMode(false)}/>;
   return session ? <Dashboard session={session}/> : <AuthScreen/>;
 }
