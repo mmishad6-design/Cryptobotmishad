@@ -4,6 +4,7 @@ import { getConsensusHistory, type Kline } from "./lib/market";
 import { calculateIndicators, calculateMarketStructure, getEmaTrend } from "./lib/indicators";
 import { evaluateAdvancedSignal } from "./core/advancedSignalEngine";
 import { runHistoricalBacktest } from "./core/backtestEngine";
+import { createSequentialOosFolds, aggregateWalkForwardResults } from "./core/walkForward.js";
 
 type MarketMode = "Spot" | "Futures";
 type Frame = { close:number; trend:"BULLISH"|"BEARISH"|"MIXED"; rsi:number; adx:number; volumeRatio:number; atr:number; structure:string; takerRatio:number };
@@ -53,35 +54,34 @@ export default function BacktestingPanel({symbol}:{symbol:string}){
       const bad=responses.findIndex((r,i)=>closedHistories[i].length<60||r.maxSpreadPct>0.5);
       if(bad>=0)throw new Error(FRAMES[bad].toUpperCase()+" timeframe-এ পর্যাপ্ত বা নির্ভরযোগ্য multi-exchange candle নেই।");
       const histories=Object.fromEntries(FRAMES.map((tf,i)=>[tf,closedHistories[i]])) as Record<string,Kline[]>;
-      const base=histories["5m"];
-      const rows=base.map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
+      const base=histories["5m"], rows=base.map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
       const initialBalance=Number(balance);
       if(!Number.isFinite(initialBalance)||initialBalance<=0)throw new Error("শুরুর balance সঠিকভাবে দাও।");
-      const simulation=runHistoricalBacktest({
-        candles:rows,market,initialBalance,warmup:60,maxHoldingBars:288,
-        feeRate:0.0005,slippageRate:0.0002,
-        evaluate:(visible,index)=>{
-          const decisionTime=visible.at(-1)!.closeTime!;
-          const data:Record<string,Frame>={};
-          for(const tf of FRAMES){
-            const closed=(histories[tf] as Kline[]).filter(k=>+k[6]<=decisionTime).slice(-240);
-            const frame=frameFrom(closed);
-            if(!frame)return null;
-            data[tf]=frame;
-          }
-          return evaluateAdvancedSignal({data,market,entry:data["5m"].close,accountBalance:initialBalance,leverage:market==="Spot"?1:leverage,flow:{takerRatio:data["5m"].takerRatio}});
-        }
+      const folds=createSequentialOosFolds(rows,Math.floor(rows.length*0.6),3,60);
+      if(folds.length!==3)throw new Error("Walk-Forward-এর জন্য পর্যাপ্ত historical candle নেই।");
+      const foldResults=folds.map(fold=>{
+        const simulation=runHistoricalBacktest({candles:fold.data,market,initialBalance,warmup:fold.warmupCount,maxHoldingBars:288,feeRate:0.0005,slippageRate:0.0002,
+          evaluate:visible=>{
+            const decisionTime=visible.at(-1)!.closeTime!, data:Record<string,Frame>={};
+            for(const tf of FRAMES){
+              const frame=frameFrom((histories[tf] as Kline[]).filter(k=>+k[6]<=decisionTime).slice(-240));
+              if(!frame)return null; data[tf]=frame;
+            }
+            return evaluateAdvancedSignal({data,market,entry:data["5m"].close,accountBalance:initialBalance,leverage:market==="Spot"?1:leverage,flow:{takerRatio:data["5m"].takerRatio}});
+          }});
+        if(!simulation.ok)throw new Error("Fold "+fold.index+": "+simulation.reason);
+        return {...fold,simulation};
       });
-      if(!simulation.ok)throw new Error(simulation.reason);
-      setResult(simulation);
-      setInfo("৫ মিনিটের candle-এ পরীক্ষা · "+base.length+" candle · প্রায় ১৪ দিনের execution history · "+responses.map((r,i)=>FRAMES[i].toUpperCase()+": "+r.data.length+" candle / "+r.pages+" pages").join(" · "));
-    }catch(e){setError(e instanceof Error?e.message:"Backtest চালানো যায়নি।");}
+      const aggregate=aggregateWalkForwardResults(foldResults.map(f=>f.simulation),initialBalance);
+      setResult({metrics:aggregate,folds:foldResults.map(f=>({index:f.index,start:f.testStartTime,end:f.testEndTime,metrics:f.simulation.metrics,tradeCount:f.simulation.trades.length,trades:f.simulation.trades}))});
+      setInfo("প্রথম ৬০% data warm-up/history হিসেবে বাদ; শেষের ৪০% তিনটি chronological unseen fold-এ পরীক্ষা হয়েছে। "+base.length+"টি 5M candle · "+responses.map((r,i)=>FRAMES[i].toUpperCase()+": "+r.data.length+" candle / "+r.pages+" pages").join(" · "));
+    }catch(e){setError(e instanceof Error?e.message:"Walk-Forward validation চালানো যায়নি।");}
     finally{setBusy(false);}
   }
   const m=result?.metrics;
   return <div className="user-page">
     <section className="panel">
-      <div className="market-toolbar"><div><div className="eyebrow">HISTORICAL SIMULATION · MULTI-TIMEFRAME</div><h2>Signal Engine Backtest</h2><p>বর্তমান Advanced Signal Engine-এর নিয়ম দিয়ে multi-exchange closed candle-এ ঐতিহাসিক পরীক্ষা হবে। 5M/15M: 14 দিন · 1H: 30 দিন · 4H: 60 দিন · 1D: 180 দিন।</p></div><button className="outline-btn" onClick={()=>void run()} disabled={busy}><RefreshCw size={14} style={{marginRight:6}}/>{busy?"Running…":"Run backtest"}</button></div>
+      <div className="market-toolbar"><div><div className="eyebrow">OUT-OF-SAMPLE · WALK-FORWARD VALIDATION</div><h2>Walk-Forward Validation</h2><p>প্রথম ৬০% history বাদ রেখে শেষের ৪০% তিনটি আলাদা chronological test fold-এ যাচাই হবে; strategy threshold অপরিবর্তিত থাকবে।</p></div><button className="outline-btn" onClick={()=>void run()} disabled={busy}><RefreshCw size={14} style={{marginRight:6}}/>{busy?"Validating…":"Run validation"}</button></div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:10,marginTop:16}}>
         <label className="admin-field"><span>Symbol</span><input value={symbol} readOnly/></label>
         <label className="admin-field"><span>Market mode</span><select value={market} onChange={e=>setMarket(e.target.value as MarketMode)}><option>Spot</option><option>Futures</option></select></label>
@@ -104,12 +104,16 @@ export default function BacktestingPanel({symbol}:{symbol:string}){
         {metric("FEES PAID",fmt(m.feesPaid)+" USDT")}
       </div>
       <section className="panel">
-        <div className="panel-head"><h2>Trade history</h2><p>Historical fills · Conservative stop-first candle resolution</p></div>
-        {!result.trades.length?<div className="empty-state"><BarChart3 size={22}/><b>কোনো valid signal পাওয়া যায়নি</b><span>এটি নিজেই একটি ফলাফল—এই sample-এ সব gate একসঙ্গে পূরণ হয়নি।</span></div>:
-        <><div className="table-head" style={{display:"grid",gridTemplateColumns:"1.2fr .6fr 1fr 1fr 1fr 1fr",gap:8}}><span>ENTRY TIME</span><span>SIDE</span><span>ENTRY</span><span>EXIT</span><span>NET PNL</span><span>EXIT REASON</span></div>
-        {result.trades.slice().reverse().map((t:any,i:number)=><div className="paper-history-row" key={t.entryTime+"-"+i} style={{display:"grid",gridTemplateColumns:"1.2fr .6fr 1fr 1fr 1fr 1fr",gap:8,fontSize:10}}><span>{new Date(t.entryTime).toLocaleString()}</span><b>{t.side}</b><span>{fmt(t.entry)}</span><span>{fmt(t.exit)}</span><b style={{color:t.netPnl>=0?"#55d5a6":"#f17d89"}}>{t.netPnl>=0?"+":""}{fmt(t.netPnl)}</b><span>{t.exitReason}</span></div>)}</>}
+        <div className="panel-head"><h2>Out-of-sample fold results</h2><p>প্রতিটি fold আলাদা chronological test period।</p></div>
+        <div className="stats-grid" style={{gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))"}}>
+          {result.folds.map((f:any)=><div className="stat-card" key={f.index}><div className="stat-top">TEST FOLD {f.index}</div><div className="stat-value" style={{fontSize:17}}>{f.metrics.returnPct>=0?"+":""}{f.metrics.returnPct.toFixed(2)}%</div><div className="stat-foot">{f.tradeCount} trades · {f.metrics.winRatePct.toFixed(1)}% win · PF {f.metrics.profitFactor===null?"∞":f.metrics.profitFactor.toFixed(2)}</div><div className="stat-foot">{new Date(f.start).toLocaleDateString()} — {new Date(f.end).toLocaleDateString()}</div></div>)}
+        </div>
       </section>
-    </>}
+      <section className="panel">
+        <div className="panel-head"><h2>Out-of-sample trade history</h2><p>শুধু unseen test folds-এর closed trades</p></div>
+        {!result.folds.some((f:any)=>f.trades.length)?<div className="empty-state"><BarChart3 size={22}/><b>কোনো valid signal পাওয়া যায়নি</b><span>এই sample-এ strategy সব mandatory gate পূরণ করতে পারেনি।</span></div>:
+        <>{result.folds.flatMap((f:any)=>f.trades.map((t:any)=>({...t,fold:f.index}))).slice().reverse().map((t:any,i:number)=><div className="paper-history-row" key={t.entryTime+"-"+i} style={{display:"grid",gridTemplateColumns:"0.45fr 1.2fr .6fr 1fr 1fr 1fr 1fr",gap:8,fontSize:10}}><span>F{t.fold}</span><span>{new Date(t.entryTime).toLocaleString()}</span><b>{t.side}</b><span>{fmt(t.entry)}</span><span>{fmt(t.exit)}</span><b style={{color:t.netPnl>=0?"#55d5a6":"#f17d89"}}>{t.netPnl>=0?"+":""}{fmt(t.netPnl)}</b><span>{t.exitReason}</span></div>)}</>}
+      </section>/>}
     <div className="paper-disclaimer"><ShieldCheck size={15}/> Simulation only. Historical results do not predict future returns. No real orders are placed.</div>
   </div>;
 }
