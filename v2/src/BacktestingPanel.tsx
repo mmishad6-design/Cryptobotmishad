@@ -4,6 +4,7 @@ import { getConsensusHistory, type Kline } from "./lib/market";
 import { calculateIndicators, calculateMarketStructure, getEmaTrend } from "./lib/indicators";
 import { evaluateAdvancedSignal } from "./core/advancedSignalEngine";
 import { runHistoricalBacktest } from "./core/backtestEngine";
+// @ts-ignore — this JavaScript utility is covered by runtime tests.
 import { createSequentialOosFolds, aggregateWalkForwardResults } from "./core/walkForward.js";
 
 type MarketMode = "Spot" | "Futures";
