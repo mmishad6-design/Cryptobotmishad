@@ -4,7 +4,7 @@ import {
   Activity, ArrowDownRight, ArrowUpRight, Bell, CandlestickChart,
   ChevronDown, CircleDot, Command, Crosshair, LayoutDashboard,
   ListFilter, Search, Settings2, ShieldCheck, SlidersHorizontal,
-  Wallet, LogOut, LockKeyhole, Mail, UserRound, LoaderCircle
+  Wallet, LogOut, LockKeyhole, Mail, UserRound, LoaderCircle, Eye, EyeOff
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
 import { getMarketTickers, getMarketKlines, type MarketTicker, type Kline } from "./lib/market";
@@ -28,6 +28,7 @@ function AuthScreen() {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -81,7 +82,7 @@ function AuthScreen() {
       <form onSubmit={submit} className="auth-form">
         {mode === "signup" && <label><span><UserRound size={14}/> Display name</span><input value={displayName} onChange={e=>setDisplayName(e.target.value)} placeholder="Your name" autoComplete="name" required /></label>}
         <label><span><Mail size={14}/> Email address</span><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" required /></label>
-        <label><span><LockKeyhole size={14}/> Password</span><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 8 characters" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} required /></label>
+        <label><span><LockKeyhole size={14}/> Password</span><div className="password-input-wrap"><input type={showPassword ? "text" : "password"} value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 8 characters" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} required /><button type="button" className="password-toggle" onClick={()=>setShowPassword(v=>!v)} aria-label={showPassword ? "Hide password" : "Show password"} title={showPassword ? "Hide password" : "Show password"}>{showPassword ? <EyeOff size={16}/> : <Eye size={16}/>}</button></div></label>
         {mode === "login" && <button type="button" className="forgot-btn" onClick={resetPassword}>Forgot password?</button>}
         {error && <div className="auth-message error">{error}</div>}
         {message && <div className="auth-message success">{message}</div>}
@@ -96,6 +97,8 @@ function AuthScreen() {
 function PasswordRecoveryScreen({ onComplete }: { onComplete: () => void }) {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -117,8 +120,8 @@ function PasswordRecoveryScreen({ onComplete }: { onComplete: () => void }) {
     <div className="auth-kicker">ACCOUNT RECOVERY</div><h1>Set a new password.</h1>
     <p className="auth-description">Choose a new password for your CryptoBot Mishad account.</p>
     <form onSubmit={submit} className="auth-form">
-      <label><span><LockKeyhole size={14}/> New password</span><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 8 characters" minLength={8} autoComplete="new-password" required /></label>
-      <label><span><LockKeyhole size={14}/> Confirm password</span><input type="password" value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} placeholder="Enter the new password again" minLength={8} autoComplete="new-password" required /></label>
+      <label><span><LockKeyhole size={14}/> New password</span><div className="password-input-wrap"><input type={showPassword ? "text" : "password"} value={password} onChange={e=>setPassword(e.target.value)} placeholder="At least 8 characters" minLength={8} autoComplete="new-password" required /><button type="button" className="password-toggle" onClick={()=>setShowPassword(v=>!v)} aria-label={showPassword ? "Hide password" : "Show password"} title={showPassword ? "Hide password" : "Show password"}>{showPassword ? <EyeOff size={16}/> : <Eye size={16}/>}</button></div></label>
+      <label><span><LockKeyhole size={14}/> Confirm password</span><div className="password-input-wrap"><input type={showConfirmPassword ? "text" : "password"} value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} placeholder="Enter the new password again" minLength={8} autoComplete="new-password" required /><button type="button" className="password-toggle" onClick={()=>setShowConfirmPassword(v=>!v)} aria-label={showConfirmPassword ? "Hide password" : "Show password"} title={showConfirmPassword ? "Hide password" : "Show password"}>{showConfirmPassword ? <EyeOff size={16}/> : <Eye size={16}/>}</button></div></label>
       {error && <div className="auth-message error">{error}</div>}
       {message && <div className="auth-message success">{message}</div>}
       <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin"/> : null}Update password</button>
