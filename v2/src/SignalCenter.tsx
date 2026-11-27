@@ -60,7 +60,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
       }));
       const data=Object.fromEntries(results.filter((x):x is [typeof FRAMES[number],Frame]=>Boolean(x[1])));
       setFrameStatus(Object.fromEntries(results.map(([tf,frame])=>[tf,frame?"READY":"INSUFFICIENT DATA"])));
-      const result=evaluateAdvancedSignal({data,market,entry:livePrice>0?livePrice:undefined,accountBalance:Number(balance)>0?Number(balance):null,leverage:market==="Spot"?1:leverage,flow:{depthRatio}});
+      const analysisEntry=data["5m"]?.close ?? (livePrice>0?livePrice:undefined);\n      const usableDepthRatio=market==="Spot"?(depthRatio??undefined):undefined;\n      const result=evaluateAdvancedSignal({data,market,entry:analysisEntry,accountBalance:Number(balance)>0?Number(balance):null,leverage:market==="Spot"?1:leverage,flow:{depthRatio:usableDepthRatio}});
       if(results.some(([,frame])=>!frame)) throw new Error("এক বা একাধিক timeframe-এ পর্যাপ্ত multi-exchange data পাওয়া যায়নি।");
       setEvaluation(result as Evaluation);setUpdatedAt(new Date().toISOString());
     }catch(e){setError(e instanceof Error?e.message:"Market data load failed.");}
