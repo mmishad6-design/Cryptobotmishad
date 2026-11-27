@@ -10,7 +10,7 @@ import {
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
 import { getMarketTickers, getMarketKlines, type MarketTicker, type Kline } from "./lib/market";
 import { connectTickerStream, connectKlineStream } from "./lib/market-ws";
-import { calculateIndicators, getEmaTrend } from "./lib/indicators";
+import { calculateIndicators, calculateMarketStructure, getEmaTrend } from "./lib/indicators";
 
 const CHART_INTERVALS = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w","1M"] as const;
 
@@ -298,6 +298,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   const [chartInterval, setChartInterval] = useState("1h");
   const [enabledIndicators, setEnabledIndicators] = useState({ ema20: true, ema50: true, ema200: false, vwap: false, bollinger: false });
   const [mtfRows, setMtfRows] = useState<Record<string, { trend: "Bullish" | "Bearish" | "Neutral"; loading: boolean }>>({});
+  const [orderBook, setOrderBook] = useState<{ bids: [string,string][]; asks: [string,string][]; updatedAt: string; error: string }>({ bids: [], asks: [], updatedAt: "", error: "" });
   const [candles, setCandles] = useState<Kline[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
@@ -366,6 +367,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   // packets are delayed or blocked; it uses the actual exchange last price.
   const liveChartPrice = marketTickers[chartSymbol]?.lastPrice;
   const indicatorValues = calculateIndicators(candles);
+  const marketStructure = calculateMarketStructure(candles);
   useEffect(() => {
     const price = Number(liveChartPrice);
     if (!Number.isFinite(price) || price <= 0) return;
@@ -435,6 +437,26 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
     const timer = window.setInterval(() => void refreshCandles(), 60000);
     return () => { alive = false; stopStream(); window.clearInterval(timer); };
   }, [chartSymbol, chartInterval]);
+  useEffect(() => {
+    let alive = true;
+    let busy = false;
+    const refreshOrderBook = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const response = await fetch(`https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(chartSymbol)}&limit=20`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`Order book unavailable (${response.status})`);
+        const payload = await response.json() as { bids: [string,string][]; asks: [string,string][] };
+        if (alive) setOrderBook({ bids: payload.bids ?? [], asks: payload.asks ?? [], updatedAt: new Date().toISOString(), error: "" });
+      } catch (error) {
+        if (alive) setOrderBook(current => ({ ...current, error: error instanceof Error ? error.message : "Order book unavailable" }));
+      } finally { busy = false; }
+    };
+    void refreshOrderBook();
+    const timer = window.setInterval(() => void refreshOrderBook(), 10000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [chartSymbol]);
+
   useEffect(() => {
     let alive = true;
     const intervals = ["15m", "1h", "4h", "1d", "1w"];
@@ -576,7 +598,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
         </div>
         <div className="section-row"><div><h2>Live Market</h2><p>{marketError ? `Feed error: ${marketError}` : marketUpdatedAt ? `${marketSource} · Last update ${new Date(marketUpdatedAt).toLocaleTimeString()}` : "Connecting to live exchange stream…"}</p></div><div className={marketError ? "market-feed-state offline" : marketUpdatedAt ? "market-feed-state online" : "market-feed-state"}><i/>{marketError ? "FEED ERROR" : marketUpdatedAt ? `LIVE · ${marketWsStatus === "connected" ? "WEBSOCKET" : "REST BACKUP"}` : "CONNECTING"}</div></div>
         <div className="market-table live-market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>24H VOLUME</span><span>STATUS</span></div>{watchlist.map(coin => { const live = marketTickers[`${coin.symbol}USDT`]; const change = live ? Number(live.priceChangePercent) : null; return <button type="button" className="coin-row coin-row-button" key={coin.symbol} onClick={() => { setChartSymbol(`${coin.symbol}USDT`); setActivePage("Market Analysis"); }}><div className="coin-name"><div className="coin-icon">{coin.symbol.slice(0,1)}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live ? Number(live.lastPrice).toLocaleString("en-US", {maximumFractionDigits:8}) : "—"}</b><span className={change !== null && change < 0 ? "negative" : "positive"}>{change === null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</span><span className="market-volume">{live ? (Number(live.quoteVolume)/1e6).toLocaleString("en-US",{maximumFractionDigits:2})+"M USDT" : "—"}</span><span className="market-open"><i/> {live ? "LIVE" : "WAITING"}</span></button>; })}</div>
-        <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Live Candlestick Chart</h2><p>{chartSymbol.replace("USDT"," / USDT")} · {chartInterval} OHLC candles · live WebSocket updates</p></div><div className="chart-controls compact-chart-controls"><select aria-label="Chart timeframe" value={chartInterval} onChange={e=>setChartInterval(e.target.value)}>{CHART_INTERVALS.map(t=><option key={t} value={t}>{t.toUpperCase()}</option>)}</select><button className="select-btn" onClick={() => setActivePage("Market Analysis")}>Open analysis <ArrowUpRight size={14}/></button></div></div><div className="chart-placeholder"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading live candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length > 0 ? <CandlestickChartView key={`${chartSymbol}-${chartInterval}`} candles={candles} enabledIndicators={enabledIndicators}/> : <div className="chart-center"><CandlestickChart size={25}/><b>No candle data</b><span>{marketError || "Waiting for live candle feed."}</span></div>}</div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
+        <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Live Candlestick Chart</h2><p>{chartSymbol.replace("USDT"," / USDT")} · {chartInterval} OHLC candles · live WebSocket updates</p></div><div className="chart-controls compact-chart-controls"><select aria-label="Chart timeframe" value={chartInterval} onChange={e=>setChartInterval(e.target.value)}>{CHART_INTERVALS.map(t=><option key={t} value={t}>{t.toUpperCase()}</option>)}</select><button className="select-btn" onClick={() => setActivePage("Market Analysis")}>Open analysis <ArrowUpRight size={14}/></button></div></div><div className="chart-placeholder"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading live candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length > 0 ? <CandlestickChartView key={`${chartSymbol}-${chartInterval}`} candles={candles} enabledIndicators={enabledIndicators} structure={marketStructure}/> : <div className="chart-center"><CandlestickChart size={25}/><b>No candle data</b><span>{marketError || "Waiting for live candle feed."}</span></div>}</div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
         {!adminOpen && activePage !== "Overview" && <div className="user-page">
           <div className="page-heading"><div><div className="eyebrow">{session ? "USER WORKSPACE" : "GUEST WORKSPACE"} <span>•</span> {session?.user.email || "Public access"}</div><h1>{activePage}</h1><p>Live public market data · Manual paper trading only.</p></div></div>
           {activePage === "Market Analysis" && <section className="panel full-market-panel">
@@ -598,6 +620,18 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
               </div>
               <small style={{display:"block",marginTop:8,color:"var(--muted)",fontSize:10}}>Trend rule: close above EMA 20 above EMA 50 = Bullish; inverse = Bearish. Neutral means mixed or insufficient data.</small>
             </section>
+            <section style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:9,padding:"12px 0",borderTop:"1px solid var(--border-soft)"}}>
+              <div style={{background:"var(--surface-2)",border:"1px solid var(--border-soft)",borderRadius:8,padding:12}}><div style={{fontSize:9,color:"var(--muted)",letterSpacing:1}}>MARKET STRUCTURE</div><b style={{display:"block",marginTop:6,fontSize:13,color:marketStructure.trend==="Bullish"?"#42d2a3":marketStructure.trend==="Bearish"?"#f07883":"var(--text)"}}>{marketStructure.event}</b><small style={{fontSize:10,color:"var(--muted)"}}>Pivot-based close confirmation</small></div>
+              <div style={{background:"var(--surface-2)",border:"1px solid var(--border-soft)",borderRadius:8,padding:12}}><div style={{fontSize:9,color:"var(--muted)",letterSpacing:1}}>SUPPORT</div><b style={{display:"block",marginTop:6,fontSize:14}}>{marketStructure.support===null?"—":marketStructure.support.toFixed(4)}</b><small style={{fontSize:10,color:"var(--muted)"}}>Nearest confirmed swing low</small></div>
+              <div style={{background:"var(--surface-2)",border:"1px solid var(--border-soft)",borderRadius:8,padding:12}}><div style={{fontSize:9,color:"var(--muted)",letterSpacing:1}}>RESISTANCE</div><b style={{display:"block",marginTop:6,fontSize:14}}>{marketStructure.resistance===null?"—":marketStructure.resistance.toFixed(4)}</b><small style={{fontSize:10,color:"var(--muted)"}}>Nearest confirmed swing high</small></div>
+            </section>
+            <section style={{padding:"12px 0 16px",borderTop:"1px solid var(--border-soft)"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><b style={{fontSize:12}}>Order book · Binance Spot</b><small style={{fontSize:10,color:"var(--muted)"}}>{orderBook.updatedAt?new Date(orderBook.updatedAt).toLocaleTimeString():"Waiting for feed"} · refresh 10s</small></div>
+              {orderBook.error&&<small style={{color:"#f07883"}}>{orderBook.error}</small>}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                {[{label:"BIDS",rows:orderBook.bids.slice(0,6),color:"#42d2a3"},{label:"ASKS",rows:orderBook.asks.slice(0,6),color:"#f07883"}].map(book=><div key={book.label} style={{background:"var(--surface-2)",border:"1px solid var(--border-soft)",borderRadius:8,padding:10,minWidth:0}}><b style={{fontSize:10,color:book.color}}>{book.label}</b><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginTop:8,fontSize:9,color:"var(--muted)"}}><span>PRICE</span><span style={{textAlign:"right"}}>QTY</span></div>{book.rows.map((level,index)=><div key={index} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginTop:6,fontSize:10,fontVariantNumeric:"tabular-nums"}}><span style={{color:book.color}}>{Number(level[0]).toFixed(4)}</span><span style={{textAlign:"right"}}>{Number(level[1]).toFixed(4)}</span></div>)}{!book.rows.length&&<small style={{display:"block",marginTop:8,color:"var(--muted)"}}>No data</small>}</div>)}
+              </div>
+            </section>
             <div className="table-head candle-head"><span>TIME</span><span>OPEN</span><span>HIGH</span><span>LOW</span><span>CLOSE</span></div>{candles.slice(-10).reverse().map(k=><div className="candle-row" key={String(k[0])}><span>{new Date(k[0]).toLocaleString()}</span><span>{Number(k[1]).toFixed(4)}</span><span>{Number(k[2]).toFixed(4)}</span><span>{Number(k[3]).toFixed(4)}</span><b>{Number(k[4]).toFixed(4)}</b></div>)}
           </section>}
           {activePage === "Signal Center" && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><Crosshair size={22}/></div><b>NO TRADE · Signal engine not live</b><span>We will not invent BUY/SELL signals. Strategy validation and Bangla rejection reasons will be added before live signals are shown.</span><strong>NO TRADE</strong></div></section>}
@@ -612,12 +646,13 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   </div>;
 }
 
-function CandlestickChartView({ candles, enabledIndicators }: { candles: Kline[]; enabledIndicators: { ema20: boolean; ema50: boolean; ema200: boolean; vwap: boolean; bollinger: boolean } }) {
+function CandlestickChartView({ candles, enabledIndicators, structure }: { candles: Kline[]; enabledIndicators: { ema20: boolean; ema50: boolean; ema200: boolean; vwap: boolean; bollinger: boolean }; structure: { support: number | null; resistance: number | null } }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candleSeriesRef = useRef<ReturnType<ReturnType<typeof createChart>["addSeries"]> | null>(null);
   const volumeSeriesRef = useRef<ReturnType<ReturnType<typeof createChart>["addSeries"]> | null>(null);
   const overlaySeriesRef = useRef<Record<string, any>>({});
+  const structureSeriesRef = useRef<{ support: any; resistance: any } | null>(null);
   const fittedRef = useRef(false);
 
   useEffect(() => {
@@ -666,6 +701,10 @@ function CandlestickChartView({ candles, enabledIndicators }: { candles: Kline[]
       bbUpper: chart.addSeries(LineSeries, { color: "#8194aa88", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false }),
       bbLower: chart.addSeries(LineSeries, { color: "#8194aa88", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false }),
     };
+    const structureSeries = {
+      support: chart.addSeries(LineSeries, { color: "#42d2a388", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false }),
+      resistance: chart.addSeries(LineSeries, { color: "#f0788388", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false }),
+    };
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: "volume" },
       priceScaleId: "volume",
@@ -680,6 +719,7 @@ function CandlestickChartView({ candles, enabledIndicators }: { candles: Kline[]
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
     overlaySeriesRef.current = overlaySeries;
+    structureSeriesRef.current = structureSeries;
     const observer = new ResizeObserver(entries => {
       const rect = entries[0]?.contentRect;
       if (rect && rect.width > 0 && rect.height > 0) chart.applyOptions({ width: rect.width, height: rect.height });
@@ -692,6 +732,7 @@ function CandlestickChartView({ candles, enabledIndicators }: { candles: Kline[]
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
       overlaySeriesRef.current = {};
+      structureSeriesRef.current = null;
       fittedRef.current = false;
     };
   }, []);
@@ -706,6 +747,10 @@ function CandlestickChartView({ candles, enabledIndicators }: { candles: Kline[]
     overlaySeriesRef.current.vwap?.setData(enabledIndicators.vwap ? toChartPoints(values.vwap) : []);
     overlaySeriesRef.current.bbUpper?.setData(enabledIndicators.bollinger ? toChartPoints(values.bbUpper) : []);
     overlaySeriesRef.current.bbLower?.setData(enabledIndicators.bollinger ? toChartPoints(values.bbLower) : []);
+    const firstTime = Math.floor(Number(candles[0][0]) / 1000) as UTCTimestamp;
+    const lastTime = Math.floor(Number(candles[candles.length - 1][0]) / 1000) as UTCTimestamp;
+    structureSeriesRef.current?.support?.setData(structure.support === null ? [] : [{ time: firstTime, value: structure.support }, { time: lastTime, value: structure.support }]);
+    structureSeriesRef.current?.resistance?.setData(structure.resistance === null ? [] : [{ time: firstTime, value: structure.resistance }, { time: lastTime, value: structure.resistance }]);
     const candleData = candles.map(k => ({
       time: Math.floor(Number(k[0]) / 1000) as UTCTimestamp,
       open: Number(k[1]),
@@ -724,7 +769,7 @@ function CandlestickChartView({ candles, enabledIndicators }: { candles: Kline[]
       chartRef.current?.timeScale().fitContent();
       fittedRef.current = true;
     }
-  }, [candles, enabledIndicators]);
+  }, [candles, enabledIndicators, structure]);
 
   return <div className="chart-engine" ref={containerRef} role="img" aria-label="Interactive live candlestick chart with volume"/>;
 }
