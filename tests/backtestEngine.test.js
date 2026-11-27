@@ -102,3 +102,26 @@ test('walk-forward aggregates OOS results and reports worst fold drawdown', () =
   assert.equal(result.maxDrawdownPct, 7); assert.equal(result.feesPaid, 4);
   assert.equal(result.profitFactor, 4);
 });
+
+import { classifyMarketRegimes, summarizeRegimePerformance } from '../v2/src/core/robustness.js';
+
+test('market regime classification uses trailing-only data and labels volatility', () => {
+  const rows = Array.from({length:70},(_,i)=>({time:i+1,close:100+i*.2}));
+  const labels = classifyMarketRegimes(rows,10,0.004);
+  assert.equal(labels.length,70);
+  assert.equal(labels[9].regime,'INSUFFICIENT');
+  assert.match(labels[20].regime,/^UP_(HIGH|LOW)$/);
+  const alteredFuture = rows.map(x=>({...x}));
+  alteredFuture[60].close = 1;
+  const changed = classifyMarketRegimes(alteredFuture,10,0.004);
+  assert.equal(changed[30].regime,labels[30].regime);
+});
+test('regime report groups trades by signal close and calculates metrics', () => {
+  const report = summarizeRegimePerformance([
+    {signalTime:10,netPnl:5},{signalTime:10,netPnl:-2},{signalTime:20,netPnl:4}
+  ],[{time:10,regime:'UP_HIGH'},{time:20,regime:'RANGE_LOW'}]);
+  assert.equal(report.length,2);
+  assert.equal(report.find(x=>x.regime==='UP_HIGH').tradeCount,2);
+  assert.equal(report.find(x=>x.regime==='UP_HIGH').netPnl,3);
+  assert.equal(report.find(x=>x.regime==='UP_HIGH').winRatePct,50);
+});
