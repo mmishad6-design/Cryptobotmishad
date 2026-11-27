@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
 import { getMarketTickers, getMarketKlines, type MarketTicker, type Kline } from "./lib/market";
+import { connectTickerStream, connectKlineStream } from "./lib/market-ws";
 
 const watchlist = [
   { symbol: "BTC", pair: "BTC / USDT", price: "—", change: "—", up: true },
@@ -291,40 +292,87 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   const [marketTickers, setMarketTickers] = useState<Record<string, MarketTicker>>({});
   const [marketUpdatedAt, setMarketUpdatedAt] = useState("");
   const [marketError, setMarketError] = useState("");
+  const [marketSource, setMarketSource] = useState("Connecting");
+  const [marketWsStatus, setMarketWsStatus] = useState<"connecting" | "connected" | "reconnecting">("connecting");
+  const [chartSource, setChartSource] = useState("Connecting");
+  const [chartWsStatus, setChartWsStatus] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   useEffect(() => {
     let alive = true;
+    let wsConnected = false;
     const refresh = async () => {
+      if (wsConnected) return;
       try {
         const result = await getMarketTickers();
-        if (!alive) return;
+        if (!alive || wsConnected) return;
         setMarketTickers(Object.fromEntries(result.data.map((ticker) => [ticker.symbol, ticker])));
         setMarketUpdatedAt(result.receivedAt);
+        setMarketSource(result.source);
         setMarketError("");
       } catch (error) {
-        if (alive) setMarketError(error instanceof Error ? error.message : "Market feed unavailable");
+        if (alive && !wsConnected) setMarketError(error instanceof Error ? error.message : "Market feed unavailable");
       }
     };
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 5000);
-    return () => { alive = false; window.clearInterval(timer); };
+    const stopStream = connectTickerStream({
+      onData: ticker => {
+        if (!alive) return;
+        wsConnected = true;
+        setMarketTickers(current => ({ ...current, [ticker.symbol]: ticker }));
+        setMarketUpdatedAt(new Date().toISOString());
+        setMarketSource(marketWsStatus === "connected" ? marketSource : "Live exchange stream");
+        setMarketError("");
+      },
+      onStatus: (status, source) => {
+        if (!alive) return;
+        wsConnected = status === "connected";
+        setMarketWsStatus(status);
+        setMarketSource(source);
+        if (!wsConnected) void refresh();
+      },
+    });
+    const timer = window.setInterval(() => void refresh(), 30000);
+    return () => { alive = false; stopStream(); window.clearInterval(timer); };
   }, []);
   useEffect(() => {
     let alive = true;
     let firstLoad = true;
+    let wsConnected = false;
     const refreshCandles = async () => {
+      if (wsConnected) return;
       try {
         const result = await getMarketKlines(chartSymbol, chartInterval, 120);
-        if (alive) { setCandles(result.data); setChartError(""); }
+        if (alive && !wsConnected) { setCandles(result.data); setChartSource(result.source); setChartError(""); }
       } catch (error) {
-        if (alive) setChartError(error instanceof Error ? error.message : "Chart data unavailable");
+        if (alive && !wsConnected) setChartError(error instanceof Error ? error.message : "Chart data unavailable");
       } finally {
         if (alive && firstLoad) { setChartLoading(false); firstLoad = false; }
       }
     };
     setChartLoading(true); setChartError("");
     void refreshCandles();
-    const timer = window.setInterval(() => void refreshCandles(), 15000);
-    return () => { alive = false; window.clearInterval(timer); };
+    const stopStream = connectKlineStream(chartSymbol, chartInterval, {
+      onData: candle => {
+        if (!alive) return;
+        wsConnected = true;
+        setCandles(current => {
+          const merged = new Map(current.map(item => [Number(item[0]), item]));
+          merged.set(Number(candle[0]), candle);
+          return [...merged.values()].sort((a, b) => Number(a[0]) - Number(b[0])).slice(-120);
+        });
+        setChartSource("Live exchange stream");
+        setChartError("");
+        if (firstLoad) { setChartLoading(false); firstLoad = false; }
+      },
+      onStatus: (status, source) => {
+        if (!alive) return;
+        wsConnected = status === "connected";
+        setChartWsStatus(status);
+        setChartSource(source);
+        if (!wsConnected) void refreshCandles();
+      },
+    });
+    const timer = window.setInterval(() => void refreshCandles(), 60000);
+    return () => { alive = false; stopStream(); window.clearInterval(timer); };
   }, [chartSymbol, chartInterval]);
   useEffect(() => {
     let alive = true;
@@ -447,7 +495,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
           <article className="stat-card"><div className="stat-top">ACTIVE SETUPS <span className="muted-pill">ENGINE</span></div><div className="stat-value">0 <small>signals</small></div><div className="stat-foot">No setup evaluated yet</div></article>
           <article className="stat-card"><div className="stat-top">RISK STATUS <span className="status-safe">● SAFE</span></div><div className="stat-value">NO TRADE</div><div className="stat-foot">Waiting for validated conditions</div></article>
         </div>
-        <div className="section-row"><div><h2>Live Market</h2><p>{marketError ? `Feed error: ${marketError}` : marketUpdatedAt ? `Binance Spot · Last update ${new Date(marketUpdatedAt).toLocaleTimeString()}` : "Connecting to Binance Spot…"}</p></div><div className={marketError ? "market-feed-state offline" : marketUpdatedAt ? "market-feed-state online" : "market-feed-state"}><i/>{marketError ? "FEED ERROR" : marketUpdatedAt ? "LIVE · AUTO REFRESH 5S" : "CONNECTING"}</div></div>
+        <div className="section-row"><div><h2>Live Market</h2><p>{marketError ? `Feed error: ${marketError}` : marketUpdatedAt ? `${marketSource} · Last update ${new Date(marketUpdatedAt).toLocaleTimeString()}` : "Connecting to live exchange stream…"}</p></div><div className={marketError ? "market-feed-state offline" : marketUpdatedAt ? "market-feed-state online" : "market-feed-state"}><i/>{marketError ? "FEED ERROR" : marketUpdatedAt ? `LIVE · ${marketWsStatus === "connected" ? "WEBSOCKET" : "REST BACKUP"}` : "CONNECTING"}</div></div>
         <div className="market-table live-market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>24H VOLUME</span><span>STATUS</span></div>{watchlist.map(coin => { const live = marketTickers[`${coin.symbol}USDT`]; const change = live ? Number(live.priceChangePercent) : null; return <button type="button" className="coin-row coin-row-button" key={coin.symbol} onClick={() => { setChartSymbol(`${coin.symbol}USDT`); setActivePage("Market Analysis"); }}><div className="coin-name"><div className="coin-icon">{coin.symbol.slice(0,1)}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live ? Number(live.lastPrice).toLocaleString("en-US", {maximumFractionDigits:8}) : "—"}</b><span className={change !== null && change < 0 ? "negative" : "positive"}>{change === null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</span><span className="market-volume">{live ? (Number(live.quoteVolume)/1e6).toLocaleString("en-US",{maximumFractionDigits:2})+"M USDT" : "—"}</span><span className="market-open"><i/> {live ? "LIVE" : "WAITING"}</span></button>; })}</div>
         <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Live Market Chart</h2><p>{chartSymbol.replace("USDT"," / USDT")} · {chartInterval} candles · refreshes every 15s</p></div><button className="select-btn" onClick={() => setActivePage("Market Analysis")}>Open analysis <ArrowUpRight size={14}/></button></div><div className="chart-placeholder"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading live candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length > 1 ? <svg viewBox="0 0 1000 300" preserveAspectRatio="none"><polyline fill="none" stroke="#62d0aa" strokeWidth="2" vectorEffect="non-scaling-stroke" points={candles.map((k,i)=>{const vals=candles.map(x=>Number(x[4]));const lo=Math.min(...vals),hi=Math.max(...vals);return (5+i/(candles.length-1)*990)+","+(280-(Number(k[4])-lo)/(hi-lo||1)*250);}).join(" ")}/></svg> : <div className="chart-center"><CandlestickChart size={25}/><b>No candle data</b><span>{marketError || "Waiting for Binance candle feed."}</span></div>}</div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
         {!adminOpen && activePage !== "Overview" && <div className="user-page">
