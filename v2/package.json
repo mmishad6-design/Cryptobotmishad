@@ -27,5 +27,8 @@
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
     "wrangler": "^4.50.0"
+  },
+  "overrides": {
+    "@babel/traverse": "7.29.15"
   }
 }
