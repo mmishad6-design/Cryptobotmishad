@@ -468,7 +468,6 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
     const stopStream = connectOrderBookStream(chartSymbol, {
       onData: book => {
         setOrderBook({ ...book, error: "" });
-        setOrderBookStatus("live");
       },
       onStatus: (status, message) => {
         setOrderBookStatus(status);
