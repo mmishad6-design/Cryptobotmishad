@@ -328,7 +328,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   const [marketSource, setMarketSource] = useState("Connecting");
   const [marketWsStatus, setMarketWsStatus] = useState<"connecting" | "connected" | "stale" | "reconnecting">("connecting");
   const [chartSource, setChartSource] = useState("Connecting");
-  const [chartWsStatus, setChartWsStatus] = useState<"connecting" | "connected" | "reconnecting">("connecting");
+  const [chartWsStatus, setChartWsStatus] = useState<"connecting" | "connected" | "stale" | "reconnecting">("connecting");
   useEffect(() => {
     let alive = true;
     let wsConnected = false;
