@@ -33,19 +33,6 @@ function AuthScreen() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  async function signInWithGoogle() {
-    if (!supabase) return;
-    setBusy(true); setError(""); setMessage("");
-    const { error: oauthError } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: window.location.origin },
-    });
-    if (oauthError) {
-      setError(oauthError.message);
-      setBusy(false);
-    }
-  }
-
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!supabase) return;
@@ -87,11 +74,6 @@ function AuthScreen() {
         <button className={mode === "login" ? "selected" : ""} onClick={() => {setMode("login");setError("");setMessage("");}}>Sign in</button>
         <button className={mode === "signup" ? "selected" : ""} onClick={() => {setMode("signup");setError("");setMessage("");}}>Create account</button>
       </div>
-      <button type="button" className="google-auth-btn" onClick={signInWithGoogle} disabled={busy}>
-        <span className="google-g" aria-hidden="true">G</span>
-        Continue with Google
-      </button>
-      <div className="auth-divider"><span>OR CONTINUE WITH EMAIL</span></div>
       <form onSubmit={submit} className="auth-form">
         {mode === "signup" && <label><span><UserRound size={14}/> Display name</span><input value={displayName} onChange={e=>setDisplayName(e.target.value)} placeholder="Your name" autoComplete="name" required /></label>}
         <label><span><Mail size={14}/> Email address</span><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" required /></label>
