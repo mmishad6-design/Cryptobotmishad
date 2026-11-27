@@ -24,14 +24,15 @@ async function fromBinance(symbol: string, interval: string, limit: number): Pro
 }
 
 async function fromBybit(symbol: string, interval: string, limit: number): Promise<Kline[] | null> {
-  const bybitInterval = BYBIT_INTERVAL[interval];
+  const isThreeDay = interval === "3d";
+  const bybitInterval = isThreeDay ? "D" : BYBIT_INTERVAL[interval];
   if (!bybitInterval) return null;
   try {
     const endpoint = new URL("https://api.bybit.com/v5/market/kline");
     endpoint.searchParams.set("category", "spot");
     endpoint.searchParams.set("symbol", symbol);
     endpoint.searchParams.set("interval", bybitInterval);
-    endpoint.searchParams.set("limit", String(Math.min(limit, 1000)));
+    endpoint.searchParams.set("limit", String(Math.min(isThreeDay ? limit * 3 : limit, 1000)));
     const response = await fetch(endpoint.toString(), {
       headers: { accept: "application/json" },
       cf: { cacheTtl: 8, cacheEverything: true },
@@ -42,9 +43,29 @@ async function fromBybit(symbol: string, interval: string, limit: number): Promi
       result?: { list?: string[][] };
     };
     if (payload.retCode !== 0 || !payload.result?.list?.length) return null;
-    return payload.result.list.map(row => [
+    const daily = payload.result.list.map(row => [
       Number(row[0]), row[1], row[2], row[3], row[4], row[5], Number(row[6]), "", 0, "", "", "",
     ] as Kline).reverse();
+    if (!isThreeDay) return daily;
+
+    const bucketMs = 3 * 24 * 60 * 60 * 1000;
+    const buckets = new Map<number, Kline>();
+    for (const candle of daily) {
+      const bucketStart = Math.floor(candle[0] / bucketMs) * bucketMs;
+      const existing = buckets.get(bucketStart);
+      if (!existing) {
+        buckets.set(bucketStart, [
+          bucketStart, candle[1], candle[2], candle[3], candle[4], candle[5],
+          bucketStart + bucketMs - 1, "", 0, "", "", "",
+        ]);
+      } else {
+        existing[2] = String(Math.max(Number(existing[2]), Number(candle[2])));
+        existing[3] = String(Math.min(Number(existing[3]), Number(candle[3])));
+        existing[4] = candle[4];
+        existing[5] = String(Number(existing[5]) + Number(candle[5]));
+      }
+    }
+    return [...buckets.values()].slice(-limit);
   } catch { return null; }
 }
 
