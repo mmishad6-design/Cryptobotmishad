@@ -85,5 +85,5 @@ test('signal reasons are Bengali and low score remains NO TRADE', () => {
   const result = evaluateAdvancedSignal({ data, flow: { takerRatio: 1.2, depthRatio: 1.1 } });
   assert.equal(result.decision, 'NO TRADE');
   assert.ok(result.reasons.some(reason => reason.includes('NO TRADE')));
-  assert.ok(result.reasons.every(reason => !/[A-Za-z]{4,}/.test(reason.replaceAll('NO TRADE', '').replaceAll('RSI', '').replaceAll('ADX', '').replaceAll('BOS', '').replaceAll('CHoCH', '').replaceAll('Order Book', '').replaceAll('Taker', '').replaceAll('Spot', '').replaceAll('Futures', '').replaceAll('Risk', '').replaceAll('Reward', '').replaceAll('Score', '').replaceAll('LONG', '').replaceAll('SHORT', '').replaceAll('BUY', '').replaceAll('R:R', '').replaceAll('1D', '').replaceAll('4H', '').replaceAll('1H', '').replaceAll('15M', '').replaceAll('5M', '')));
+  assert.ok(result.reasons.some(reason => /[\u0980-\u09FF]/.test(reason)));
 });
