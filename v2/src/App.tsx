@@ -7,6 +7,7 @@ import {
   Wallet, LogOut, LockKeyhole, Mail, UserRound, LoaderCircle
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
+import { getMarketTickers, type MarketTicker } from "./lib/market";
 
 const watchlist = [
   { symbol: "BTC", pair: "BTC / USDT", price: "—", change: "—", up: true },
@@ -91,6 +92,26 @@ function AuthScreen() {
 function Dashboard({ session }: { session: Session }) {
   const [signingOut, setSigningOut] = useState(false);
   const [displayName, setDisplayName] = useState("");
+  const [marketTickers, setMarketTickers] = useState<Record<string, MarketTicker>>({});
+  const [marketUpdatedAt, setMarketUpdatedAt] = useState("");
+  const [marketError, setMarketError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const result = await getMarketTickers();
+        if (!alive) return;
+        setMarketTickers(Object.fromEntries(result.data.map((ticker) => [ticker.symbol, ticker])));
+        setMarketUpdatedAt(result.receivedAt);
+        setMarketError("");
+      } catch (error) {
+        if (alive) setMarketError(error instanceof Error ? error.message : "Market feed unavailable");
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, []);
   useEffect(() => {
     let alive = true;
     if (supabase) supabase.from("profiles").select("display_name").eq("id", session.user.id).maybeSingle()
@@ -119,13 +140,13 @@ function Dashboard({ session }: { session: Session }) {
       <section className="content">
         <div className="page-heading"><div><div className="eyebrow">PRIVATE WORKSPACE <span>•</span> {session.user.email}</div><h1>Market overview</h1><p>Your market intelligence, signals and risk in one place.</p></div><button className="outline-btn"><Command size={15}/> Command center <span>⌘ K</span></button></div>
         <div className="stats-grid">
-          <article className="stat-card"><div className="stat-top">TOTAL MARKET CAP <span className="muted-pill">GLOBAL</span></div><div className="stat-value">—</div><div className="stat-foot">Live market feed not connected yet</div></article>
-          <article className="stat-card"><div className="stat-top">24H VOLUME <span className="muted-pill">SPOT</span></div><div className="stat-value">—</div><div className="stat-foot">Public exchange data</div></article>
+          <article className="stat-card"><div className="stat-top">TOTAL MARKET CAP <span className="muted-pill">GLOBAL</span></div><div className="stat-value">—</div><div className="stat-foot">Market cap feed not connected</div></article>
+          <article className="stat-card"><div className="stat-top">24H VOLUME <span className="muted-pill">SPOT</span></div><div className="stat-value">{Object.values(marketTickers).reduce((sum, ticker) => sum + Number(ticker.quoteVolume || 0), 0).toLocaleString("en-US", {maximumFractionDigits:0})} <small>USDT</small></div><div className="stat-foot">24h quote volume · Binance Spot</div></article>
           <article className="stat-card"><div className="stat-top">ACTIVE SETUPS <span className="muted-pill">ENGINE</span></div><div className="stat-value">0 <small>signals</small></div><div className="stat-foot">No setup evaluated yet</div></article>
           <article className="stat-card"><div className="stat-top">RISK STATUS <span className="status-safe">● SAFE</span></div><div className="stat-value">NO TRADE</div><div className="stat-foot">Waiting for validated conditions</div></article>
         </div>
-        <div className="section-row"><div><h2>Market watch</h2><p>Live pairs selected for monitoring</p></div><button className="text-btn">View all markets <ArrowUpRight size={14}/></button></div>
-        <div className="market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>MARKET</span></div>{watchlist.map(coin => <div className="coin-row" key={coin.symbol}><div className="coin-name"><div className="coin-icon">{coin.symbol.slice(0,1)}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{coin.price}</b><span className="positive">{coin.up ? <ArrowUpRight size={14}/> : <ArrowDownRight size={14}/>} {coin.change}</span><span className="market-open"><i/> Pending feed</span></div>)}</div>
+        <div className="section-row"><div><h2>Market watch</h2><p>{marketError ? marketError : marketUpdatedAt ? `Binance Spot · Updated ${new Date(marketUpdatedAt).toLocaleTimeString()}` : "Connecting to live market feed…"}</p></div><button className="text-btn">View all markets <ArrowUpRight size={14}/></button></div>
+        <div className="market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>MARKET</span></div>{watchlist.map(coin => { const live = marketTickers[`${coin.symbol}USDT`]; const change = live ? Number(live.priceChangePercent) : null; return <div className="coin-row" key={coin.symbol}><div className="coin-name"><div className="coin-icon">{coin.symbol.slice(0,1)}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live ? Number(live.lastPrice).toLocaleString("en-US", {maximumFractionDigits:8}) : "—"}</b><span className={change !== null && change < 0 ? "negative" : "positive"}>{change !== null && change < 0 ? <ArrowDownRight size={14}/> : <ArrowUpRight size={14}/>} {change === null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</span><span className="market-open"><i/> {live ? "LIVE" : "Connecting"}</span></div>; })}</div>
         <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Market structure</h2><p>BTC / USDT · Multi-timeframe analysis</p></div><button className="select-btn">BTC / USDT <ChevronDown size={14}/></button></div><div className="chart-placeholder"><div className="chart-grid"/><div className="chart-center"><CandlestickChart size={25}/><b>Chart engine ready</b><span>Live candles will appear when market data connects.</span></div></div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
         <footer>CRYPTOBOT <span>·</span> MISHAD EDITION <span className="footer-right">SUPABASE AUTH CONNECTED <i/></span></footer>
       </section>
