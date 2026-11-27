@@ -76,3 +76,29 @@ test('reports no-lookahead callback boundary and risk-adjusted metrics', () => {
   assert.ok(Number.isFinite(result.metrics.maxDrawdownPct));
   assert.ok(Number.isFinite(result.metrics.expectancy));
 });
+
+import { createSequentialOosFolds, aggregateWalkForwardResults } from '../v2/src/core/walkForward.js';
+
+test('walk-forward creates isolated chronological folds with pre-test warmup', () => {
+  const rows = Array.from({ length: 100 }, (_, i) => ({ time: i + 1, value: i }));
+  const folds = createSequentialOosFolds(rows, 60, 3, 5);
+  assert.equal(folds.length, 3);
+  assert.deepEqual(folds.map(f => [f.testFrom, f.testTo, f.warmupCount]), [[60,73,5],[73,86,5],[86,100,5]]);
+  assert.equal(folds[0].data.at(-1).time, 73);
+  assert.equal(folds[1].data[0].time, 69);
+  assert.equal(folds[0].data.some(r => r.time >= 74), false);
+});
+test('walk-forward rejects unordered rows and invalid split parameters', () => {
+  const rows = Array.from({ length: 100 }, (_, i) => ({ time: i + 1 }));
+  assert.deepEqual(createSequentialOosFolds(rows.slice().reverse(), 60, 3, 5), []);
+  assert.deepEqual(createSequentialOosFolds(rows, 2, 3, 5), []);
+});
+test('walk-forward aggregates OOS results and reports worst fold drawdown', () => {
+  const result = aggregateWalkForwardResults([
+    { ok:true, trades:[{netPnl:10,rMultiple:1,fees:1},{netPnl:-4,rMultiple:-.4,fees:1}], metrics:{maxDrawdownPct:4} },
+    { ok:true, trades:[{netPnl:6,rMultiple:.6,fees:2}], metrics:{maxDrawdownPct:7} },
+  ], 1000);
+  assert.equal(result.tradeCount, 3); assert.equal(result.netPnl, 12);
+  assert.equal(result.maxDrawdownPct, 7); assert.equal(result.feesPaid, 4);
+  assert.equal(result.profitFactor, 4);
+});
