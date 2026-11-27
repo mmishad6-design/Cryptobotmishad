@@ -189,8 +189,11 @@ function startKlineSocket(
       window.clearTimeout(watchdogTimer);
       try {
         const message = JSON.parse(String(event.data));
-        if (!fallbackMode && message.data?.k) {
-          const k = message.data.k;
+        // Binance /ws streams send the kline at message.k; combined
+        // streams wrap it in message.data.k. Accept both response shapes.
+        const binanceKline = message.k ?? message.data?.k;
+        if (!fallbackMode && binanceKline) {
+          const k = binanceKline;
           callbacks.onData([Number(k.t), k.o, k.h, k.l, k.c, k.v, Number(k.q), String(k.T), Number(k.n), k.V, k.Q, "0"]);
         } else if (fallbackMode && message.topic?.startsWith("kline.") && Array.isArray(message.data)) {
           const k = message.data[0];
