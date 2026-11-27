@@ -11,7 +11,7 @@ function startFailoverSocket(
   makePrimary: () => WebSocket,
   makeFallback: () => WebSocket,
   onMessage: (event: MessageEvent, source: string) => void,
-  onStatus: (status: "connecting" | "connected" | "reconnecting", source: string) => void,
+  onStatus: (status: "connecting" | "connected" | "stale" | "reconnecting", source: string) => void,
 ) {
   let socket: WebSocket | null = null;
   let stopped = false;
