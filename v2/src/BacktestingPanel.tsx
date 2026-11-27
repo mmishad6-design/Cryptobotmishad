@@ -4,8 +4,10 @@ import { getConsensusHistory, type Kline } from "./lib/market";
 import { calculateIndicators, calculateMarketStructure, getEmaTrend } from "./lib/indicators";
 import { evaluateAdvancedSignal } from "./core/advancedSignalEngine";
 import { runHistoricalBacktest } from "./core/backtestEngine";
-// @ts-ignore — this JavaScript utility is covered by runtime tests.
+// @ts-ignore — JavaScript utilities are covered by runtime tests.
 import { createSequentialOosFolds, aggregateWalkForwardResults } from "./core/walkForward.js";
+// @ts-ignore
+import { classifyMarketRegimes, summarizeRegimePerformance } from "./core/robustness.js";
 
 type MarketMode = "Spot" | "Futures";
 type Frame = { close:number; trend:"BULLISH"|"BEARISH"|"MIXED"; rsi:number; adx:number; volumeRatio:number; atr:number; structure:string; takerRatio:number };
