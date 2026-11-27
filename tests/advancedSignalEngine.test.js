@@ -60,7 +60,7 @@ test('weak volume, structure, flow and ADX each block the setup', () => {
   for (const mutate of mutations) {
     const data = bullish();
     mutate(data);
-    const result = evaluateAdvancedSignal({ data, flow: { takerRatio: 1.2, depthRatio: 1.1 } });
+    const result = evaluateAdvancedSignal({ data, flow: { depthRatio: 1.1 } });
     assert.equal(result.decision, 'NO TRADE');
   }
 });
