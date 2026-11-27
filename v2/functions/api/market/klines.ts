@@ -2,11 +2,22 @@ const SYMBOL = /^[A-Z0-9]{2,20}USDT$/;
 const INTERVALS = new Set(["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w","1M"]);
 const BYBIT_INTERVAL: Record<string, string> = {
   "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
-  "1h": "60", "2h": "120", "4h": "240", "6h": "360",
+  "1h": "60", "2h": "120", "4h": "240", "6h": "360", "8h": "480",
   "12h": "720", "1d": "D", "1w": "W", "1M": "M",
 };
 
 type Kline = [number, string, string, string, string, string, number, string, number, string, string, string];
+
+function candleCloseTime(start: number, interval: string): number {
+  if (interval === "1M") {
+    const date = new Date(start);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1) - 1;
+  }
+  const duration = interval === "1w" ? 7 * 24 * 60 * 60 * 1000
+    : interval === "1d" ? 24 * 60 * 60 * 1000
+    : Number.parseInt(interval, 10) * (interval.endsWith("m") ? 60_000 : 3_600_000);
+  return start + duration - 1;
+}
 
 async function fromBinance(symbol: string, interval: string, limit: number): Promise<Kline[] | null> {
   try {
@@ -44,9 +55,9 @@ async function fromBybit(symbol: string, interval: string, limit: number): Promi
     };
     if (payload.retCode !== 0 || !payload.result?.list?.length) return null;
     const daily = payload.result.list.map(row => [
-      Number(row[0]), row[1], row[2], row[3], row[4], row[5], Number(row[6]), "", 0, "", "", "",
+      Number(row[0]), row[1], row[2], row[3], row[4], row[5], candleCloseTime(Number(row[0]), "1d"), "", 0, "", "", "",
     ] as Kline).reverse();
-    if (!isThreeDay) return daily;
+    if (!isThreeDay) return daily.map(candle => { candle[6] = candleCloseTime(candle[0], interval); return candle; });
 
     const bucketMs = 3 * 24 * 60 * 60 * 1000;
     const buckets = new Map<number, Kline>();
