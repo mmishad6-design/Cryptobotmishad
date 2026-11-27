@@ -264,6 +264,7 @@ export function connectOrderBookStream(symbol: string, callbacks: OrderBookCallb
     let synchronized = false;
     let snapshotReady = false;
     let snapshotLoading = false;
+    let nextSnapshotAttempt = 0;
     let lastUpdateId = 0;
     let bids = new Map<string, string>();
     let asks = new Map<string, string>();
@@ -296,7 +297,7 @@ export function connectOrderBookStream(symbol: string, callbacks: OrderBookCallb
     };
 
     const loadSnapshot = async () => {
-      if (snapshotLoading || stopped || currentGeneration !== generation) return;
+      if (snapshotLoading || stopped || currentGeneration !== generation || Date.now() < nextSnapshotAttempt) return;
       snapshotLoading = true;
       try {
         const response = await fetch("https://api.binance.com/api/v3/depth?symbol=" + encodeURIComponent(symbol) + "&limit=1000", { cache: "no-store" });
@@ -326,10 +327,18 @@ export function connectOrderBookStream(symbol: string, callbacks: OrderBookCallb
           }
         }
         if (synchronized) callbacks.onStatus("live", "Binance Spot depth WebSocket");
+        else {
+          const sort = (book: Map<string, string>, descending: boolean): OrderBookLevel[] =>
+            [...book.entries()]
+              .sort((a, b) => descending ? Number(b[0]) - Number(a[0]) : Number(a[0]) - Number(b[0]))
+              .slice(0, 20);
+          callbacks.onData({ bids: sort(bids, true), asks: sort(asks, false), updatedAt: new Date().toISOString() });
+        }
       } catch (error) {
         if (!stopped && currentGeneration === generation) {
           callbacks.onStatus("error", error instanceof Error ? error.message : "Order book snapshot failed");
-          snapshotTimer = window.setTimeout(() => { snapshotLoading = false; void loadSnapshot(); }, 2500);
+          nextSnapshotAttempt = Date.now() + 2500;
+          snapshotTimer = window.setTimeout(() => { nextSnapshotAttempt = 0; snapshotLoading = false; void loadSnapshot(); }, 2500);
         }
       } finally {
         snapshotLoading = false;
