@@ -125,3 +125,51 @@ export function getEmaTrend(candles: Kline[]): "Bullish" | "Bearish" | "Neutral"
   if (close[last] < (fast[last] as number) && (fast[last] as number) < (slow[last] as number)) return "Bearish";
   return "Neutral";
 }
+
+export type StructureResult = {
+  support: number | null;
+  resistance: number | null;
+  event: "Bullish BOS" | "Bearish BOS" | "Bullish CHoCH" | "Bearish CHoCH" | "No confirmed break";
+  trend: "Bullish" | "Bearish" | "Neutral";
+  swingHigh: number | null;
+  swingLow: number | null;
+};
+
+export function calculateMarketStructure(candles: Kline[]): StructureResult {
+  const highs = candles.map(k => Number(k[2]));
+  const lows = candles.map(k => Number(k[3]));
+  const closes = candles.map(k => Number(k[4]));
+  const pivotHighs: Array<{ index: number; price: number }> = [];
+  const pivotLows: Array<{ index: number; price: number }> = [];
+  const wing = 3;
+  for (let i = wing; i < candles.length - wing; i++) {
+    const leftHighs = highs.slice(i - wing, i);
+    const rightHighs = highs.slice(i + 1, i + wing + 1);
+    const leftLows = lows.slice(i - wing, i);
+    const rightLows = lows.slice(i + 1, i + wing + 1);
+    if (highs[i] > Math.max(...leftHighs, ...rightHighs)) pivotHighs.push({ index: i, price: highs[i] });
+    if (lows[i] < Math.min(...leftLows, ...rightLows)) pivotLows.push({ index: i, price: lows[i] });
+  }
+  const lastClose = closes.at(-1);
+  const lastHigh = pivotHighs.at(-1)?.price ?? null;
+  const lastLow = pivotLows.at(-1)?.price ?? null;
+  const previousHigh = pivotHighs.at(-2)?.price ?? null;
+  const previousLow = pivotLows.at(-2)?.price ?? null;
+  const previousClose = closes.at(-2);
+  let event: StructureResult["event"] = "No confirmed break";
+  let trend: StructureResult["trend"] = "Neutral";
+  if (lastClose !== undefined && lastHigh !== null && lastClose > lastHigh) {
+    const wasBearish = previousClose !== undefined && previousLow !== null && previousClose < previousLow;
+    event = wasBearish ? "Bullish CHoCH" : "Bullish BOS";
+    trend = "Bullish";
+  } else if (lastClose !== undefined && lastLow !== null && lastClose < lastLow) {
+    const wasBullish = previousClose !== undefined && previousHigh !== null && previousClose > previousHigh;
+    event = wasBullish ? "Bearish CHoCH" : "Bearish BOS";
+    trend = "Bearish";
+  }
+  const supportCandidates = pivotLows.filter(p => lastClose === undefined || p.price < lastClose);
+  const resistanceCandidates = pivotHighs.filter(p => lastClose === undefined || p.price > lastClose);
+  const support = supportCandidates.at(-1)?.price ?? lastLow;
+  const resistance = resistanceCandidates.at(-1)?.price ?? lastHigh;
+  return { support, resistance, event, trend, swingHigh: lastHigh, swingLow: lastLow };
+}
