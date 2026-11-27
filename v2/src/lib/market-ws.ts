@@ -39,7 +39,7 @@ function startFailoverSocket(
       if (fallback) {
         const args = SYMBOLS.map(symbol => "tickers." + symbol);
         // The Bybit subscription payload is supplied by the caller via its URL protocol.
-        if (current.protocol === "bybit-spot") current.send(JSON.stringify({ op: "subscribe", args }));
+        current.send(JSON.stringify({ op: "subscribe", args }));
       }
       onStatus("connected", source);
       window.clearTimeout(watchdogTimer);
@@ -92,7 +92,7 @@ export function connectTickerStream(callbacks: StreamCallbacks<MarketTicker>) {
   const streams = SYMBOLS.map(symbol => symbol.toLowerCase() + "@ticker").join("/");
   const primary = () => new WebSocket("wss://stream.binance.com:9443/stream?streams=" + streams);
   const fallback = () => {
-    const socket = new WebSocket("wss://stream.bybit.com/v5/public/spot", "bybit-spot");
+    const socket = new WebSocket("wss://stream.bybit.com/v5/public/spot");
     return socket;
   };
   return startFailoverSocket(primary, fallback, (event, source) => {
@@ -174,7 +174,7 @@ function startKlineSocket(
       callbacks.onStatus("connected", source);
       window.clearTimeout(watchdogTimer);
       watchdogTimer = window.setTimeout(() => {
-        if (!received && !fallbackMode && !stopped) { current.close(); connect(true); }
+        if (!received && !fallbackMode && !stopped) { current.close(); }
       }, 9000);
     };
     current.onmessage = event => {
