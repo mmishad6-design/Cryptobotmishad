@@ -225,3 +225,180 @@ function startKlineSocket(
     socket?.close();
   };
 }
+
+
+export type OrderBookLevel = [string, string];
+export type LiveOrderBook = { bids: OrderBookLevel[]; asks: OrderBookLevel[]; updatedAt: string };
+type DepthEvent = {
+  U: number;
+  u: number;
+  pu?: number;
+  E?: number;
+  b: OrderBookLevel[];
+  a: OrderBookLevel[];
+};
+
+type OrderBookCallbacks = {
+  onData: (book: LiveOrderBook) => void;
+  onStatus: (status: "connecting" | "live" | "stale" | "reconnecting" | "error", message: string) => void;
+};
+
+/**
+ * Maintains a correctly sequenced local Binance Spot order book.
+ * A REST snapshot establishes the initial state; diff-depth events then
+ * update that state using Binance's U/u/pu sequence identifiers.
+ */
+export function connectOrderBookStream(symbol: string, callbacks: OrderBookCallbacks) {
+  let socket: WebSocket | null = null;
+  let stopped = false;
+  let retry = 0;
+  let reconnectTimer = 0;
+  let staleTimer = 0;
+  let snapshotTimer = 0;
+  let generation = 0;
+
+  const connect = () => {
+    if (stopped) return;
+    const currentGeneration = ++generation;
+    const buffered: DepthEvent[] = [];
+    let synchronized = false;
+    let snapshotLoading = false;
+    let lastUpdateId = 0;
+    let bids = new Map<string, string>();
+    let asks = new Map<string, string>();
+    callbacks.onStatus(retry ? "reconnecting" : "connecting", "Binance Spot depth stream");
+
+    const publish = () => {
+      const sort = (book: Map<string, string>, descending: boolean): OrderBookLevel[] =>
+        [...book.entries()]
+          .sort((a, b) => descending ? Number(b[0]) - Number(a[0]) : Number(a[0]) - Number(b[0]))
+          .slice(0, 20);
+      callbacks.onData({ bids: sort(bids, true), asks: sort(asks, false), updatedAt: new Date().toISOString() });
+      callbacks.onStatus("live", "Binance Spot depth WebSocket");
+      window.clearTimeout(staleTimer);
+      staleTimer = window.setTimeout(() => {
+        if (!stopped && currentGeneration === generation) callbacks.onStatus("stale", "No depth update received for 5 seconds");
+      }, 5000);
+    };
+
+    const apply = (event: DepthEvent) => {
+      for (const [price, quantity] of event.b) {
+        if (Number(quantity) === 0) bids.delete(price);
+        else bids.set(price, quantity);
+      }
+      for (const [price, quantity] of event.a) {
+        if (Number(quantity) === 0) asks.delete(price);
+        else asks.set(price, quantity);
+      }
+      lastUpdateId = event.u;
+      publish();
+    };
+
+    const loadSnapshot = async () => {
+      if (snapshotLoading || stopped || currentGeneration !== generation) return;
+      snapshotLoading = true;
+      try {
+        const response = await fetch("https://api.binance.com/api/v3/depth?symbol=" + encodeURIComponent(symbol) + "&limit=1000", { cache: "no-store" });
+        if (!response.ok) throw new Error("Order book snapshot unavailable (" + response.status + ")");
+        const snapshot = await response.json() as { lastUpdateId?: number; bids?: OrderBookLevel[]; asks?: OrderBookLevel[] };
+        if (stopped || currentGeneration !== generation) return;
+        if (!Number.isFinite(snapshot.lastUpdateId) || !Array.isArray(snapshot.bids) || !Array.isArray(snapshot.asks)) {
+          throw new Error("Invalid order book snapshot");
+        }
+        bids = new Map(snapshot.bids.filter(level => Number(level[1]) > 0));
+        asks = new Map(snapshot.asks.filter(level => Number(level[1]) > 0));
+        lastUpdateId = Number(snapshot.lastUpdateId);
+        const pending = buffered.splice(0);
+        for (const event of pending) {
+          if (event.u <= lastUpdateId) continue;
+          if (event.U > lastUpdateId + 1 || (event.pu !== undefined && synchronized && event.pu !== lastUpdateId)) {
+            synchronized = false;
+            callbacks.onStatus("stale", "Depth sequence gap · resynchronizing");
+            snapshotLoading = false;
+            void loadSnapshot();
+            return;
+          }
+          if (event.U <= lastUpdateId + 1 && event.u >= lastUpdateId + 1) {
+            apply(event);
+            synchronized = true;
+          }
+        }
+        if (synchronized) callbacks.onStatus("live", "Binance Spot depth WebSocket");
+      } catch (error) {
+        if (!stopped && currentGeneration === generation) {
+          callbacks.onStatus("error", error instanceof Error ? error.message : "Order book snapshot failed");
+          snapshotTimer = window.setTimeout(() => { snapshotLoading = false; void loadSnapshot(); }, 2500);
+        }
+      } finally {
+        snapshotLoading = false;
+      }
+    };
+
+    try {
+      socket = new WebSocket("wss://stream.binance.com:9443/ws/" + symbol.toLowerCase() + "@depth@100ms");
+    } catch {
+      scheduleReconnect();
+      return;
+    }
+    const current = socket;
+    current.onopen = () => {
+      if (stopped || socket !== current) return;
+      retry = 0;
+      void loadSnapshot();
+    };
+    current.onmessage = event => {
+      if (stopped || socket !== current) return;
+      try {
+        const message = JSON.parse(String(event.data));
+        const depth = (message.data ?? message) as DepthEvent;
+        if (!Number.isFinite(depth?.U) || !Number.isFinite(depth?.u) || !Array.isArray(depth.b) || !Array.isArray(depth.a)) return;
+        if (!synchronized) {
+          buffered.push(depth);
+          if (buffered.length > 2000) {
+            buffered.splice(0, buffered.length - 1000);
+            callbacks.onStatus("stale", "Depth buffer overflow · resynchronizing");
+            snapshotLoading = false;
+            void loadSnapshot();
+          }
+          return;
+        }
+        if (depth.u <= lastUpdateId) return;
+        if (depth.U > lastUpdateId + 1 || (depth.pu !== undefined && depth.pu !== lastUpdateId)) {
+          synchronized = false;
+          buffered.push(depth);
+          callbacks.onStatus("stale", "Depth sequence gap · resynchronizing");
+          void loadSnapshot();
+          return;
+        }
+        apply(depth);
+      } catch {
+        // Ignore malformed or non-depth stream messages.
+      }
+    };
+    current.onerror = () => { if (!stopped && socket === current) current.close(); };
+    current.onclose = () => {
+      if (stopped || socket !== current) return;
+      window.clearTimeout(staleTimer);
+      window.clearTimeout(snapshotTimer);
+      scheduleReconnect();
+    };
+  };
+
+  const scheduleReconnect = () => {
+    if (stopped) return;
+    retry += 1;
+    callbacks.onStatus("reconnecting", "Binance Spot depth reconnecting");
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = window.setTimeout(connect, Math.min(15000, 1000 * Math.pow(2, Math.min(retry, 4))));
+  };
+
+  connect();
+  return () => {
+    stopped = true;
+    generation += 1;
+    window.clearTimeout(reconnectTimer);
+    window.clearTimeout(staleTimer);
+    window.clearTimeout(snapshotTimer);
+    socket?.close();
+  };
+}
