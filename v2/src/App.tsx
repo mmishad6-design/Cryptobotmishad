@@ -273,6 +273,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   const [candles, setCandles] = useState<Kline[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
+  const [chartUpdatedAt, setChartUpdatedAt] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [userRole, setUserRole] = useState<"admin" | "super_admin" | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
@@ -340,7 +341,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
       if (wsConnected) return;
       try {
         const result = await getMarketKlines(chartSymbol, chartInterval, 120);
-        if (alive && !wsConnected) { setCandles(result.data); setChartSource(result.source); setChartError(""); }
+        if (alive && !wsConnected) { setCandles(result.data); setChartSource(result.source); setChartUpdatedAt(result.receivedAt); setChartError(""); }
       } catch (error) {
         if (alive && !wsConnected) setChartError(error instanceof Error ? error.message : "Chart data unavailable");
       } finally {
@@ -358,6 +359,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
           merged.set(Number(candle[0]), candle);
           return [...merged.values()].sort((a, b) => Number(a[0]) - Number(b[0])).slice(-120);
         });
+        setChartUpdatedAt(new Date().toISOString());
         setChartError("");
         if (firstLoad) { setChartLoading(false); firstLoad = false; }
       },
@@ -502,7 +504,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
             <div className="market-toolbar"><div><h2>Price analysis</h2><p>Live exchange OHLC candles</p></div><div className="chart-controls"><select value={chartSymbol} onChange={e=>setChartSymbol(e.target.value)}>{["BTCUSDT","ETHUSDT","SUIUSDT","SOLUSDT"].map(s=><option key={s}>{s}</option>)}</select><select value={chartInterval} onChange={e=>setChartInterval(e.target.value)}>{["15m","1h","4h","1d"].map(t=><option key={t}>{t}</option>)}</select></div></div>
             <div className="chart-meta"><span>LAST PRICE <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].lastPrice).toLocaleString("en-US",{maximumFractionDigits:8}) : "—"}</b></span><span>24H CHANGE <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].priceChangePercent).toFixed(2)+"%" : "—"}</b></span><span>24H HIGH <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].highPrice).toLocaleString() : "—"}</b></span><span>24H LOW <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].lowPrice).toLocaleString() : "—"}</b></span><span>24H VOLUME <b>{marketTickers[chartSymbol] ? (Number(marketTickers[chartSymbol].quoteVolume)/1e6).toFixed(2)+"M USDT" : "—"}</b></span></div>
             <div className="live-chart"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading market candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length ? <svg viewBox="0 0 1000 300" preserveAspectRatio="none"><polyline fill="none" stroke="#62d0aa" strokeWidth="2" vectorEffect="non-scaling-stroke" points={candles.map((k,i)=>{const vals=candles.map(x=>Number(x[4]));const lo=Math.min(...vals),hi=Math.max(...vals);return (5+i/(candles.length-1)*990)+","+(280-(Number(k[4])-lo)/(hi-lo||1)*250);}).join(" ")}/></svg> : <div className="chart-center">No candle data available.</div>}</div>
-            <div className="chart-legend"><span className={marketError ? "market-feed-error" : "market-feed-live"}>{marketError ? "FEED ERROR" : chartWsStatus === "connected" ? "LIVE · WS" : marketUpdatedAt ? "REST BACKUP" : "CONNECTING"}</span> {chartSource} · {candles.length} candles · WebSocket updates · REST backup · last tick {marketUpdatedAt ? new Date(marketUpdatedAt).toLocaleTimeString() : "—"} {chartError ? " · "+chartError : ""}</div>
+            <div className="chart-legend"><span className={marketError ? "market-feed-error" : "market-feed-live"}>{chartError ? "FEED ERROR" : chartWsStatus === "connected" ? "LIVE · WS" : chartUpdatedAt ? "REST BACKUP" : "CONNECTING"}</span> {chartSource} · {candles.length} candles · WebSocket updates · REST backup · last tick {chartUpdatedAt ? new Date(chartUpdatedAt).toLocaleTimeString() : "—"} {chartError ? " · "+chartError : ""}</div>
             <div className="table-head candle-head"><span>TIME</span><span>OPEN</span><span>HIGH</span><span>LOW</span><span>CLOSE</span></div>{candles.slice(-10).reverse().map(k=><div className="candle-row" key={String(k[0])}><span>{new Date(k[0]).toLocaleString()}</span><span>{Number(k[1]).toPrecision(7)}</span><span>{Number(k[2]).toPrecision(7)}</span><span>{Number(k[3]).toPrecision(7)}</span><b>{Number(k[4]).toPrecision(7)}</b></div>)}
           </section>}
           {activePage === "Signal Center" && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><Crosshair size={22}/></div><b>NO TRADE · Signal engine not live</b><span>We will not invent BUY/SELL signals. Strategy validation and Bangla rejection reasons will be added before live signals are shown.</span><strong>NO TRADE</strong></div></section>}
