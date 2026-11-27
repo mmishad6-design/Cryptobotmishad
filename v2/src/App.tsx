@@ -58,6 +58,25 @@ function AuthScreen() {
     } finally { setBusy(false); }
   }
 
+  async function resendConfirmation() {
+    if (!supabase || !email.trim()) {
+      setError("Enter the email address you used to create your account first.");
+      return;
+    }
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const { error: resendError } = await supabase.auth.resend({
+        type: "signup",
+        email: email.trim(),
+        options: { emailRedirectTo: window.location.origin },
+      });
+      if (resendError) throw resendError;
+      setMessage("If this account still needs email confirmation, a new confirmation link has been requested. Check your inbox and Spam folder.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not request a confirmation email. Please try again later.");
+    } finally { setBusy(false); }
+  }
+
   async function resetPassword() {
     if (!supabase || !email) { setError("Enter your email address first."); return; }
     setBusy(true); setError(""); setMessage("");
@@ -85,6 +104,7 @@ function AuthScreen() {
         {error && <div className="auth-message error">{error}</div>}
         {message && <div className="auth-message success">{message}</div>}
         <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin"/> : null}{mode === "login" ? "Sign in to CryptoBot" : "Create account"}</button>
+        {mode === "login" && <button type="button" className="forgot-btn" onClick={resendConfirmation} disabled={busy}>Resend confirmation email</button>}
       </form>
       <div className="auth-security"><ShieldCheck size={16}/><span>Public market data only. No exchange API secrets or real-money execution.</span></div>
       <div className="auth-credit">DESIGNED BY MISHAD</div>
