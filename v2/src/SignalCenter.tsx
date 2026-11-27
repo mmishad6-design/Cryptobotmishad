@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, AlertTriangle, RefreshCw, ShieldCheck } from "lucide-react";
-import { getMarketKlines, type Kline } from "./lib/market";
+import { getConsensusKlines, type Kline } from "./lib/market";
 import { calculateIndicators, calculateMarketStructure, getEmaTrend } from "./lib/indicators";
 import { evaluateAdvancedSignal } from "./core/advancedSignalEngine";
 
@@ -36,7 +36,8 @@ function frameFrom(rows:Kline[]):Frame|null {
   const takerBuy=rows.slice(-20).reduce((s,r)=>s+Number(r[9]||0),0);
   const total=rows.slice(-20).reduce((s,r)=>s+Number(r[5]||0),0);
   const takerSell=total-takerBuy;
-  const rawTrend=getEmaTrend(rows);\n  const trend:Frame["trend"]=rawTrend==="Bullish"?"BULLISH":rawTrend==="Bearish"?"BEARISH":"MIXED";
+  const rawTrend=getEmaTrend(rows);
+  const trend:Frame["trend"]=rawTrend==="Bullish"?"BULLISH":rawTrend==="Bearish"?"BEARISH":"MIXED";
   if(ind.rsi14===null||ind.atr14===null||!close||!Number.isFinite(close))return null;
   return {close,trend,rsi:ind.rsi14,adx:adxValue(rows),volumeRatio:baseline>0?recent/baseline:0,atr:ind.atr14,structure:structure.event,takerRatio:takerSell>0?takerBuy/takerSell:0};
 }
@@ -53,13 +54,14 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
     setLoading(true);setError("");setEvaluation(null);
     try{
       const results=await Promise.all(FRAMES.map(async interval=>{
-        const response=await getMarketKlines(symbol,interval,240);
+        const response=await getConsensusKlines(symbol,interval,240,market);
         const frame=frameFrom(response.data);
         return [interval,frame] as const;
       }));
       const data=Object.fromEntries(results.filter((x):x is [typeof FRAMES[number],Frame]=>Boolean(x[1])));
       setFrameStatus(Object.fromEntries(results.map(([tf,frame])=>[tf,frame?"READY":"INSUFFICIENT DATA"])));
       const result=evaluateAdvancedSignal({data,market,entry:livePrice>0?livePrice:undefined,accountBalance:Number(balance)>0?Number(balance):null,leverage:market==="Spot"?1:leverage,flow:{depthRatio}});
+      if(results.some(([,frame])=>!frame)) throw new Error("এক বা একাধিক timeframe-এ পর্যাপ্ত multi-exchange data পাওয়া যায়নি।");
       setEvaluation(result as Evaluation);setUpdatedAt(new Date().toISOString());
     }catch(e){setError(e instanceof Error?e.message:"Market data load failed.");}
     finally{setLoading(false);}
@@ -70,7 +72,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
   return <div style={{display:"grid",gap:14}}>
     <section className="panel" style={{padding:16}}>
       <div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap",alignItems:"center"}}>
-        <div><div className="eyebrow">RULE-BASED · BINANCE SPOT DATA</div><h2 style={{margin:"5px 0"}}>Advanced Signal Engine</h2><p style={{margin:0,color:"var(--muted)",fontSize:12}}>Pair: {symbol} · Public data only · Manual execution</p></div>
+        <div><div className="eyebrow">MULTI-EXCHANGE · PUBLIC MARKET DATA</div><h2 style={{margin:"5px 0"}}>Advanced Signal Engine</h2><p style={{margin:0,color:"var(--muted)",fontSize:12}}>Pair: {symbol} · Binance + Bybit{market==="Spot"?" + OKX":""} · Manual execution</p></div>
         <button className="outline-btn" onClick={()=>void run()} disabled={loading}><RefreshCw size={14} style={{marginRight:6}}/>{loading?"Analyzing…":"Refresh analysis"}</button>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:9,marginTop:16}}>
@@ -85,7 +87,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
       {error&&<div className="auth-message error" style={{marginTop:12}}>{error}</div>}
     </section>
     <section className="panel" style={{padding:16}}>
-      {!evaluation?<div className="empty-state"><Activity size={22}/><b>{loading?"Analyzing five timeframes…":"Waiting for analysis"}</b><span>Signal will appear only after all required market data is validated.</span></div>:<>
+      {!evaluation?<div className="empty-state"><Activity size={22}/><b>{loading?"Analyzing five timeframes…":"Waiting for analysis"}</b><span>Signal দেখানোর আগে একাধিক exchange-এর candle data মিলিয়ে যাচাই করা হবে।</span></div>:<>
         <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
           <div><div className="eyebrow">CURRENT DECISION · {market.toUpperCase()}</div><h2 style={{fontSize:25,margin:"6px 0",color:evaluation.decision==="NO TRADE"?"var(--text-2)":evaluation.decision==="LONG"?"#42d2a3":"#f07883"}}>{market==="Spot"&&evaluation.decision==="LONG"?"BUY":evaluation.decision==="SHORT"?"SHORT":evaluation.decision}</h2><small style={{color:"var(--muted)"}}>Score {evaluation.score}/100 · Minimum 80 · {updatedAt?new Date(updatedAt).toLocaleTimeString():""}</small></div>
           <div style={{fontSize:32,fontWeight:750,fontVariantNumeric:"tabular-nums"}}>{evaluation.score}<small style={{fontSize:12,color:"var(--muted)"}}>/100</small></div>
