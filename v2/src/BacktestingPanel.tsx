@@ -48,10 +48,11 @@ export default function BacktestingPanel({symbol}:{symbol:string}){
     setBusy(true);setError("");setResult(null);setInfo("");
     try{
       const responses=await Promise.all(FRAMES.map(tf=>getConsensusKlines(symbol,tf,300,market)));
-      const bad=responses.findIndex(r=>r.data.length<60||r.maxSpreadPct>0.5);
+      const closedHistories=responses.map(r=>r.data.filter(k=>+k[6]<=Date.now()));
+      const bad=responses.findIndex((r,i)=>closedHistories[i].length<60||r.maxSpreadPct>0.5);
       if(bad>=0)throw new Error(FRAMES[bad].toUpperCase()+" timeframe-এ পর্যাপ্ত বা নির্ভরযোগ্য multi-exchange candle নেই।");
-      const histories=Object.fromEntries(FRAMES.map((tf,i)=>[tf,responses[i].data]));
-      const base=histories["5m"] as Kline[];
+      const histories=Object.fromEntries(FRAMES.map((tf,i)=>[tf,closedHistories[i]])) as Record<string,Kline[]>;
+      const base=histories["5m"];
       const rows=base.map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
       const initialBalance=Number(balance);
       if(!Number.isFinite(initialBalance)||initialBalance<=0)throw new Error("শুরুর balance সঠিকভাবে দাও।");
