@@ -132,6 +132,19 @@ function Dashboard({ session }: { session: Session }) {
   const [displayName, setDisplayName] = useState("");
   const [userRole, setUserRole] = useState<"admin" | "super_admin" | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [siteSettings, setSiteSettings] = useState({
+    maintenance_mode: false,
+    announcement_enabled: false,
+    announcement: "",
+    trading_enabled: false,
+    min_signal_quality: 85,
+  });
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const [settingsError, setSettingsError] = useState("");
+  const [databaseStatus, setDatabaseStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [workerStatus, setWorkerStatus] = useState<"checking" | "online" | "offline">("checking");
   const [marketTickers, setMarketTickers] = useState<Record<string, MarketTicker>>({});
   const [marketUpdatedAt, setMarketUpdatedAt] = useState("");
   const [marketError, setMarketError] = useState("");
@@ -167,6 +180,54 @@ function Dashboard({ session }: { session: Session }) {
     }
     return () => { alive = false; };
   }, [session.user.id]);
+  useEffect(() => {
+    if (!adminOpen || !userRole || !supabase) return;
+    let alive = true;
+    setSettingsLoading(true);
+    setSettingsError("");
+    supabase.from("site_settings")
+      .select("maintenance_mode,announcement_enabled,announcement,trading_enabled,min_signal_quality")
+      .eq("id", true).single()
+      .then(({ data, error }) => {
+        if (!alive) return;
+        if (error) {
+          setDatabaseStatus("offline");
+          setSettingsError(error.message);
+        } else {
+          setDatabaseStatus("online");
+          if (data) setSiteSettings({
+            maintenance_mode: data.maintenance_mode,
+            announcement_enabled: data.announcement_enabled,
+            announcement: data.announcement,
+            trading_enabled: data.trading_enabled,
+            min_signal_quality: data.min_signal_quality,
+          });
+        }
+        setSettingsLoading(false);
+      });
+    fetch("/api/health").then(response => {
+      if (!response.ok) throw new Error("Worker health check failed");
+      return response.json();
+    }).then(() => { if (alive) setWorkerStatus("online"); })
+      .catch(() => { if (alive) setWorkerStatus("offline"); });
+    return () => { alive = false; };
+  }, [adminOpen, userRole]);
+
+  async function saveSiteSettings() {
+    if (!supabase || !userRole) return;
+    setSettingsSaving(true); setSettingsError(""); setSettingsMessage("");
+    const { error } = await supabase.from("site_settings").update({
+      maintenance_mode: siteSettings.maintenance_mode,
+      announcement_enabled: siteSettings.announcement_enabled,
+      announcement: siteSettings.announcement,
+      trading_enabled: siteSettings.trading_enabled,
+      min_signal_quality: siteSettings.min_signal_quality,
+    }).eq("id", true);
+    setSettingsSaving(false);
+    if (error) setSettingsError(error.message);
+    else setSettingsMessage("Settings saved securely to Supabase.");
+  }
+
   async function signOut() {
     if (!supabase) return;
     setSigningOut(true);
@@ -188,7 +249,37 @@ function Dashboard({ session }: { session: Session }) {
     <main className="main">
       <header className="topbar"><div className="crumb">Workspace <span>/</span> {adminOpen ? "Admin Control" : "Overview"}</div><div className="top-actions"><div className="market-status"><i/> {userRole ? userRole === "super_admin" ? "SUPER ADMIN" : "ADMIN" : "AUTHENTICATED WORKSPACE"}</div><button className="icon-btn" aria-label="Search"><Search size={18}/></button><button className="icon-btn" aria-label="Notifications"><Bell size={18}/></button><div className="avatar">{(displayName || session.user.email || "M").slice(0,1).toUpperCase()}</div><button className="icon-btn" aria-label="Sign out" title={session.user.email} onClick={signOut} disabled={signingOut}><LogOut size={17}/></button></div></header>
       <section className="content">
-        {adminOpen && userRole ? <><div className="page-heading"><div><div className="eyebrow">RESTRICTED AREA <span>•</span> {userRole === "super_admin" ? "SUPER ADMIN" : "ADMIN"}</div><h1>Admin control center</h1><p>Administrative workspace for CryptoBot Mishad v2.</p></div><button className="outline-btn" onClick={() => setAdminOpen(false)}>Back to overview</button></div><div className="admin-welcome"><ShieldCheck size={22}/><div><b>{userRole === "super_admin" ? "Super Admin access verified" : "Admin access verified"}</b><span>{session.user.email} · Role is read from the protected Supabase role table.</span></div><span className="admin-role-pill">{userRole === "super_admin" ? "FULL ACCESS" : "ADMIN"}</span></div><div className="admin-grid"><article className="admin-card"><div className="admin-card-icon"><Settings2 size={18}/></div><b>Website controls</b><p>Maintenance mode, announcements, branding and feature switches.</p><small>CONTROL MODULE · NEXT PHASE</small></article><article className="admin-card"><div className="admin-card-icon"><UserRound size={18}/></div><b>User management</b><p>Review accounts, manage access and inspect user status.</p><small>CONTROL MODULE · NEXT PHASE</small></article><article className="admin-card"><div className="admin-card-icon"><Crosshair size={18}/></div><b>Trading system</b><p>Signal engine settings, supported pairs and paper-trading limits.</p><small>CONTROL MODULE · NEXT PHASE</small></article><article className="admin-card"><div className="admin-card-icon"><Activity size={18}/></div><b>System health</b><p>Market feed, Worker API, database health and audit history.</p><small>CONTROL MODULE · NEXT PHASE</small></article></div><div className="admin-security-note"><LockKeyhole size={15}/> Role checks are enforced by Supabase RLS. Privileged control actions will be executed server-side, never from browser-only checks.</div></> : <><div className="page-heading"><div><div className="eyebrow">PRIVATE WORKSPACE <span>•</span> {session.user.email}</div><h1>Market overview</h1><p>Your market intelligence, signals and risk in one place.</p></div><button className="outline-btn"><Command size={15}/> Command center <span>⌘ K</span></button></div>
+        {adminOpen && userRole ? <>
+          <div className="page-heading"><div><div className="eyebrow">RESTRICTED AREA <span>•</span> {userRole === "super_admin" ? "SUPER ADMIN" : "ADMIN"}</div><h1>Admin control center</h1><p>Manage website configuration and monitor connected services.</p></div><button className="outline-btn" onClick={() => setAdminOpen(false)}>Back to overview</button></div>
+          <div className="admin-welcome"><ShieldCheck size={22}/><div><b>{userRole === "super_admin" ? "Super Admin access verified" : "Admin access verified"}</b><span>{session.user.email} · Permissions are enforced by Supabase Row Level Security.</span></div><span className="admin-role-pill">{userRole === "super_admin" ? "FULL ACCESS" : "ADMIN"}</span></div>
+          <div className="admin-section-heading"><div><h2>Website controls</h2><p>Changes are saved to the protected site settings table.</p></div>{settingsLoading && <span className="admin-inline-status">Loading settings…</span>}</div>
+          <div className="admin-settings-grid">
+            <article className="admin-settings-card">
+              <div className="admin-control-row"><div><b>Maintenance mode</b><p>Configuration switch for planned maintenance.</p></div><label className="admin-switch"><input type="checkbox" checked={siteSettings.maintenance_mode} onChange={e=>setSiteSettings(s=>({...s,maintenance_mode:e.target.checked}))}/><span/></label></div>
+              <div className="admin-control-row"><div><b>Public announcement</b><p>Enable or disable the site announcement setting.</p></div><label className="admin-switch"><input type="checkbox" checked={siteSettings.announcement_enabled} onChange={e=>setSiteSettings(s=>({...s,announcement_enabled:e.target.checked}))}/><span/></label></div>
+              <label className="admin-field"><span>Announcement message</span><textarea value={siteSettings.announcement} onChange={e=>setSiteSettings(s=>({...s,announcement:e.target.value}))} maxLength={240} placeholder="Write a short announcement for users…"/></label>
+              <div className="admin-control-row"><div><b>Signal engine setting</b><p>Enable flag for the future signal engine.</p></div><label className="admin-switch"><input type="checkbox" checked={siteSettings.trading_enabled} onChange={e=>setSiteSettings(s=>({...s,trading_enabled:e.target.checked}))}/><span/></label></div>
+              <label className="admin-field"><span>Minimum signal quality <b>{siteSettings.min_signal_quality}%</b></span><input type="range" min="50" max="100" step="1" value={siteSettings.min_signal_quality} onChange={e=>setSiteSettings(s=>({...s,min_signal_quality:Number(e.target.value)}))}/></label>
+              {settingsError && <div className="auth-message error">{settingsError}</div>}
+              {settingsMessage && <div className="auth-message success">{settingsMessage}</div>}
+              <button className="auth-submit admin-save" onClick={saveSiteSettings} disabled={settingsSaving || settingsLoading}>{settingsSaving ? <LoaderCircle size={15} className="spin"/> : null}Save website settings</button>
+              <div className="admin-config-note"><LockKeyhole size={14}/> Settings persist in Supabase. Site-wide maintenance enforcement and signal-engine behavior are not active yet.</div>
+            </article>
+            <article className="admin-settings-card">
+              <div className="admin-section-heading compact"><div><h2>System health</h2><p>Live checks from this admin session.</p></div></div>
+              <div className="health-row"><span><Activity size={16}/> Cloudflare Worker API</span><strong className={workerStatus}>{workerStatus === "online" ? "ONLINE" : workerStatus === "offline" ? "OFFLINE" : "CHECKING"}</strong></div>
+              <div className="health-row"><span><ShieldCheck size={16}/> Supabase database / RLS</span><strong className={databaseStatus}>{databaseStatus === "online" ? "ONLINE" : databaseStatus === "offline" ? "ERROR" : "CHECKING"}</strong></div>
+              <div className="health-row"><span><CandlestickChart size={16}/> Binance market feed</span><strong className={marketError ? "offline" : marketUpdatedAt ? "online" : "checking"}>{marketError ? "ERROR" : marketUpdatedAt ? "LIVE" : "CHECKING"}</strong></div>
+              <div className="health-foot">Market feed last received: {marketUpdatedAt ? new Date(marketUpdatedAt).toLocaleString() : "Not received yet"}</div>
+              <button className="outline-btn health-refresh" onClick={()=>{setAdminOpen(false);window.setTimeout(()=>setAdminOpen(true),50);}}>Refresh health checks</button>
+            </article>
+          </div>
+          <div className="admin-grid admin-future-grid">
+            <article className="admin-card"><div className="admin-card-icon"><UserRound size={18}/></div><b>User management</b><p>Account directory, role assignment and account suspension require a protected server-side admin endpoint.</p><small>SECURE API · PLANNED</small></article>
+            <article className="admin-card"><div className="admin-card-icon"><Crosshair size={18}/></div><b>Trading system</b><p>Signal engine execution and paper-trading controls will be connected after the engine is implemented.</p><small>ENGINE · PLANNED</small></article>
+          </div>
+          <div className="admin-security-note"><LockKeyhole size={15}/> No service-role key is exposed in the browser. Admin updates pass through Supabase RLS policies.</div>
+        </> : <><div className="page-heading"><div><div className="eyebrow">PRIVATE WORKSPACE <span>•</span> {session.user.email}</div><h1>Market overview</h1><p>Your market intelligence, signals and risk in one place.</p></div><button className="outline-btn"><Command size={15}/> Command center <span>⌘ K</span></button></div>
         <div className="stats-grid">
           <article className="stat-card"><div className="stat-top">TOTAL MARKET CAP <span className="muted-pill">GLOBAL</span></div><div className="stat-value">—</div><div className="stat-foot">Market cap feed not connected</div></article>
           <article className="stat-card"><div className="stat-top">WATCHLIST VOLUME <span className="muted-pill">24H SPOT</span></div><div className="stat-value">{Object.values(marketTickers).reduce((sum, ticker) => sum + Number(ticker.quoteVolume || 0), 0).toLocaleString("en-US", {maximumFractionDigits:0})} <small>USDT</small></div><div className="stat-foot">24h quote volume · Binance Spot</div></article>
