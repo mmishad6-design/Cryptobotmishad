@@ -262,6 +262,7 @@ export function connectOrderBookStream(symbol: string, callbacks: OrderBookCallb
     const currentGeneration = ++generation;
     const buffered: DepthEvent[] = [];
     let synchronized = false;
+    let snapshotReady = false;
     let snapshotLoading = false;
     let lastUpdateId = 0;
     let bids = new Map<string, string>();
@@ -308,11 +309,13 @@ export function connectOrderBookStream(symbol: string, callbacks: OrderBookCallb
         bids = new Map(snapshot.bids.filter(level => Number(level[1]) > 0));
         asks = new Map(snapshot.asks.filter(level => Number(level[1]) > 0));
         lastUpdateId = Number(snapshot.lastUpdateId);
+        snapshotReady = true;
         const pending = buffered.splice(0);
         for (const event of pending) {
           if (event.u <= lastUpdateId) continue;
           if (event.U > lastUpdateId + 1 || (event.pu !== undefined && synchronized && event.pu !== lastUpdateId)) {
             synchronized = false;
+            snapshotReady = false;
             callbacks.onStatus("stale", "Depth sequence gap · resynchronizing");
             snapshotTimer = window.setTimeout(() => { snapshotLoading = false; void loadSnapshot(); }, 250);
             return;
@@ -352,19 +355,34 @@ export function connectOrderBookStream(symbol: string, callbacks: OrderBookCallb
         const depth = (message.data ?? message) as DepthEvent;
         if (!Number.isFinite(depth?.U) || !Number.isFinite(depth?.u) || !Array.isArray(depth.b) || !Array.isArray(depth.a)) return;
         if (!synchronized) {
-          buffered.push(depth);
-          if (!snapshotLoading) void loadSnapshot();
-          if (buffered.length > 2000) {
-            buffered.splice(0, buffered.length - 1000);
-            callbacks.onStatus("stale", "Depth buffer overflow · resynchronizing");
-            snapshotLoading = false;
-            void loadSnapshot();
+          if (!snapshotReady) {
+            buffered.push(depth);
+            if (!snapshotLoading) void loadSnapshot();
+            if (buffered.length > 2000) {
+              buffered.splice(0, buffered.length - 1000);
+              snapshotReady = false;
+              callbacks.onStatus("stale", "Depth buffer overflow · resynchronizing");
+              snapshotLoading = false;
+              void loadSnapshot();
+            }
+            return;
           }
+          if (depth.u <= lastUpdateId) return;
+          if (depth.U <= lastUpdateId + 1 && depth.u >= lastUpdateId + 1) {
+            apply(depth);
+            synchronized = true;
+            return;
+          }
+          snapshotReady = false;
+          buffered.push(depth);
+          callbacks.onStatus("stale", "Depth sequence gap · resynchronizing");
+          void loadSnapshot();
           return;
         }
         if (depth.u <= lastUpdateId) return;
         if (depth.U > lastUpdateId + 1 || (depth.pu !== undefined && depth.pu !== lastUpdateId)) {
           synchronized = false;
+          snapshotReady = false;
           buffered.push(depth);
           callbacks.onStatus("stale", "Depth sequence gap · resynchronizing");
           void loadSnapshot();
