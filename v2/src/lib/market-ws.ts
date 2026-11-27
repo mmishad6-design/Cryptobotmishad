@@ -174,7 +174,7 @@ function startKlineSocket(
       callbacks.onStatus("connected", source);
       window.clearTimeout(watchdogTimer);
       watchdogTimer = window.setTimeout(() => {
-        if (!received && !fallbackMode && !stopped) { current.close(); }
+        if (!received && !stopped) current.close();
       }, 9000);
     };
     current.onmessage = event => {
