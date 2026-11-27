@@ -1,12 +1,12 @@
 const SYMBOL=/^[A-Z0-9]{2,20}USDT$/;
 const INTERVALS=new Set(["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"]);
 const BYBIT:Record<string,string>={"1m":"1","3m":"3","5m":"5","15m":"15","30m":"30","1h":"60","2h":"120","4h":"240","6h":"360","8h":"480","12h":"720","1d":"D","3d":"D","1w":"W"};
-type Candle={time:number;open:number;high:number;low:number;close:number;volume:number;source:string};
+type Candle={time:number;open:number;high:number;low:number;close:number;volume:number;source:string;takerRatio?:number};
 async function json(url:string){const r=await fetch(url,{headers:{accept:"application/json"},signal:AbortSignal.timeout(7000)});if(!r.ok)throw Error("HTTP "+r.status);return r.json();}
 async function binance(symbol:string,interval:string,limit:number,market:string):Promise<Candle[]>{
  const base=market==="Futures"?"https://fapi.binance.com/fapi/v1/klines":"https://api.binance.com/api/v3/klines";
  const p=new URLSearchParams({symbol,interval,limit:String(limit)});const a=await json(base+"?"+p) as any[];
- return a.map(x=>({time:+x[0],open:+x[1],high:+x[2],low:+x[3],close:+x[4],volume:+x[5],source:"Binance"}));
+ return a.map(x=>({time:+x[0],open:+x[1],high:+x[2],low:+x[3],close:+x[4],volume:+x[5],source:"Binance",takerRatio:+x[9]>0&&(+x[5]-+x[9])>0?+x[9]/(+x[5]-+x[9]):undefined}));
 }
 async function bybit(symbol:string,interval:string,limit:number,market:string):Promise<Candle[]>{
  const p=new URLSearchParams({category:market==="Futures"?"linear":"spot",symbol,interval:BYBIT[interval],limit:String(limit)});
@@ -33,7 +33,7 @@ export const onRequestGet=async({request}:{request:Request})=>{
  const data=common.map(time=>{
   const cs=maps.map(m=>m.get(time)!);const median=(v:number[])=>v.sort((a,b)=>a-b)[Math.floor(v.length/2)];
   const open=median(cs.map(c=>c.open)),close=median(cs.map(c=>c.close));
-  return {time,open,close,high:Math.max(...cs.map(c=>c.high)),low:Math.min(...cs.map(c=>c.low)),volume:cs.reduce((s,c)=>s+c.volume,0)/cs.length,sourceCount:cs.length,spreadPct:(Math.max(...cs.map(c=>c.close))-Math.min(...cs.map(c=>c.close)))/close*100};
+  return {time,open,close,high:Math.max(...cs.map(c=>c.high)),low:Math.min(...cs.map(c=>c.low)),volume:cs.reduce((s,c)=>s+c.volume,0)/cs.length,takerRatio:cs.find(c=>c.takerRatio!==undefined)?.takerRatio??null,sourceCount:cs.length,spreadPct:(Math.max(...cs.map(c=>c.close))-Math.min(...cs.map(c=>c.close)))/close*100};
  });
  return Response.json({data,source:good.map(x=>x[0]?.source),exchanges:good.map(x=>x[0]?.source),market,receivedAt:new Date().toISOString(),consensus:true},{headers:{"cache-control":"public, max-age=2, s-maxage=3"}});
 };
