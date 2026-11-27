@@ -53,7 +53,8 @@ async function fromBybit(symbols: string[]): Promise<TickerRow[] | null> {
         lowPrice: row.lowPrice24h ?? "",
       };
     }));
-    return rows.every(Boolean) ? rows as TickerRow[] : null;
+    if (rows.some(row => row === null)) return null;
+    return rows.filter((row): row is TickerRow => row !== null);
   } catch { return null; }
 }
 
