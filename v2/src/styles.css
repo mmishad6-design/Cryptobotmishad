@@ -93,3 +93,5 @@
 .user-empty-panel .empty-state{min-height:230px}
 .user-empty-panel>p{margin-top:10px}
 @media(max-width:680px){.market-toolbar{align-items:flex-start;flex-direction:column}.chart-controls{width:100%}.chart-controls select{flex:1;min-width:0}.chart-meta{grid-template-columns:repeat(2,1fr)}.live-chart{height:230px}.candle-head,.candle-row{grid-template-columns:1.3fr repeat(4,1fr);font-size:7px;padding:9px 5px;gap:3px}.candle-row{font-size:7px}.candle-row b{font-size:7px}}
+
+.guest-entry-btn{width:100%;height:42px;margin-top:10px;display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid #365c50;border-radius:6px;background:#101d1a;color:#a8e4cc;font-size:11px;font-weight:600;cursor:pointer}.guest-entry-btn:hover{background:#172a24;border-color:#4b9c82}.guest-entry-note{text-align:center;color:#718397;font-size:9px;line-height:1.55;margin:8px 8px 0}.guest-signin-btn{height:32px;padding:0 12px;border:1px solid #365c50;border-radius:5px;background:#14231f;color:#a8e4cc;font-size:10px;font-weight:600;cursor:pointer}.guest-signin-btn:hover{background:#1a332a}
