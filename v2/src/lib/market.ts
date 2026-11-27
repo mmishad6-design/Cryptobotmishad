@@ -62,7 +62,9 @@ export async function getMarketKlines(symbol = "BTCUSDT", interval = "1h", limit
 function candleCloseTime(start:number,interval:string):number {
   if(interval==="1M"){const d=new Date(start);return Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,1)-1;}
   if(interval==="1w")return start+7*86_400_000-1;
-  const duration=interval==="3d"?3*86_400_000:Number.parseInt(interval,10)*(interval.endsWith("m")?60_000:3_600_000);
+  const unit=interval.slice(-1),amount=Number.parseInt(interval,10);
+  const multiplier=unit==="m"?60_000:unit==="h"?3_600_000:unit==="d"?86_400_000:0;
+  const duration=amount*multiplier;
   return Number.isFinite(duration)&&duration>0?start+duration-1:start;
 }
 type ConsensusCandle={time:number;open:number;high:number;low:number;close:number;volume:number;takerRatio:number|null;sourceCount:number;spreadPct:number};
