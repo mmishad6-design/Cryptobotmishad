@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { CandlestickSeries, ColorType, CrosshairMode, HistogramSeries, LineSeries, createChart, type UTCTimestamp } from "lightweight-charts";
+import { CandlestickSeries, ColorType, CrosshairMode, HistogramSeries, LineSeries, LineStyle, createChart, type UTCTimestamp } from "lightweight-charts";
 import type { Session } from "@supabase/supabase-js";
 import {
   Activity, ArrowDownRight, ArrowUpRight, Bell, CandlestickChart,
@@ -665,6 +665,9 @@ function CandlestickChartView({ candles, enabledIndicators, structure }: { candl
   const overlaySeriesRef = useRef<Record<string, any>>({});
   const structureSeriesRef = useRef<{ support: any; resistance: any } | null>(null);
   const fittedRef = useRef(false);
+  const [drawingMode, setDrawingMode] = useState(false);
+  const drawingModeRef = useRef(false);
+  const drawingLinesRef = useRef<any[]>([]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -730,6 +733,20 @@ function CandlestickChartView({ candles, enabledIndicators, structure }: { candl
       scaleMargins: { top: 0.84, bottom: 0 },
       visible: false,
     });
+    chart.subscribeClick(param => {
+      if (!drawingModeRef.current || !param.point) return;
+      const price = candleSeries.coordinateToPrice(param.point.y);
+      if (price === null || !Number.isFinite(price)) return;
+      const line = candleSeries.createPriceLine({
+        price,
+        color: "#e3bd76",
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: "LEVEL",
+      });
+      drawingLinesRef.current.push(line);
+    });
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
@@ -749,8 +766,11 @@ function CandlestickChartView({ candles, enabledIndicators, structure }: { candl
       overlaySeriesRef.current = {};
       structureSeriesRef.current = null;
       fittedRef.current = false;
+      drawingLinesRef.current = [];
     };
   }, []);
+
+  useEffect(() => { drawingModeRef.current = drawingMode; }, [drawingMode]);
 
   useEffect(() => {
     if (!candles.length || !candleSeriesRef.current || !volumeSeriesRef.current) return;
@@ -790,7 +810,13 @@ function CandlestickChartView({ candles, enabledIndicators, structure }: { candl
     }
   }, [candles, enabledIndicators, structure]);
 
-  return <div className="chart-engine" ref={containerRef} role="img" aria-label="Interactive live candlestick chart with volume"/>;
+  return <div style={{height:"100%",minHeight:0,display:"flex",flexDirection:"column"}}>
+    <div style={{display:"flex",justifyContent:"flex-end",gap:7,padding:"7px 10px",background:"#0b1219",borderBottom:"1px solid #263746"}}>
+      <button onClick={()=>setDrawingMode(value=>!value)} aria-pressed={drawingMode} style={{padding:"6px 10px",borderRadius:6,border:"1px solid "+(drawingMode?"#987b43":"#263746"),background:drawingMode?"#3b321d":"#111923",color:drawingMode?"#f0d28d":"#9aabba",fontSize:10}}>{drawingMode?"Tap chart to place level":"Draw horizontal level"}</button>
+      <button onClick={()=>{const series=candleSeriesRef.current;if(series){drawingLinesRef.current.forEach(line=>series.removePriceLine(line));drawingLinesRef.current=[];}}} style={{padding:"6px 10px",borderRadius:6,border:"1px solid #263746",background:"#111923",color:"#9aabba",fontSize:10}}>Clear drawings</button>
+    </div>
+    <div className="chart-engine" ref={containerRef} role="img" aria-label="Interactive live candlestick chart with volume" style={{flex:1,minHeight:0}}/>
+  </div>;
 }
 
 export default function App() {
