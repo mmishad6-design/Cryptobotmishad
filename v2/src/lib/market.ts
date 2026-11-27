@@ -59,13 +59,19 @@ export async function getMarketKlines(symbol = "BTCUSDT", interval = "1h", limit
   return { ...result, data: normalizeKlines(result.data) };
 }
 
+function candleCloseTime(start:number,interval:string):number {
+  if(interval==="1M"){const d=new Date(start);return Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1,1)-1;}
+  if(interval==="1w")return start+7*86_400_000-1;
+  const duration=interval==="3d"?3*86_400_000:Number.parseInt(interval,10)*(interval.endsWith("m")?60_000:3_600_000);
+  return Number.isFinite(duration)&&duration>0?start+duration-1:start;
+}
 export async function getConsensusKlines(symbol:string,interval:string,limit=240,market:"Spot"|"Futures"="Spot"){
   const response=await request<Array<{time:number;open:number;high:number;low:number;close:number;volume:number;takerRatio:number|null;sourceCount:number;spreadPct:number}>>(
     `/api/market/consensus?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}&market=${market}`
   );
   const data:Kline[]=response.data.map(c=>[
     c.time,String(c.open),String(c.high),String(c.low),String(c.close),String(c.volume),
-    c.time+1,"",0,String(c.takerRatio??""),"",""
+    candleCloseTime(c.time,interval),"",0,String(c.takerRatio??""),"",""
   ]);
   return {...response,data:normalizeKlines(data),exchanges:response.data.length?Math.max(...response.data.map(c=>c.sourceCount)):0, maxSpreadPct:Math.max(0,...response.data.slice(-3).map(c=>c.spreadPct))};
 }
