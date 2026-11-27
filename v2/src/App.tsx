@@ -377,8 +377,10 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   const depthImbalance = bidDepth + askDepth > 0 ? ((bidDepth - askDepth) / (bidDepth + askDepth)) * 100 : null;
   const bidWall = orderBook.bids.reduce((best, level) => Number(level[1]) > Number(best?.[1] ?? 0) ? level : best, orderBook.bids[0]);
   const askWall = orderBook.asks.reduce((best, level) => Number(level[1]) > Number(best?.[1] ?? 0) ? level : best, orderBook.asks[0]);
+  const orderBookAge = orderBook.updatedAt ? Date.now() - Date.parse(orderBook.updatedAt) : Infinity;
+  const orderBookLive = orderBookAge < 20_000;
   function updateIndicatorSetting(key: keyof IndicatorSettings, raw: string) {
-    const value = Math.max(2, Math.min(500, Math.floor(Number(raw) || 2)));
+    const value = Math.max(key === "macdSlow" ? 3 : 2, Math.min(key === "macdFast" ? 499 : 500, Math.floor(Number(raw) || 2)));
     setIndicatorSettings(current => {
       const next = { ...current, [key]: value };
       if (key === "macdFast" && next.macdFast >= next.macdSlow) next.macdSlow = Math.min(500, next.macdFast + 1);
@@ -458,14 +460,16 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   useEffect(() => {
     let alive = true;
     let busy = false;
+    setOrderBook({ bids: [], asks: [], updatedAt: "", error: "" });
     const refreshOrderBook = async () => {
       if (busy) return;
       busy = true;
       try {
         const response = await fetch(`https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(chartSymbol)}&limit=20`, { cache: "no-store" });
         if (!response.ok) throw new Error(`Order book unavailable (${response.status})`);
-        const payload = await response.json() as { bids: [string,string][]; asks: [string,string][] };
-        if (alive) setOrderBook({ bids: payload.bids ?? [], asks: payload.asks ?? [], updatedAt: new Date().toISOString(), error: "" });
+        const payload = await response.json() as { bids?: [string,string][]; asks?: [string,string][] };
+        if (!Array.isArray(payload.bids) || !Array.isArray(payload.asks)) throw new Error("Invalid order book response");
+        if (alive) setOrderBook({ bids: payload.bids, asks: payload.asks, updatedAt: new Date().toISOString(), error: "" });
       } catch (error) {
         if (alive) setOrderBook(current => ({ ...current, error: error instanceof Error ? error.message : "Order book unavailable" }));
       } finally { busy = false; }
@@ -651,7 +655,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
               <div style={{background:"var(--surface-2)",border:"1px solid var(--border-soft)",borderRadius:8,padding:12}}><div style={{fontSize:9,color:"var(--muted)",letterSpacing:1}}>RESISTANCE</div><b style={{display:"block",marginTop:6,fontSize:14}}>{marketStructure.resistance===null?"—":marketStructure.resistance.toFixed(4)}</b><small style={{fontSize:10,color:"var(--muted)"}}>Nearest confirmed swing high</small></div>
             </section>
             <section style={{padding:"12px 0 16px",borderTop:"1px solid var(--border-soft)"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><b style={{fontSize:12}}>Order book · Binance Spot</b><small style={{fontSize:10,color:"var(--muted)"}}>{orderBook.updatedAt?new Date(orderBook.updatedAt).toLocaleTimeString():"Waiting for feed"} · refresh 10s</small></div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><b style={{fontSize:12}}>Order book · Binance Spot</b><small style={{fontSize:10,color:"var(--muted)"}}>{orderBookLive?"LIVE":orderBook.updatedAt?"STALE":"WAITING"} · {orderBook.updatedAt?new Date(orderBook.updatedAt).toLocaleTimeString():"No snapshot"} · 10s refresh</small></div>
               {orderBook.error&&<small style={{color:"#f07883"}}>{orderBook.error}</small>}
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(115px,1fr))",gap:8,marginBottom:10}}>
                 {[{label:"SPREAD",value:spread===null?"—":spread.toFixed(4)},{label:"DEPTH IMBALANCE",value:depthImbalance===null?"—":(depthImbalance>0?"+":"")+depthImbalance.toFixed(1)+"%"},{label:"BID WALL",value:bidWall?Number(bidWall[0]).toFixed(4):"—"},{label:"ASK WALL",value:askWall?Number(askWall[0]).toFixed(4):"—"}].map(metric=><div key={metric.label} style={{background:"var(--surface-2)",border:"1px solid var(--border-soft)",borderRadius:7,padding:"8px 10px"}}><small style={{fontSize:8,color:"var(--muted)"}}>{metric.label}</small><b style={{display:"block",fontSize:12,marginTop:4}}>{metric.value}</b></div>)}
