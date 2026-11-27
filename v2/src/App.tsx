@@ -13,6 +13,28 @@ import { connectTickerStream, connectKlineStream } from "./lib/market-ws";
 
 const CHART_INTERVALS = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w","1M"] as const;
 
+const CHART_INTERVAL_MS: Record<string, number> = {
+  "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
+  "30m": 1_800_000, "1h": 3_600_000, "2h": 7_200_000,
+  "4h": 14_400_000, "6h": 21_600_000, "8h": 28_800_000,
+  "12h": 43_200_000, "1d": 86_400_000, "3d": 259_200_000,
+  "1w": 604_800_000,
+};
+
+function getCandleBucketStart(now: number, interval: string) {
+  if (interval === "1M") {
+    const date = new Date(now);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+  }
+  if (interval === "1w") {
+    const date = new Date(now);
+    const dayStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+    return dayStart - ((date.getUTCDay() + 6) % 7) * 86_400_000;
+  }
+  const duration = CHART_INTERVAL_MS[interval] ?? 3_600_000;
+  return Math.floor(now / duration) * duration;
+}
+
 const watchlist = [
   { symbol: "BTC", pair: "BTC / USDT", price: "—", change: "—", up: true },
   { symbol: "ETH", pair: "ETH / USDT", price: "—", change: "—", up: true },
@@ -336,6 +358,38 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
     const timer = window.setInterval(() => void refresh(), 30000);
     return () => { alive = false; stopStream(); window.clearInterval(timer); };
   }, []);
+  // Keep the active candle moving from the live ticker feed as well as
+  // the exchange kline stream. This is a visual OHLC fallback if kline WS
+  // packets are delayed or blocked; it uses the actual exchange last price.
+  const liveChartPrice = marketTickers[chartSymbol]?.lastPrice;
+  useEffect(() => {
+    const price = Number(liveChartPrice);
+    if (!Number.isFinite(price) || price <= 0) return;
+    const now = Date.now();
+    const bucketStart = getCandleBucketStart(now, chartInterval);
+    const bucketEnd = chartInterval === "1M"
+      ? Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth() + 1, 1) - 1
+      : bucketStart + (CHART_INTERVAL_MS[chartInterval] ?? 3_600_000) - 1;
+    setCandles(current => {
+      const next = [...current];
+      const last = next[next.length - 1];
+      if (last && Number(last[0]) === bucketStart) {
+        next[next.length - 1] = [
+          last[0], last[1],
+          String(Math.max(Number(last[2]), price)),
+          String(Math.min(Number(last[3]), price)),
+          String(price), last[5], last[6], String(bucketEnd),
+          last[8], last[9], last[10], last[11],
+        ];
+        return next;
+      }
+      if (last && Number(last[0]) > bucketStart) return current;
+      next.push([bucketStart, String(price), String(price), String(price), String(price), "0", 0, String(bucketEnd), 0, "0", "0", "0"]);
+      return next.slice(-120);
+    });
+    setChartUpdatedAt(new Date(now).toISOString());
+  }, [liveChartPrice, chartInterval]);
+
   useEffect(() => {
     let alive = true;
     let firstLoad = true;
