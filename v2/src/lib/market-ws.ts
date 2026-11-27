@@ -44,10 +44,7 @@ function startFailoverSocket(
       onStatus("connected", source);
       window.clearTimeout(watchdogTimer);
       watchdogTimer = window.setTimeout(() => {
-        if (!received && !fallback && !stopped) {
-          current.close();
-          connect(true);
-        }
+        if (!received && !stopped) current.close();
       }, 9000);
     };
     current.onmessage = event => {
