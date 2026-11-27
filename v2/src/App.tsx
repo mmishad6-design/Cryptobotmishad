@@ -24,7 +24,7 @@ const nav = [
   { label: "Backtesting", icon: SlidersHorizontal },
 ];
 
-function AuthScreen() {
+function AuthScreen({ onContinueGuest }: { onContinueGuest: () => void }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -88,6 +88,8 @@ function AuthScreen() {
         {message && <div className="auth-message success">{message}</div>}
         <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle size={16} className="spin"/> : null}{mode === "login" ? "Sign in to CryptoBot" : "Create account"}</button>
       </form>
+      <button type="button" className="guest-entry-btn" onClick={onContinueGuest}>Continue as guest <ArrowUpRight size={15}/></button>
+      <div className="guest-entry-note">Explore public market tools without creating an account. Sign in later to access your personal workspace.</div>
       <div className="auth-security"><ShieldCheck size={16}/><span>Public market data only. No exchange API secrets or real-money execution.</span></div>
       <div className="auth-credit">DESIGNED BY MISHAD</div>
     </div>
@@ -130,7 +132,7 @@ function PasswordRecoveryScreen({ onComplete }: { onComplete: () => void }) {
   </div></div>;
 }
 
-function Dashboard({ session }: { session: Session }) {
+function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: () => void }) {
   const [signingOut, setSigningOut] = useState(false);
   const [activePage, setActivePage] = useState("Overview");
   const [chartSymbol, setChartSymbol] = useState("BTCUSDT");
@@ -185,7 +187,7 @@ function Dashboard({ session }: { session: Session }) {
   }, [chartSymbol, chartInterval]);
   useEffect(() => {
     let alive = true;
-    if (supabase) {
+    if (supabase && session) {
       Promise.all([
         supabase.from("profiles").select("display_name").eq("id", session.user.id).maybeSingle(),
         supabase.from("user_roles").select("role").eq("user_id", session.user.id).maybeSingle(),
@@ -197,7 +199,7 @@ function Dashboard({ session }: { session: Session }) {
       });
     }
     return () => { alive = false; };
-  }, [session.user.id]);
+  }, [session?.user.id]);
   useEffect(() => {
     if (!adminOpen || !userRole || !supabase) return;
     let alive = true;
@@ -247,7 +249,7 @@ function Dashboard({ session }: { session: Session }) {
   }
 
   async function signOut() {
-    if (!supabase) return;
+    if (!supabase || !session) { onSignIn(); return; }
     setSigningOut(true);
     const { error } = await supabase.auth.signOut();
     if (error) { window.alert(error.message); setSigningOut(false); }
@@ -265,11 +267,11 @@ function Dashboard({ session }: { session: Session }) {
       <div className="sidebar-bottom"><div className="security"><ShieldCheck size={16}/><span>Read-only market access<br/><small>No exchange keys stored</small></span></div><div className="edition">Designed by <b>Mishad</b></div></div>
     </aside>
     <main className="main">
-      <header className="topbar"><div className="crumb">Workspace <span>/</span> {adminOpen ? "Admin Control" : "Overview"}</div><div className="top-actions"><div className="market-status"><i/> {userRole ? userRole === "super_admin" ? "SUPER ADMIN" : "ADMIN" : "AUTHENTICATED WORKSPACE"}</div><button className="icon-btn" aria-label="Search"><Search size={18}/></button><button className="icon-btn" aria-label="Notifications"><Bell size={18}/></button><div className="avatar">{(displayName || session.user.email || "M").slice(0,1).toUpperCase()}</div><button className="icon-btn" aria-label="Sign out" title={session.user.email} onClick={signOut} disabled={signingOut}><LogOut size={17}/></button></div></header>
+      <header className="topbar"><div className="crumb">Workspace <span>/</span> {adminOpen ? "Admin Control" : "Overview"}</div><div className="top-actions"><div className="market-status"><i/> {userRole ? userRole === "super_admin" ? "SUPER ADMIN" : "ADMIN" : session ? "AUTHENTICATED WORKSPACE" : "GUEST MODE"}</div><button className="icon-btn" aria-label="Search"><Search size={18}/></button><button className="icon-btn" aria-label="Notifications"><Bell size={18}/></button><div className="avatar">{(displayName || session?.user.email || "G").slice(0,1).toUpperCase()}</div>{session ? <button className="icon-btn" aria-label="Sign out" title={session.user.email} onClick={signOut} disabled={signingOut}><LogOut size={17}/></button> : <button className="guest-signin-btn" onClick={onSignIn}>Sign in</button>}</div></header>
       <section className="content">
         {adminOpen && userRole ? <>
           <div className="page-heading"><div><div className="eyebrow">RESTRICTED AREA <span>•</span> {userRole === "super_admin" ? "SUPER ADMIN" : "ADMIN"}</div><h1>Admin control center</h1><p>Manage website configuration and monitor connected services.</p></div><button className="outline-btn" onClick={() => setAdminOpen(false)}>Back to overview</button></div>
-          <div className="admin-welcome"><ShieldCheck size={22}/><div><b>{userRole === "super_admin" ? "Super Admin access verified" : "Admin access verified"}</b><span>{session.user.email} · Permissions are enforced by Supabase Row Level Security.</span></div><span className="admin-role-pill">{userRole === "super_admin" ? "FULL ACCESS" : "ADMIN"}</span></div>
+          <div className="admin-welcome"><ShieldCheck size={22}/><div><b>{userRole === "super_admin" ? "Super Admin access verified" : "Admin access verified"}</b><span>{session?.user.email} · Permissions are enforced by Supabase Row Level Security.</span></div><span className="admin-role-pill">{userRole === "super_admin" ? "FULL ACCESS" : "ADMIN"}</span></div>
           <div className="admin-section-heading"><div><h2>Website controls</h2><p>Changes are saved to the protected site settings table.</p></div>{settingsLoading && <span className="admin-inline-status">Loading settings…</span>}</div>
           <div className="admin-settings-grid">
             <article className="admin-settings-card">
@@ -297,7 +299,7 @@ function Dashboard({ session }: { session: Session }) {
             <article className="admin-card"><div className="admin-card-icon"><Crosshair size={18}/></div><b>Trading system</b><p>Signal engine execution and paper-trading controls will be connected after the engine is implemented.</p><small>ENGINE · PLANNED</small></article>
           </div>
           <div className="admin-security-note"><LockKeyhole size={15}/> No service-role key is exposed in the browser. Admin updates pass through Supabase RLS policies.</div>
-        </> : <><div className="page-heading"><div><div className="eyebrow">PRIVATE WORKSPACE <span>•</span> {session.user.email}</div><h1>Market overview</h1><p>Your market intelligence, signals and risk in one place.</p></div><button className="outline-btn"><Command size={15}/> Command center <span>⌘ K</span></button></div>
+        </> : <><div className="page-heading"><div><div className="eyebrow">{session ? "PRIVATE WORKSPACE" : "PUBLIC GUEST WORKSPACE"} <span>•</span> {session?.user.email || "Browsing without an account"}</div><h1>Market overview</h1><p>Your market intelligence, signals and risk in one place.</p></div><button className="outline-btn"><Command size={15}/> Command center <span>⌘ K</span></button></div>
         <div className="stats-grid">
           <article className="stat-card"><div className="stat-top">TOTAL MARKET CAP <span className="muted-pill">GLOBAL</span></div><div className="stat-value">—</div><div className="stat-foot">Market cap feed not connected</div></article>
           <article className="stat-card"><div className="stat-top">WATCHLIST VOLUME <span className="muted-pill">24H SPOT</span></div><div className="stat-value">{Object.values(marketTickers).reduce((sum, ticker) => sum + Number(ticker.quoteVolume || 0), 0).toLocaleString("en-US", {maximumFractionDigits:0})} <small>USDT</small></div><div className="stat-foot">24h quote volume · Binance Spot</div></article>
@@ -308,7 +310,7 @@ function Dashboard({ session }: { session: Session }) {
         <div className="market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>MARKET</span></div>{watchlist.map(coin => { const live = marketTickers[`${coin.symbol}USDT`]; const change = live ? Number(live.priceChangePercent) : null; return <div className="coin-row" key={coin.symbol}><div className="coin-name"><div className="coin-icon">{coin.symbol.slice(0,1)}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live ? Number(live.lastPrice).toLocaleString("en-US", {maximumFractionDigits:8}) : "—"}</b><span className={change !== null && change < 0 ? "negative" : "positive"}>{change !== null && change < 0 ? <ArrowDownRight size={14}/> : <ArrowUpRight size={14}/>} {change === null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</span><span className="market-open"><i/> {live ? "LIVE" : "Connecting"}</span></div>; })}</div>
         <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Market structure</h2><p>BTC / USDT · Multi-timeframe analysis</p></div><button className="select-btn">BTC / USDT <ChevronDown size={14}/></button></div><div className="chart-placeholder"><div className="chart-grid"/><div className="chart-center"><CandlestickChart size={25}/><b>Chart engine ready</b><span>Live candles will appear when market data connects.</span></div></div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
         {!adminOpen && activePage !== "Overview" && <div className="user-page">
-          <div className="page-heading"><div><div className="eyebrow">USER WORKSPACE <span>•</span> {session.user.email}</div><h1>{activePage}</h1><p>Live public market data · Manual paper trading only.</p></div></div>
+          <div className="page-heading"><div><div className="eyebrow">{session ? "USER WORKSPACE" : "GUEST WORKSPACE"} <span>•</span> {session?.user.email || "Public access"}</div><h1>{activePage}</h1><p>Live public market data · Manual paper trading only.</p></div></div>
           {activePage === "Market Analysis" && <section className="panel full-market-panel">
             <div className="market-toolbar"><div><h2>Price analysis</h2><p>Binance Spot OHLC candles</p></div><div className="chart-controls"><select value={chartSymbol} onChange={e=>setChartSymbol(e.target.value)}>{["BTCUSDT","ETHUSDT","SUIUSDT","SOLUSDT"].map(s=><option key={s}>{s}</option>)}</select><select value={chartInterval} onChange={e=>setChartInterval(e.target.value)}>{["15m","1h","4h","1d"].map(t=><option key={t}>{t}</option>)}</select></div></div>
             <div className="chart-meta"><span>PRICE <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].lastPrice).toLocaleString("en-US",{maximumFractionDigits:8}) : "—"}</b></span><span>24H CHANGE <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].priceChangePercent).toFixed(2)+"%" : "—"}</b></span><span>24H HIGH <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].highPrice).toLocaleString() : "—"}</b></span><span>24H LOW <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].lowPrice).toLocaleString() : "—"}</b></span></div>
@@ -320,9 +322,9 @@ function Dashboard({ session }: { session: Session }) {
           {(activePage === "Portfolio" || activePage === "Paper Trading") && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><Wallet size={22}/></div><b>Paper trading workspace</b><span>Next: manual entries, open positions, close trade, stop-loss, take-profit and trade history.</span></div></section>}
           {activePage === "Backtesting" && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><SlidersHorizontal size={22}/></div><b>Backtesting module pending</b><span>Historical candle feed is ready. Strategy rules, fees, slippage and performance reports will be added next.</span></div></section>}
           {activePage === "Watchlist" && <div className="market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>MARKET</span></div>{watchlist.map(coin=>{const live=marketTickers[coin.symbol+"USDT"];const change=live?Number(live.priceChangePercent):null;return <button className="coin-row coin-row-button" key={coin.symbol} onClick={()=>{setChartSymbol(coin.symbol+"USDT");setActivePage("Market Analysis");}}><div className="coin-name"><div className="coin-icon">{coin.symbol[0]}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live?Number(live.lastPrice).toLocaleString("en-US",{maximumFractionDigits:8}):"—"}</b><span className={change!==null&&change<0?"negative":"positive"}>{change===null?"—":change.toFixed(2)+"%"}</span><span className="market-open"><i/>{live?"LIVE":"Connecting"}</span></button>})}</div>}
-          {activePage === "Settings" && <section className="panel user-empty-panel"><h2>Workspace settings</h2><p>Account: {session.user.email}</p><p>Market data: Binance public Spot</p><p>Trading: Manual paper trading only</p><p>Exchange API credentials: Not used</p></section>}
+          {activePage === "Settings" && <section className="panel user-empty-panel"><h2>Workspace settings</h2><p>Account: {session?.user.email || "Guest (not signed in)"}</p><p>Market data: Binance public Spot</p><p>Trading: Manual paper trading only</p><p>Exchange API credentials: Not used</p></section>}
         </div>}
-        {!adminOpen && <footer>CRYPTOBOT <span>·</span> MISHAD EDITION <span className="footer-right">SUPABASE AUTH CONNECTED <i/></span></footer>}{adminOpen && userRole && <footer>CRYPTOBOT <span>·</span> RESTRICTED ADMIN AREA <span className="footer-right">ROLE VERIFIED <i/></span></footer>}</>}
+        {!adminOpen && <footer>CRYPTOBOT <span>·</span> MISHAD EDITION <span className="footer-right">{session ? "SUPABASE AUTH CONNECTED" : "GUEST ACCESS"} <i/></span></footer>}{adminOpen && userRole && <footer>CRYPTOBOT <span>·</span> RESTRICTED ADMIN AREA <span className="footer-right">ROLE VERIFIED <i/></span></footer>}</>}
       </section>
     </main>
   </div>;
@@ -331,6 +333,7 @@ function Dashboard({ session }: { session: Session }) {
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [recoveryMode, setRecoveryMode] = useState(false);
+  const [guestMode, setGuestMode] = useState(false);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     if (!supabase) { setLoading(false); return; }
@@ -344,5 +347,7 @@ export default function App() {
   if (!isSupabaseConfigured) return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark">M</div><div><b>CRYPTO<span>BOT</span></b><small>MISHAD EDITION</small></div></div><h1>Connect your workspace.</h1><p className="auth-description">Add the Supabase project URL and publishable key to the Vite environment before starting the app.</p><pre className="env-hint">VITE_SUPABASE_URL=...{"\n"}VITE_SUPABASE_PUBLISHABLE_KEY=...</pre></div></div>;
   if (loading) return <div className="auth-shell"><div className="auth-loading"><LoaderCircle className="spin" size={24}/> Securing your workspace…</div></div>;
   if (recoveryMode && session) return <PasswordRecoveryScreen onComplete={() => setRecoveryMode(false)}/>;
-  return session ? <Dashboard session={session}/> : <AuthScreen/>;
+  if (session) return <Dashboard session={session} onSignIn={() => {}}/>;
+  if (guestMode) return <Dashboard session={null} onSignIn={() => setGuestMode(false)}/>;
+  return <AuthScreen onContinueGuest={() => setGuestMode(true)}/>;
 }
