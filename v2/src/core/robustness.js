@@ -16,12 +16,13 @@ export function classifyMarketRegimes(candles, window = 48, trendThreshold = 0.0
     const mean = returns.reduce((a,b)=>a+b,0)/returns.length;
     return Math.sqrt(returns.reduce((s,x)=>s+(x-mean)**2,0)/returns.length);
   });
-  const validVol = volatility.filter(Number.isFinite).sort((a,b)=>a-b);
-  const median = validVol.length ? validVol[Math.floor(validVol.length/2)] : 0;
   return candles.map((c,i) => {
     if (i < window || !Number.isFinite(volatility[i])) return {time:c.time,regime:'INSUFFICIENT'};
     const change = c.close / candles[i-window].close - 1;
     const trend = change >= trendThreshold ? 'UP' : change <= -trendThreshold ? 'DOWN' : 'RANGE';
+    // Compare with a trailing volatility baseline only; future volatility cannot alter past labels.
+    const pastVol = volatility.slice(Math.max(window,i-window),i).filter(Number.isFinite).sort((a,b)=>a-b);
+    const median = pastVol.length ? pastVol[Math.floor(pastVol.length/2)] : volatility[i];
     const vol = volatility[i] >= median ? 'HIGH' : 'LOW';
     return {time:c.time,regime:trend+'_'+vol};
   });
