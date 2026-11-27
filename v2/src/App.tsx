@@ -368,6 +368,14 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   const liveChartPrice = marketTickers[chartSymbol]?.lastPrice;
   const indicatorValues = useMemo(() => calculateIndicators(candles), [candles]);
   const marketStructure = useMemo(() => calculateMarketStructure(candles), [candles]);
+  const bestBid = Number(orderBook.bids[0]?.[0] ?? 0);
+  const bestAsk = Number(orderBook.asks[0]?.[0] ?? 0);
+  const spread = bestBid > 0 && bestAsk > 0 ? bestAsk - bestBid : null;
+  const bidDepth = orderBook.bids.slice(0, 10).reduce((sum, level) => sum + Number(level[0]) * Number(level[1]), 0);
+  const askDepth = orderBook.asks.slice(0, 10).reduce((sum, level) => sum + Number(level[0]) * Number(level[1]), 0);
+  const depthImbalance = bidDepth + askDepth > 0 ? ((bidDepth - askDepth) / (bidDepth + askDepth)) * 100 : null;
+  const bidWall = orderBook.bids.reduce((best, level) => Number(level[1]) > Number(best?.[1] ?? 0) ? level : best, orderBook.bids[0]);
+  const askWall = orderBook.asks.reduce((best, level) => Number(level[1]) > Number(best?.[1] ?? 0) ? level : best, orderBook.asks[0]);
   useEffect(() => {
     const price = Number(liveChartPrice);
     if (!Number.isFinite(price) || price <= 0) return;
@@ -628,6 +636,9 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
             <section style={{padding:"12px 0 16px",borderTop:"1px solid var(--border-soft)"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><b style={{fontSize:12}}>Order book · Binance Spot</b><small style={{fontSize:10,color:"var(--muted)"}}>{orderBook.updatedAt?new Date(orderBook.updatedAt).toLocaleTimeString():"Waiting for feed"} · refresh 10s</small></div>
               {orderBook.error&&<small style={{color:"#f07883"}}>{orderBook.error}</small>}
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(115px,1fr))",gap:8,marginBottom:10}}>
+                {[{label:"SPREAD",value:spread===null?"—":spread.toFixed(4)},{label:"DEPTH IMBALANCE",value:depthImbalance===null?"—":(depthImbalance>0?"+":"")+depthImbalance.toFixed(1)+"%"},{label:"BID WALL",value:bidWall?Number(bidWall[0]).toFixed(4):"—"},{label:"ASK WALL",value:askWall?Number(askWall[0]).toFixed(4):"—"}].map(metric=><div key={metric.label} style={{background:"var(--surface-2)",border:"1px solid var(--border-soft)",borderRadius:7,padding:"8px 10px"}}><small style={{fontSize:8,color:"var(--muted)"}}>{metric.label}</small><b style={{display:"block",fontSize:12,marginTop:4}}>{metric.value}</b></div>)}
+              </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
                 {[{label:"BIDS",rows:orderBook.bids.slice(0,6),color:"#42d2a3"},{label:"ASKS",rows:orderBook.asks.slice(0,6),color:"#f07883"}].map(book=><div key={book.label} style={{background:"var(--surface-2)",border:"1px solid var(--border-soft)",borderRadius:8,padding:10,minWidth:0}}><b style={{fontSize:10,color:book.color}}>{book.label}</b><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginTop:8,fontSize:9,color:"var(--muted)"}}><span>PRICE</span><span style={{textAlign:"right"}}>QTY</span></div>{book.rows.map((level,index)=><div key={index} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginTop:6,fontSize:10,fontVariantNumeric:"tabular-nums"}}><span style={{color:book.color}}>{Number(level[0]).toFixed(4)}</span><span style={{textAlign:"right"}}>{Number(level[1]).toFixed(4)}</span></div>)}{!book.rows.length&&<small style={{display:"block",marginTop:8,color:"var(--muted)"}}>No data</small>}</div>)}
               </div>
