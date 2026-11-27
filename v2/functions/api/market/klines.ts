@@ -60,9 +60,12 @@ async function fromBybit(symbol: string, interval: string, limit: number): Promi
     if (!isThreeDay) return daily.map(candle => { candle[6] = candleCloseTime(candle[0], interval); return candle; });
 
     const bucketMs = 3 * 24 * 60 * 60 * 1000;
+    // Binance 3d candles are anchored at 2017-08-17 00:00 UTC
+    // (one day after the Unix epoch modulo a three-day interval).
+    const bucketOffset = 24 * 60 * 60 * 1000;
     const buckets = new Map<number, Kline>();
     for (const candle of daily) {
-      const bucketStart = Math.floor(candle[0] / bucketMs) * bucketMs;
+      const bucketStart = Math.floor((candle[0] - bucketOffset) / bucketMs) * bucketMs + bucketOffset;
       const existing = buckets.get(bucketStart);
       if (!existing) {
         buckets.set(bucketStart, [
