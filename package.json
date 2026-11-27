@@ -8,8 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test",
-    "deploy:cloudflare": "npm run build && npx --yes cf deploy ./dist",
-    "deploy:cloudflare:preview": "npm run build && npx --yes cf previews deploy ./dist --preview-name cloudflare-migration"
+    "deploy:cloudflare": "npm run build && npx wrangler deploy --config wrangler.jsonc",
+    "deploy:cloudflare:preview": "npm run build && npx wrangler deploy --config wrangler.jsonc --name cryptobotmishad-preview"
   },
   "dependencies": {
     "lightweight-charts": "^5.0.8",
