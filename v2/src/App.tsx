@@ -40,7 +40,10 @@ function AuthScreen() {
     try {
       if (mode === "signup") {
         const { data, error: authError } = await supabase.auth.signUp({
-          email, password, options: { data: { display_name: displayName.trim() } },
+          email, password, options: {
+            data: { display_name: displayName.trim() },
+            emailRedirectTo: window.location.origin,
+          },
         });
         if (authError) throw authError;
         setMessage(data.session
