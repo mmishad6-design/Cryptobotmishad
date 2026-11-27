@@ -1,6 +1,18 @@
 import type { Kline } from "./market";
 
 export type IndicatorPoint = { time: number; value: number };
+export type IndicatorSettings = {
+  ema20: number; ema50: number; ema100: number; ema200: number;
+  sma20: number; sma50: number; sma200: number;
+  rsiPeriod: number; atrPeriod: number; bollingerPeriod: number;
+  macdFast: number; macdSlow: number; macdSignal: number;
+};
+export const DEFAULT_INDICATOR_SETTINGS: IndicatorSettings = {
+  ema20: 20, ema50: 50, ema100: 100, ema200: 200,
+  sma20: 20, sma50: 50, sma200: 200,
+  rsiPeriod: 14, atrPeriod: 14, bollingerPeriod: 20,
+  macdFast: 12, macdSlow: 26, macdSignal: 9,
+};
 export type IndicatorResult = {
   ema20: IndicatorPoint[];
   ema50: IndicatorPoint[];
@@ -44,25 +56,25 @@ function points(candles: Kline[], values: Array<number | null>): IndicatorPoint[
   }]);
 }
 
-export function calculateIndicators(candles: Kline[]): IndicatorResult {
+export function calculateIndicators(candles: Kline[], settings: IndicatorSettings = DEFAULT_INDICATOR_SETTINGS): IndicatorResult {
   const close = candles.map(k => Number(k[4]));
   const high = candles.map(k => Number(k[2]));
   const low = candles.map(k => Number(k[3]));
   const volume = candles.map(k => Number(k[5]));
-  const ema20 = ema(close, 20);
-  const ema50 = ema(close, 50);
-  const ema100 = ema(close, 100);
-  const ema200 = ema(close, 200);
-  const sma20 = sma(close, 20);
-  const sma50 = sma(close, 50);
-  const sma200 = sma(close, 200);
+  const ema20 = ema(close, settings.ema20);
+  const ema50 = ema(close, settings.ema50);
+  const ema100 = ema(close, settings.ema100);
+  const ema200 = ema(close, settings.ema200);
+  const sma20 = sma(close, settings.sma20);
+  const sma50 = sma(close, settings.sma50);
+  const sma200 = sma(close, settings.sma200);
 
   const upper: Array<number | null> = Array(close.length).fill(null);
   const lower: Array<number | null> = Array(close.length).fill(null);
-  for (let i = 19; i < close.length; i++) {
-    const window = close.slice(i - 19, i + 1);
-    const mean = window.reduce((sum, n) => sum + n, 0) / 20;
-    const variance = window.reduce((sum, n) => sum + (n - mean) ** 2, 0) / 20;
+  for (let i = settings.bollingerPeriod - 1; i < close.length; i++) {
+    const window = close.slice(i - settings.bollingerPeriod + 1, i + 1);
+    const mean = window.reduce((sum, n) => sum + n, 0) / settings.bollingerPeriod;
+    const variance = window.reduce((sum, n) => sum + (n - mean) ** 2, 0) / settings.bollingerPeriod;
     const deviation = Math.sqrt(variance) * 2;
     upper[i] = mean + deviation;
     lower[i] = mean - deviation;
@@ -88,22 +100,23 @@ export function calculateIndicators(candles: Kline[]): IndicatorResult {
     gains.push(Math.max(change, 0));
     losses.push(Math.max(-change, 0));
   }
-  let avgGain = gains.length >= 14 ? gains.slice(0, 14).reduce((a, b) => a + b, 0) / 14 : 0;
-  let avgLoss = losses.length >= 14 ? losses.slice(0, 14).reduce((a, b) => a + b, 0) / 14 : 0;
+  const rsiPeriod = settings.rsiPeriod;
+  let avgGain = gains.length >= rsiPeriod ? gains.slice(0, rsiPeriod).reduce((a, b) => a + b, 0) / rsiPeriod : 0;
+  let avgLoss = losses.length >= rsiPeriod ? losses.slice(0, rsiPeriod).reduce((a, b) => a + b, 0) / rsiPeriod : 0;
   let rsi14: number | null = null;
-  if (gains.length >= 14) {
-    for (let i = 14; i < gains.length; i++) {
-      avgGain = (avgGain * 13 + gains[i]) / 14;
-      avgLoss = (avgLoss * 13 + losses[i]) / 14;
+  if (gains.length >= rsiPeriod) {
+    for (let i = rsiPeriod; i < gains.length; i++) {
+      avgGain = (avgGain * (rsiPeriod - 1) + gains[i]) / rsiPeriod;
+      avgLoss = (avgLoss * (rsiPeriod - 1) + losses[i]) / rsiPeriod;
     }
     rsi14 = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   }
 
-  const ema12 = ema(close, 12);
-  const ema26 = ema(close, 26);
+  const ema12 = ema(close, settings.macdFast);
+  const ema26 = ema(close, settings.macdSlow);
   const macdValues = close.map((_, i) => ema12[i] !== null && ema26[i] !== null ? (ema12[i] as number) - (ema26[i] as number) : null);
   const macdCompact = macdValues.filter((v): v is number => v !== null);
-  const signalCompact = ema(macdCompact, 9);
+  const signalCompact = ema(macdCompact, settings.macdSignal);
   const macd = macdCompact.length ? macdCompact[macdCompact.length - 1] : null;
   const macdSignal = signalCompact.length ? signalCompact[signalCompact.length - 1] : null;
 
@@ -113,9 +126,10 @@ export function calculateIndicators(candles: Kline[]): IndicatorResult {
     Math.abs(low[i] - close[i - 1]),
   ));
   let atr14: number | null = null;
-  if (trueRanges.length >= 14) {
-    atr14 = trueRanges.slice(0, 14).reduce((a, b) => a + b, 0) / 14;
-    for (let i = 14; i < trueRanges.length; i++) atr14 = ((atr14 as number) * 13 + trueRanges[i]) / 14;
+  const atrPeriod = settings.atrPeriod;
+  if (trueRanges.length >= atrPeriod) {
+    atr14 = trueRanges.slice(0, atrPeriod).reduce((a, b) => a + b, 0) / atrPeriod;
+    for (let i = atrPeriod; i < trueRanges.length; i++) atr14 = ((atr14 as number) * (atrPeriod - 1) + trueRanges[i]) / atrPeriod;
   }
 
   return {
