@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
 import { getMarketTickers, getMarketKlines, type MarketTicker, type Kline } from "./lib/market";
-import { connectTickerStream, connectKlineStream } from "./lib/market-ws";
+import { connectTickerStream, connectKlineStream, connectOrderBookStream } from "./lib/market-ws";
 import { calculateIndicators, calculateMarketStructure, DEFAULT_INDICATOR_SETTINGS, getEmaTrend, type IndicatorSettings } from "./lib/indicators";
 
 const CHART_INTERVALS = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w","1M"] as const;
@@ -300,6 +300,8 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   const [indicatorSettings, setIndicatorSettings] = useState<IndicatorSettings>(DEFAULT_INDICATOR_SETTINGS);
   const [mtfRows, setMtfRows] = useState<Record<string, { trend: "Bullish" | "Bearish" | "Neutral"; loading: boolean }>>({});
   const [orderBook, setOrderBook] = useState<{ bids: [string,string][]; asks: [string,string][]; updatedAt: string; error: string }>({ bids: [], asks: [], updatedAt: "", error: "" });
+  const [orderBookStatus, setOrderBookStatus] = useState<"connecting" | "live" | "stale" | "reconnecting" | "error">("connecting");
+  const [orderBookStatusMessage, setOrderBookStatusMessage] = useState("Connecting to Binance depth stream…");
   const [candles, setCandles] = useState<Kline[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
@@ -378,7 +380,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   const bidWall = orderBook.bids.reduce((best, level) => Number(level[1]) > Number(best?.[1] ?? 0) ? level : best, orderBook.bids[0]);
   const askWall = orderBook.asks.reduce((best, level) => Number(level[1]) > Number(best?.[1] ?? 0) ? level : best, orderBook.asks[0]);
   const orderBookAge = orderBook.updatedAt ? Date.now() - Date.parse(orderBook.updatedAt) : Infinity;
-  const orderBookLive = orderBookAge < 20_000;
+  const orderBookLive = orderBookStatus === "live" && orderBookAge < 5_000;
   function updateIndicatorSetting(key: keyof IndicatorSettings, raw: string) {
     const value = Math.max(key === "macdSlow" ? 3 : 2, Math.min(key === "macdFast" ? 499 : 500, Math.floor(Number(raw) || 2)));
     setIndicatorSettings(current => {
@@ -458,25 +460,25 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
     return () => { alive = false; stopStream(); window.clearInterval(timer); };
   }, [chartSymbol, chartInterval]);
   useEffect(() => {
-    let alive = true;
-    let busy = false;
     setOrderBook({ bids: [], asks: [], updatedAt: "", error: "" });
-    const refreshOrderBook = async () => {
-      if (busy) return;
-      busy = true;
-      try {
-        const response = await fetch(`https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(chartSymbol)}&limit=20`, { cache: "no-store" });
-        if (!response.ok) throw new Error(`Order book unavailable (${response.status})`);
-        const payload = await response.json() as { bids?: [string,string][]; asks?: [string,string][] };
-        if (!Array.isArray(payload.bids) || !Array.isArray(payload.asks)) throw new Error("Invalid order book response");
-        if (alive) setOrderBook({ bids: payload.bids, asks: payload.asks, updatedAt: new Date().toISOString(), error: "" });
-      } catch (error) {
-        if (alive) setOrderBook(current => ({ ...current, error: error instanceof Error ? error.message : "Order book unavailable" }));
-      } finally { busy = false; }
-    };
-    void refreshOrderBook();
-    const timer = window.setInterval(() => void refreshOrderBook(), 10000);
-    return () => { alive = false; window.clearInterval(timer); };
+    setOrderBookStatus("connecting");
+    setOrderBookStatusMessage("Synchronizing snapshot with live depth updates…");
+    const stopStream = connectOrderBookStream(chartSymbol, {
+      onData: book => {
+        setOrderBook({ ...book, error: "" });
+        setOrderBookStatus("live");
+      },
+      onStatus: (status, message) => {
+        setOrderBookStatus(status);
+        setOrderBookStatusMessage(message);
+        if (status === "error") {
+          setOrderBook(current => ({ ...current, error: message }));
+        } else if (status === "live") {
+          setOrderBook(current => ({ ...current, error: "" }));
+        }
+      },
+    });
+    return () => stopStream();
   }, [chartSymbol]);
 
   useEffect(() => {
@@ -655,8 +657,8 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
               <div style={{background:"var(--surface-2)",border:"1px solid var(--border-soft)",borderRadius:8,padding:12}}><div style={{fontSize:9,color:"var(--muted)",letterSpacing:1}}>RESISTANCE</div><b style={{display:"block",marginTop:6,fontSize:14}}>{marketStructure.resistance===null?"—":marketStructure.resistance.toFixed(4)}</b><small style={{fontSize:10,color:"var(--muted)"}}>Nearest confirmed swing high</small></div>
             </section>
             <section style={{padding:"12px 0 16px",borderTop:"1px solid var(--border-soft)"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><b style={{fontSize:12}}>Order book · Binance Spot</b><small style={{fontSize:10,color:"var(--muted)"}}>{orderBookLive?"LIVE":orderBook.updatedAt?"STALE":"WAITING"} · {orderBook.updatedAt?new Date(orderBook.updatedAt).toLocaleTimeString():"No snapshot"} · 10s refresh</small></div>
-              {orderBook.error&&<small style={{color:"#f07883"}}>{orderBook.error}</small>}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><b style={{fontSize:12}}>Order book · Binance Spot</b><small style={{fontSize:10,color:orderBookLive?"#42d2a3":orderBookStatus==="error"?"#f07883":"var(--muted)"}}>{orderBookLive?"LIVE":orderBookStatus.toUpperCase()} · {orderBook.updatedAt?new Date(orderBook.updatedAt).toLocaleTimeString():"No synchronized snapshot"} · WebSocket</small></div>
+              {(orderBook.error || (orderBookStatus!=="live" ? orderBookStatusMessage : ""))&&<small style={{display:"block",marginBottom:8,color:orderBookStatus==="error"?"#f07883":"var(--muted)"}}>{orderBook.error || orderBookStatusMessage}</small>}
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(115px,1fr))",gap:8,marginBottom:10}}>
                 {[{label:"SPREAD",value:spread===null?"—":spread.toFixed(4)},{label:"DEPTH IMBALANCE",value:depthImbalance===null?"—":(depthImbalance>0?"+":"")+depthImbalance.toFixed(1)+"%"},{label:"BID WALL",value:bidWall?Number(bidWall[0]).toFixed(4):"—"},{label:"ASK WALL",value:askWall?Number(askWall[0]).toFixed(4):"—"}].map(metric=><div key={metric.label} style={{background:"var(--surface-2)",border:"1px solid var(--border-soft)",borderRadius:7,padding:"8px 10px"}}><small style={{fontSize:8,color:"var(--muted)"}}>{metric.label}</small><b style={{display:"block",fontSize:12,marginTop:4}}>{metric.value}</b></div>)}
               </div>
