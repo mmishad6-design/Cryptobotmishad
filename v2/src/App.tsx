@@ -333,13 +333,14 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [recoveryMode, setRecoveryMode] = useState(false);
-  const [guestMode, setGuestMode] = useState(false);
+  const [authScreen, setAuthScreen] = useState(false);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     if (!supabase) { setLoading(false); return; }
     supabase.auth.getSession().then(({data}) => { setSession(data.session); setLoading(false); });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession);
+      if (nextSession || event === "SIGNED_OUT") setAuthScreen(false);
       if (event === "PASSWORD_RECOVERY") setRecoveryMode(true);
     });
     return () => subscription.unsubscribe();
@@ -347,7 +348,7 @@ export default function App() {
   if (!isSupabaseConfigured) return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark">M</div><div><b>CRYPTO<span>BOT</span></b><small>MISHAD EDITION</small></div></div><h1>Connect your workspace.</h1><p className="auth-description">Add the Supabase project URL and publishable key to the Vite environment before starting the app.</p><pre className="env-hint">VITE_SUPABASE_URL=...{"\n"}VITE_SUPABASE_PUBLISHABLE_KEY=...</pre></div></div>;
   if (loading) return <div className="auth-shell"><div className="auth-loading"><LoaderCircle className="spin" size={24}/> Securing your workspace…</div></div>;
   if (recoveryMode && session) return <PasswordRecoveryScreen onComplete={() => setRecoveryMode(false)}/>;
-  if (session) return <Dashboard session={session} onSignIn={() => {}}/>;
-  if (guestMode) return <Dashboard session={null} onSignIn={() => setGuestMode(false)}/>;
-  return <AuthScreen onContinueGuest={() => setGuestMode(true)}/>;
+  if (session) return <Dashboard session={session} onSignIn={() => setAuthScreen(true)}/>;
+  if (authScreen) return <AuthScreen onContinueGuest={() => setAuthScreen(false)}/>;
+  return <Dashboard session={null} onSignIn={() => setAuthScreen(true)}/>;
 }
