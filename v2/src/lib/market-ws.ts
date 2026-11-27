@@ -314,8 +314,7 @@ export function connectOrderBookStream(symbol: string, callbacks: OrderBookCallb
           if (event.U > lastUpdateId + 1 || (event.pu !== undefined && synchronized && event.pu !== lastUpdateId)) {
             synchronized = false;
             callbacks.onStatus("stale", "Depth sequence gap · resynchronizing");
-            snapshotLoading = false;
-            void loadSnapshot();
+            snapshotTimer = window.setTimeout(() => { snapshotLoading = false; void loadSnapshot(); }, 250);
             return;
           }
           if (event.U <= lastUpdateId + 1 && event.u >= lastUpdateId + 1) {
@@ -354,6 +353,7 @@ export function connectOrderBookStream(symbol: string, callbacks: OrderBookCallb
         if (!Number.isFinite(depth?.U) || !Number.isFinite(depth?.u) || !Array.isArray(depth.b) || !Array.isArray(depth.a)) return;
         if (!synchronized) {
           buffered.push(depth);
+          if (!snapshotLoading) void loadSnapshot();
           if (buffered.length > 2000) {
             buffered.splice(0, buffered.length - 1000);
             callbacks.onStatus("stale", "Depth buffer overflow · resynchronizing");
