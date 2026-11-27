@@ -39,7 +39,6 @@ function startFailoverSocket(
       attempt = 0;
       if (fallback) {
         const args = SYMBOLS.map(symbol => "tickers." + symbol);
-        // The Bybit subscription payload is supplied by the caller via its URL protocol.
         current.send(JSON.stringify({ op: "subscribe", args }));
         window.clearInterval(heartbeatTimer);
         heartbeatTimer = window.setInterval(() => { if (current.readyState === WebSocket.OPEN) current.send(JSON.stringify({ op: "ping" })); }, 20000);
