@@ -2,7 +2,7 @@ export type AdvancedSignalResult = {
   decision: "LONG" | "SHORT" | "NO TRADE";
   score: number;
   reasons: string[];
-  riskPlan: { ok: boolean; reason?: string; entry: number|null; stop: number|null; target: number|null; quantity: number; riskUsd: number; netRR: number|null; [key:string]: unknown } | null;
+  riskPlan: { ok: boolean; reason?: string; entry: number|null; stop: number|null; target: number|null; stopDistance: number; rewardDistance: number; quantity: number; riskUsd: number; netRR: number|null; [key:string]: unknown } | null;
   gates: Record<string, boolean>;
   diagnostics: Record<string, unknown>;
 };
