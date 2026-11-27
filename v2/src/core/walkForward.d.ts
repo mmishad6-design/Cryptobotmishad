@@ -1,0 +1,3 @@
+export type OosFold<T>={index:number;data:T[];warmupCount:number;testFrom:number;testTo:number;testStartTime:number;testEndTime:number};
+export function createSequentialOosFolds<T extends {time:number}>(rows:T[],testStartIndex:number,count?:number,warmup?:number):OosFold<T>[];
+export function aggregateWalkForwardResults(results:{ok:true;trades:{netPnl:number;rMultiple:number;fees:number}[];metrics:{maxDrawdownPct:number}}[],initialBalance?:number):{tradeCount:number;wins:number;losses:number;breakeven:number;winRatePct:number;netPnl:number;returnPct:number;profitFactor:number|null;expectancy:number;averageR:number;maxDrawdownPct:number;finalBalance:number;initialBalance:number;feesPaid:number};
