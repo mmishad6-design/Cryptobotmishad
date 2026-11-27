@@ -12,6 +12,7 @@ import { getMarketTickers, getMarketKlines, normalizeKlines, type MarketTicker, 
 import { connectTickerStream, connectKlineStream, connectOrderBookStream } from "./lib/market-ws";
 import { calculateIndicators, calculateMarketStructure, DEFAULT_INDICATOR_SETTINGS, getEmaTrend, type IndicatorSettings } from "./lib/indicators";
 import SignalCenter from "./SignalCenter";
+import BacktestingPanel from "./BacktestingPanel";
 
 const CHART_INTERVALS = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w","1M"] as const;
 
@@ -672,7 +673,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
           </section>}
           {activePage === "Signal Center" && <SignalCenter symbol={chartSymbol} livePrice={Number(marketTickers[chartSymbol]?.lastPrice ?? 0)} depthRatio={bidDepth > 0 && askDepth > 0 ? bidDepth / askDepth : null}/>}
           {(activePage === "Portfolio" || activePage === "Paper Trading") && <PaperTradingPanel session={session} marketTickers={marketTickers}/> }
-          {activePage === "Backtesting" && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><SlidersHorizontal size={22}/></div><b>Backtesting module pending</b><span>Historical candle feed is ready. Strategy rules, fees, slippage and performance reports will be added next.</span></div></section>}
+          {activePage === "Backtesting" && <BacktestingPanel symbol={chartSymbol}/>}
           {activePage === "Watchlist" && <div className="market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>MARKET</span></div>{watchlist.map(coin=>{const live=marketTickers[coin.symbol+"USDT"];const change=live?Number(live.priceChangePercent):null;return <button className="coin-row coin-row-button" key={coin.symbol} onClick={()=>{setChartSymbol(coin.symbol+"USDT");setActivePage("Market Analysis");}}><div className="coin-name"><div className="coin-icon">{coin.symbol[0]}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live?Number(live.lastPrice).toLocaleString("en-US",{maximumFractionDigits:8}):"—"}</b><span className={change!==null&&change<0?"negative":"positive"}>{change===null?"—":change.toFixed(2)+"%"}</span><span className="market-open"><i/>{live?"LIVE":"Connecting"}</span></button>})}</div>}
           {activePage === "Settings" && <section className="panel user-empty-panel"><h2>Workspace settings</h2><p>Account: {session?.user.email || "Guest (not signed in)"}</p><p>Market data: Binance public Spot</p><p>Trading: Manual paper trading only</p><p>Exchange API credentials: Not used</p></section>}
         </div>}
