@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "dev:cloudflare": "wrangler dev",
     "deploy:cloudflare": "npm run build && wrangler deploy",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "test": "node --test ../tests/*.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
