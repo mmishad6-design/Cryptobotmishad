@@ -18,6 +18,7 @@ function startFailoverSocket(
   let fallbackActive = false;
   let reconnectTimer = 0;
   let watchdogTimer = 0;
+  let heartbeatTimer = 0;
   let attempt = 0;
 
   const connect = (fallback = false) => {
@@ -40,6 +41,8 @@ function startFailoverSocket(
         const args = SYMBOLS.map(symbol => "tickers." + symbol);
         // The Bybit subscription payload is supplied by the caller via its URL protocol.
         current.send(JSON.stringify({ op: "subscribe", args }));
+        window.clearInterval(heartbeatTimer);
+        heartbeatTimer = window.setInterval(() => { if (current.readyState === WebSocket.OPEN) current.send(JSON.stringify({ op: "ping" })); }, 20000);
       }
       onStatus("connected", source);
       window.clearTimeout(watchdogTimer);
@@ -60,6 +63,7 @@ function startFailoverSocket(
     current.onclose = () => {
       if (stopped || socket !== current) return;
       window.clearTimeout(watchdogTimer);
+      window.clearInterval(heartbeatTimer);
       if (!fallback && !fallbackActive) {
         connect(true);
       } else {
@@ -81,6 +85,7 @@ function startFailoverSocket(
     stopped = true;
     window.clearTimeout(reconnectTimer);
     window.clearTimeout(watchdogTimer);
+    window.clearInterval(heartbeatTimer);
     socket?.close();
   };
 }
@@ -151,6 +156,7 @@ function startKlineSocket(
   let retry = 0;
   let reconnectTimer = 0;
   let watchdogTimer = 0;
+  let heartbeatTimer = 0;
   const connect = (fallbackMode: boolean) => {
     if (stopped) return;
     usingFallback = fallbackMode;
@@ -167,7 +173,11 @@ function startKlineSocket(
     current.onopen = () => {
       if (stopped || socket !== current) return;
       retry = 0;
-      if (fallbackMode) current.send(JSON.stringify({ op: "subscribe", args: ["kline." + interval + "." + symbol] }));
+      if (fallbackMode) {
+        current.send(JSON.stringify({ op: "subscribe", args: ["kline." + interval + "." + symbol] }));
+        window.clearInterval(heartbeatTimer);
+        heartbeatTimer = window.setInterval(() => { if (current.readyState === WebSocket.OPEN) current.send(JSON.stringify({ op: "ping" })); }, 20000);
+      }
       callbacks.onStatus("connected", source);
       window.clearTimeout(watchdogTimer);
       watchdogTimer = window.setTimeout(() => {
@@ -193,6 +203,7 @@ function startKlineSocket(
     current.onclose = () => {
       if (stopped || socket !== current) return;
       window.clearTimeout(watchdogTimer);
+      window.clearInterval(heartbeatTimer);
       if (!fallbackMode && !usingFallback) connect(true);
       else schedule(true);
     };
@@ -208,6 +219,7 @@ function startKlineSocket(
     stopped = true;
     window.clearTimeout(reconnectTimer);
     window.clearTimeout(watchdogTimer);
+    window.clearInterval(heartbeatTimer);
     socket?.close();
   };
 }
