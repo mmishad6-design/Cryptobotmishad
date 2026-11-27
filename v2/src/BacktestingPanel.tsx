@@ -114,7 +114,8 @@ export default function BacktestingPanel({symbol}:{symbol:string}){
         <div className="panel-head"><h2>Out-of-sample trade history</h2><p>শুধু unseen test folds-এর closed trades</p></div>
         {!result.folds.some((f:any)=>f.trades.length)?<div className="empty-state"><BarChart3 size={22}/><b>কোনো valid signal পাওয়া যায়নি</b><span>এই sample-এ strategy সব mandatory gate পূরণ করতে পারেনি।</span></div>:
         <>{result.folds.flatMap((f:any)=>f.trades.map((t:any)=>({...t,fold:f.index}))).slice().reverse().map((t:any,i:number)=><div className="paper-history-row" key={t.entryTime+"-"+i} style={{display:"grid",gridTemplateColumns:"0.45fr 1.2fr .6fr 1fr 1fr 1fr 1fr",gap:8,fontSize:10}}><span>F{t.fold}</span><span>{new Date(t.entryTime).toLocaleString()}</span><b>{t.side}</b><span>{fmt(t.entry)}</span><span>{fmt(t.exit)}</span><b style={{color:t.netPnl>=0?"#55d5a6":"#f17d89"}}>{t.netPnl>=0?"+":""}{fmt(t.netPnl)}</b><span>{t.exitReason}</span></div>)}</>}
-      </section>/>}
+      </section>
+    </>}
     <div className="paper-disclaimer"><ShieldCheck size={15}/> Simulation only. Historical results do not predict future returns. No real orders are placed.</div>
   </div>;
 }
