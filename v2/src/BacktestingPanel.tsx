@@ -60,7 +60,7 @@ export default function BacktestingPanel({symbol}:{symbol:string}){
         candles:rows,market,initialBalance,warmup:60,maxHoldingBars:288,
         feeRate:0.0005,slippageRate:0.0002,
         evaluate:(visible,index)=>{
-          const decisionTime=visible.at(-1)!.closeTime;
+          const decisionTime=visible.at(-1)!.closeTime!;
           const data:Record<string,Frame>={};
           for(const tf of FRAMES){
             const closed=(histories[tf] as Kline[]).filter(k=>+k[6]<=decisionTime).slice(-240);
