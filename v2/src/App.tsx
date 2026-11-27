@@ -7,7 +7,7 @@ import {
   Wallet, LogOut, LockKeyhole, Mail, UserRound, LoaderCircle
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
-import { getMarketTickers, type MarketTicker } from "./lib/market";
+import { getMarketTickers, getMarketKlines, type MarketTicker, type Kline } from "./lib/market";
 
 const watchlist = [
   { symbol: "BTC", pair: "BTC / USDT", price: "—", change: "—", up: true },
@@ -129,6 +129,12 @@ function PasswordRecoveryScreen({ onComplete }: { onComplete: () => void }) {
 
 function Dashboard({ session }: { session: Session }) {
   const [signingOut, setSigningOut] = useState(false);
+  const [activePage, setActivePage] = useState("Overview");
+  const [chartSymbol, setChartSymbol] = useState("BTCUSDT");
+  const [chartInterval, setChartInterval] = useState("1h");
+  const [candles, setCandles] = useState<Kline[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartError, setChartError] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [userRole, setUserRole] = useState<"admin" | "super_admin" | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
@@ -165,6 +171,15 @@ function Dashboard({ session }: { session: Session }) {
     const timer = window.setInterval(() => void refresh(), 5000);
     return () => { alive = false; window.clearInterval(timer); };
   }, []);
+  useEffect(() => {
+    let alive = true;
+    setChartLoading(true); setChartError("");
+    getMarketKlines(chartSymbol, chartInterval, 120)
+      .then(result => { if (alive) setCandles(result.data); })
+      .catch(error => { if (alive) setChartError(error instanceof Error ? error.message : "Chart data unavailable"); })
+      .finally(() => { if (alive) setChartLoading(false); });
+    return () => { alive = false; };
+  }, [chartSymbol, chartInterval]);
   useEffect(() => {
     let alive = true;
     if (supabase) {
@@ -239,11 +254,11 @@ function Dashboard({ session }: { session: Session }) {
       <div className="brand"><div className="brand-mark">M</div><div><b>CRYPTO<span>BOT</span></b><small>MISHAD EDITION</small></div></div>
       <div className="workspace"><span className="live-dot" /> MARKET WORKSPACE <ChevronDown size={14}/></div>
       <div className="nav-label">WORKSPACE</div>
-      <nav>{nav.map(({label, icon: Icon, active}) => <a className={active ? "nav-item active" : "nav-item"} href="#" key={label}><Icon size={17}/>{label}{active && <span className="nav-indicator"/>}</a>)}</nav>
+      <nav>{nav.map(({label, icon: Icon, active}) => <button className={activePage === label ? "nav-item active" : "nav-item"} type="button" onClick={() => {setActivePage(label);setAdminOpen(false);}} key={label}><Icon size={17}/>{label}{activePage === label && <span className="nav-indicator"/>}</button>)}</nav>
       {userRole && <><div className="nav-label lower">ADMINISTRATION</div><button className={adminOpen ? "nav-item active admin-nav" : "nav-item admin-nav"} onClick={() => setAdminOpen(true)}><ShieldCheck size={17}/> Admin Control {adminOpen && <span className="nav-indicator"/>}</button></>}
       <div className="nav-label lower">PERSONAL</div>
-      <a className="nav-item" href="#"><ListFilter size={17}/> Watchlist</a>
-      <a className="nav-item" href="#"><Settings2 size={17}/> Settings</a>
+      <button className={activePage === "Watchlist" ? "nav-item active" : "nav-item"} onClick={() => {setActivePage("Watchlist");setAdminOpen(false);}}><ListFilter size={17}/> Watchlist</button>
+      <button className={activePage === "Settings" ? "nav-item active" : "nav-item"} onClick={() => {setActivePage("Settings");setAdminOpen(false);}}><Settings2 size={17}/> Settings</button>
       <div className="sidebar-bottom"><div className="security"><ShieldCheck size={16}/><span>Read-only market access<br/><small>No exchange keys stored</small></span></div><div className="edition">Designed by <b>Mishad</b></div></div>
     </aside>
     <main className="main">
@@ -289,6 +304,21 @@ function Dashboard({ session }: { session: Session }) {
         <div className="section-row"><div><h2>Market watch</h2><p>{marketError ? marketError : marketUpdatedAt ? `Binance Spot · Updated ${new Date(marketUpdatedAt).toLocaleTimeString()}` : "Connecting to live market feed…"}</p></div><button className="text-btn">View all markets <ArrowUpRight size={14}/></button></div>
         <div className="market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>MARKET</span></div>{watchlist.map(coin => { const live = marketTickers[`${coin.symbol}USDT`]; const change = live ? Number(live.priceChangePercent) : null; return <div className="coin-row" key={coin.symbol}><div className="coin-name"><div className="coin-icon">{coin.symbol.slice(0,1)}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live ? Number(live.lastPrice).toLocaleString("en-US", {maximumFractionDigits:8}) : "—"}</b><span className={change !== null && change < 0 ? "negative" : "positive"}>{change !== null && change < 0 ? <ArrowDownRight size={14}/> : <ArrowUpRight size={14}/>} {change === null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</span><span className="market-open"><i/> {live ? "LIVE" : "Connecting"}</span></div>; })}</div>
         <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Market structure</h2><p>BTC / USDT · Multi-timeframe analysis</p></div><button className="select-btn">BTC / USDT <ChevronDown size={14}/></button></div><div className="chart-placeholder"><div className="chart-grid"/><div className="chart-center"><CandlestickChart size={25}/><b>Chart engine ready</b><span>Live candles will appear when market data connects.</span></div></div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
+        {!adminOpen && activePage !== "Overview" && <div className="user-page">
+          <div className="page-heading"><div><div className="eyebrow">USER WORKSPACE <span>•</span> {session.user.email}</div><h1>{activePage}</h1><p>Live public market data · Manual paper trading only.</p></div></div>
+          {activePage === "Market Analysis" && <section className="panel full-market-panel">
+            <div className="market-toolbar"><div><h2>Price analysis</h2><p>Binance Spot OHLC candles</p></div><div className="chart-controls"><select value={chartSymbol} onChange={e=>setChartSymbol(e.target.value)}>{["BTCUSDT","ETHUSDT","SUIUSDT","SOLUSDT"].map(s=><option key={s}>{s}</option>)}</select><select value={chartInterval} onChange={e=>setChartInterval(e.target.value)}>{["15m","1h","4h","1d"].map(t=><option key={t}>{t}</option>)}</select></div></div>
+            <div className="chart-meta"><span>PRICE <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].lastPrice).toLocaleString("en-US",{maximumFractionDigits:8}) : "—"}</b></span><span>24H CHANGE <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].priceChangePercent).toFixed(2)+"%" : "—"}</b></span><span>24H HIGH <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].highPrice).toLocaleString() : "—"}</b></span><span>24H LOW <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].lowPrice).toLocaleString() : "—"}</b></span></div>
+            <div className="live-chart"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading market candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length ? <svg viewBox="0 0 1000 300" preserveAspectRatio="none"><polyline fill="none" stroke="#62d0aa" strokeWidth="2" vectorEffect="non-scaling-stroke" points={candles.map((k,i)=>{const vals=candles.map(x=>Number(x[4]));const lo=Math.min(...vals),hi=Math.max(...vals);return (5+i/(candles.length-1)*990)+","+(280-(Number(k[4])-lo)/(hi-lo||1)*250);}).join(" ")}/></svg> : <div className="chart-center">No candle data available.</div>}</div>
+            <div className="chart-legend">Binance public market data · {candles.length} candles · Closing-price line</div>
+            <div className="table-head candle-head"><span>TIME</span><span>OPEN</span><span>HIGH</span><span>LOW</span><span>CLOSE</span></div>{candles.slice(-10).reverse().map(k=><div className="candle-row" key={String(k[0])}><span>{new Date(k[0]).toLocaleString()}</span><span>{Number(k[1]).toPrecision(7)}</span><span>{Number(k[2]).toPrecision(7)}</span><span>{Number(k[3]).toPrecision(7)}</span><b>{Number(k[4]).toPrecision(7)}</b></div>)}
+          </section>}
+          {activePage === "Signal Center" && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><Crosshair size={22}/></div><b>NO TRADE · Signal engine not live</b><span>We will not invent BUY/SELL signals. Strategy validation and Bangla rejection reasons will be added before live signals are shown.</span><strong>NO TRADE</strong></div></section>}
+          {(activePage === "Portfolio" || activePage === "Paper Trading") && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><Wallet size={22}/></div><b>Paper trading workspace</b><span>Next: manual entries, open positions, close trade, stop-loss, take-profit and trade history.</span></div></section>}
+          {activePage === "Backtesting" && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><SlidersHorizontal size={22}/></div><b>Backtesting module pending</b><span>Historical candle feed is ready. Strategy rules, fees, slippage and performance reports will be added next.</span></div></section>}
+          {activePage === "Watchlist" && <div className="market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>MARKET</span></div>{watchlist.map(coin=>{const live=marketTickers[coin.symbol+"USDT"];const change=live?Number(live.priceChangePercent):null;return <button className="coin-row coin-row-button" key={coin.symbol} onClick={()=>{setChartSymbol(coin.symbol+"USDT");setActivePage("Market Analysis");}}><div className="coin-name"><div className="coin-icon">{coin.symbol[0]}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live?Number(live.lastPrice).toLocaleString("en-US",{maximumFractionDigits:8}):"—"}</b><span className={change!==null&&change<0?"negative":"positive"}>{change===null?"—":change.toFixed(2)+"%"}</span><span className="market-open"><i/>{live?"LIVE":"Connecting"}</span></button>})}</div>}
+          {activePage === "Settings" && <section className="panel user-empty-panel"><h2>Workspace settings</h2><p>Account: {session.user.email}</p><p>Market data: Binance public Spot</p><p>Trading: Manual paper trading only</p><p>Exchange API credentials: Not used</p></section>}
+        </div>}
         {!adminOpen && <footer>CRYPTOBOT <span>·</span> MISHAD EDITION <span className="footer-right">SUPABASE AUTH CONNECTED <i/></span></footer>}{adminOpen && userRole && <footer>CRYPTOBOT <span>·</span> RESTRICTED ADMIN AREA <span className="footer-right">ROLE VERIFIED <i/></span></footer>}</>}
       </section>
     </main>
