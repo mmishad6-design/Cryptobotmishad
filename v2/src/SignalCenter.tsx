@@ -33,13 +33,12 @@ function frameFrom(rows:Kline[]):Frame|null {
   const close=Number(rows.at(-1)![4]), volume=rows.map(r=>Number(r[5]));
   const recent=volume.slice(-5).reduce((a,b)=>a+b,0)/5;
   const baseline=volume.slice(-25,-5).reduce((a,b)=>a+b,0)/20;
-  const takerBuy=rows.slice(-20).reduce((s,r)=>s+Number(r[9]||0),0);
-  const total=rows.slice(-20).reduce((s,r)=>s+Number(r[5]||0),0);
-  const takerSell=total-takerBuy;
+  const flowSamples=rows.slice(-20).map(r=>Number(r[9])).filter(v=>Number.isFinite(v)&&v>0);
+  const takerRatio=flowSamples.length?flowSamples.reduce((a,b)=>a+b,0)/flowSamples.length:0;
   const rawTrend=getEmaTrend(rows);
   const trend:Frame["trend"]=rawTrend==="Bullish"?"BULLISH":rawTrend==="Bearish"?"BEARISH":"MIXED";
   if(ind.rsi14===null||ind.atr14===null||!close||!Number.isFinite(close))return null;
-  return {close,trend,rsi:ind.rsi14,adx:adxValue(rows),volumeRatio:baseline>0?recent/baseline:0,atr:ind.atr14,structure:structure.event,takerRatio:takerSell>0?takerBuy/takerSell:0};
+  return {close,trend,rsi:ind.rsi14,adx:adxValue(rows),volumeRatio:baseline>0?recent/baseline:0,atr:ind.atr14,structure:structure.event,takerRatio};
 }
 export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:string;livePrice:number;depthRatio:number|null}){
   const [market,setMarket]=useState<MarketMode>("Spot");
@@ -55,6 +54,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
     try{
       const results=await Promise.all(FRAMES.map(async interval=>{
         const response=await getConsensusKlines(symbol,interval,240,market);
+        if(response.maxSpreadPct>0.5) return [interval,null] as const;
         const frame=frameFrom(response.data);
         return [interval,frame] as const;
       }));
