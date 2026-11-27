@@ -68,7 +68,10 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
     }catch(e){setError(e instanceof Error?e.message:"Market data load failed.");}
     finally{setLoading(false);}
   }
-  useEffect(()=>{void run();},[symbol,market,leverage]);
+  useEffect(()=>{
+    const timer=window.setTimeout(()=>{void run();},350);
+    return ()=>window.clearTimeout(timer);
+  },[symbol,market,leverage,balance]);
   const plan=evaluation?.riskPlan;
   const gates=useMemo(()=>["trend","setup","timing","structure","volume","flow","risk"].map(key=>({key,ok:Boolean(evaluation?.gates?.[key])})),[evaluation]);
   return <div style={{display:"grid",gap:14}}>
