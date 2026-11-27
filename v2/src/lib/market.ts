@@ -58,3 +58,14 @@ export async function getMarketKlines(symbol = "BTCUSDT", interval = "1h", limit
   const result = await request<Kline[]>(`/api/market/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}`);
   return { ...result, data: normalizeKlines(result.data) };
 }
+
+export async function getConsensusKlines(symbol:string,interval:string,limit=240,market:"Spot"|"Futures"="Spot"){
+  const response=await request<Array<{time:number;open:number;high:number;low:number;close:number;volume:number;takerRatio:number|null;sourceCount:number;spreadPct:number}>>(
+    `/api/market/consensus?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}&market=${market}`
+  );
+  const data:Kline[]=response.data.map(c=>[
+    c.time,String(c.open),String(c.high),String(c.low),String(c.close),String(c.volume),
+    c.time+1,"",0,String(c.takerRatio??""),"",""
+  ]);
+  return {...response,data:normalizeKlines(data),exchanges:response.data.length?Math.max(...response.data.map(c=>c.sourceCount)):0, maxSpreadPct:Math.max(0,...response.data.map(c=>c.spreadPct))};
+}
