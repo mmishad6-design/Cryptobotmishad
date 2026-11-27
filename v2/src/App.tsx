@@ -497,13 +497,13 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
         </div>
         <div className="section-row"><div><h2>Live Market</h2><p>{marketError ? `Feed error: ${marketError}` : marketUpdatedAt ? `${marketSource} · Last update ${new Date(marketUpdatedAt).toLocaleTimeString()}` : "Connecting to live exchange stream…"}</p></div><div className={marketError ? "market-feed-state offline" : marketUpdatedAt ? "market-feed-state online" : "market-feed-state"}><i/>{marketError ? "FEED ERROR" : marketUpdatedAt ? `LIVE · ${marketWsStatus === "connected" ? "WEBSOCKET" : "REST BACKUP"}` : "CONNECTING"}</div></div>
         <div className="market-table live-market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>24H VOLUME</span><span>STATUS</span></div>{watchlist.map(coin => { const live = marketTickers[`${coin.symbol}USDT`]; const change = live ? Number(live.priceChangePercent) : null; return <button type="button" className="coin-row coin-row-button" key={coin.symbol} onClick={() => { setChartSymbol(`${coin.symbol}USDT`); setActivePage("Market Analysis"); }}><div className="coin-name"><div className="coin-icon">{coin.symbol.slice(0,1)}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live ? Number(live.lastPrice).toLocaleString("en-US", {maximumFractionDigits:8}) : "—"}</b><span className={change !== null && change < 0 ? "negative" : "positive"}>{change === null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</span><span className="market-volume">{live ? (Number(live.quoteVolume)/1e6).toLocaleString("en-US",{maximumFractionDigits:2})+"M USDT" : "—"}</span><span className="market-open"><i/> {live ? "LIVE" : "WAITING"}</span></button>; })}</div>
-        <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Live Market Chart</h2><p>{chartSymbol.replace("USDT"," / USDT")} · {chartInterval} candles · refreshes every 15s</p></div><button className="select-btn" onClick={() => setActivePage("Market Analysis")}>Open analysis <ArrowUpRight size={14}/></button></div><div className="chart-placeholder"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading live candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length > 1 ? <svg viewBox="0 0 1000 300" preserveAspectRatio="none"><polyline fill="none" stroke="#62d0aa" strokeWidth="2" vectorEffect="non-scaling-stroke" points={candles.map((k,i)=>{const vals=candles.map(x=>Number(x[4]));const lo=Math.min(...vals),hi=Math.max(...vals);return (5+i/(candles.length-1)*990)+","+(280-(Number(k[4])-lo)/(hi-lo||1)*250);}).join(" ")}/></svg> : <div className="chart-center"><CandlestickChart size={25}/><b>No candle data</b><span>{marketError || "Waiting for Binance candle feed."}</span></div>}</div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
+        <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Live Candlestick Chart</h2><p>{chartSymbol.replace("USDT"," / USDT")} · {chartInterval} OHLC candles · live WebSocket updates</p></div><button className="select-btn" onClick={() => setActivePage("Market Analysis")}>Open analysis <ArrowUpRight size={14}/></button></div><div className="chart-placeholder"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading live candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length > 0 ? <CandlestickPlot candles={candles}/> : <div className="chart-center"><CandlestickChart size={25}/><b>No candle data</b><span>{marketError || "Waiting for live candle feed."}</span></div>}</div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
         {!adminOpen && activePage !== "Overview" && <div className="user-page">
           <div className="page-heading"><div><div className="eyebrow">{session ? "USER WORKSPACE" : "GUEST WORKSPACE"} <span>•</span> {session?.user.email || "Public access"}</div><h1>{activePage}</h1><p>Live public market data · Manual paper trading only.</p></div></div>
           {activePage === "Market Analysis" && <section className="panel full-market-panel">
             <div className="market-toolbar"><div><h2>Price analysis</h2><p>Live exchange OHLC candles</p></div><div className="chart-controls"><select value={chartSymbol} onChange={e=>setChartSymbol(e.target.value)}>{["BTCUSDT","ETHUSDT","SUIUSDT","SOLUSDT"].map(s=><option key={s}>{s}</option>)}</select><select value={chartInterval} onChange={e=>setChartInterval(e.target.value)}>{["15m","1h","4h","1d"].map(t=><option key={t}>{t}</option>)}</select></div></div>
             <div className="chart-meta"><span>LAST PRICE <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].lastPrice).toLocaleString("en-US",{maximumFractionDigits:8}) : "—"}</b></span><span>24H CHANGE <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].priceChangePercent).toFixed(2)+"%" : "—"}</b></span><span>24H HIGH <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].highPrice).toLocaleString() : "—"}</b></span><span>24H LOW <b>{marketTickers[chartSymbol] ? Number(marketTickers[chartSymbol].lowPrice).toLocaleString() : "—"}</b></span><span>24H VOLUME <b>{marketTickers[chartSymbol] ? (Number(marketTickers[chartSymbol].quoteVolume)/1e6).toFixed(2)+"M USDT" : "—"}</b></span></div>
-            <div className="live-chart"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading market candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length ? <svg viewBox="0 0 1000 300" preserveAspectRatio="none"><polyline fill="none" stroke="#62d0aa" strokeWidth="2" vectorEffect="non-scaling-stroke" points={candles.map((k,i)=>{const vals=candles.map(x=>Number(x[4]));const lo=Math.min(...vals),hi=Math.max(...vals);return (5+i/(candles.length-1)*990)+","+(280-(Number(k[4])-lo)/(hi-lo||1)*250);}).join(" ")}/></svg> : <div className="chart-center">No candle data available.</div>}</div>
+            <div className="live-chart"><div className="chart-grid"/>{chartLoading ? <div className="chart-center">Loading market candles…</div> : chartError ? <div className="chart-center">{chartError}</div> : candles.length ? <CandlestickPlot candles={candles}/> : <div className="chart-center">No candle data available.</div>}</div>
             <div className="chart-legend"><span className={marketError ? "market-feed-error" : "market-feed-live"}>{chartError ? "FEED ERROR" : chartWsStatus === "connected" ? "LIVE · WS" : chartUpdatedAt ? "REST BACKUP" : "CONNECTING"}</span> {chartSource} · {candles.length} candles · WebSocket updates · REST backup · last tick {chartUpdatedAt ? new Date(chartUpdatedAt).toLocaleTimeString() : "—"} {chartError ? " · "+chartError : ""}</div>
             <div className="table-head candle-head"><span>TIME</span><span>OPEN</span><span>HIGH</span><span>LOW</span><span>CLOSE</span></div>{candles.slice(-10).reverse().map(k=><div className="candle-row" key={String(k[0])}><span>{new Date(k[0]).toLocaleString()}</span><span>{Number(k[1]).toPrecision(7)}</span><span>{Number(k[2]).toPrecision(7)}</span><span>{Number(k[3]).toPrecision(7)}</span><b>{Number(k[4]).toPrecision(7)}</b></div>)}
           </section>}
@@ -517,6 +517,33 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
       </section>
     </main>
   </div>;
+}
+
+function CandlestickPlot({ candles }: { candles: Kline[] }) {
+  if (!candles.length) return null;
+  const high = Math.max(...candles.map(k => Number(k[2])));
+  const low = Math.min(...candles.map(k => Number(k[3])));
+  const span = high - low || Math.max(Math.abs(high) * 0.001, 1);
+  const y = (price: number) => 12 + ((high - price) / span) * 264;
+  const step = 990 / candles.length;
+  const bodyWidth = Math.max(2, Math.min(8, step * 0.62));
+  return <svg viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Live candlestick price chart">
+    {candles.map((k, i) => {
+      const open = Number(k[1]);
+      const close = Number(k[4]);
+      const rising = close >= open;
+      const color = rising ? "#39c99a" : "#e16f78";
+      const x = 5 + i * step + step / 2;
+      const openY = y(open);
+      const closeY = y(close);
+      const bodyY = Math.min(openY, closeY);
+      const bodyHeight = Math.max(1.5, Math.abs(closeY - openY));
+      return <g key={String(k[0])}>
+        <line x1={x} x2={x} y1={y(Number(k[2]))} y2={y(Number(k[3]))} stroke={color} strokeWidth="1.2" vectorEffect="non-scaling-stroke"/>
+        <rect x={x - bodyWidth / 2} y={bodyY} width={bodyWidth} height={bodyHeight} fill={color} stroke={color} strokeWidth=".6"/>
+      </g>;
+    })}
+  </svg>;
 }
 
 export default function App() {
