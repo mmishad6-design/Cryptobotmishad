@@ -92,6 +92,8 @@ function AuthScreen() {
 function Dashboard({ session }: { session: Session }) {
   const [signingOut, setSigningOut] = useState(false);
   const [displayName, setDisplayName] = useState("");
+  const [userRole, setUserRole] = useState<"admin" | "super_admin" | null>(null);
+  const [adminOpen, setAdminOpen] = useState(false);
   const [marketTickers, setMarketTickers] = useState<Record<string, MarketTicker>>({});
   const [marketUpdatedAt, setMarketUpdatedAt] = useState("");
   const [marketError, setMarketError] = useState("");
@@ -114,8 +116,17 @@ function Dashboard({ session }: { session: Session }) {
   }, []);
   useEffect(() => {
     let alive = true;
-    if (supabase) supabase.from("profiles").select("display_name").eq("id", session.user.id).maybeSingle()
-      .then(({data}) => { if (alive && data?.display_name) setDisplayName(data.display_name); });
+    if (supabase) {
+      Promise.all([
+        supabase.from("profiles").select("display_name").eq("id", session.user.id).maybeSingle(),
+        supabase.from("user_roles").select("role").eq("user_id", session.user.id).maybeSingle(),
+      ]).then(([profileResult, roleResult]) => {
+        if (!alive) return;
+        if (profileResult.data?.display_name) setDisplayName(profileResult.data.display_name);
+        const role = roleResult.data?.role;
+        if (role === "admin" || role === "super_admin") setUserRole(role);
+      });
+    }
     return () => { alive = false; };
   }, [session.user.id]);
   async function signOut() {
@@ -130,15 +141,16 @@ function Dashboard({ session }: { session: Session }) {
       <div className="workspace"><span className="live-dot" /> MARKET WORKSPACE <ChevronDown size={14}/></div>
       <div className="nav-label">WORKSPACE</div>
       <nav>{nav.map(({label, icon: Icon, active}) => <a className={active ? "nav-item active" : "nav-item"} href="#" key={label}><Icon size={17}/>{label}{active && <span className="nav-indicator"/>}</a>)}</nav>
+      {userRole && <><div className="nav-label lower">ADMINISTRATION</div><button className={adminOpen ? "nav-item active admin-nav" : "nav-item admin-nav"} onClick={() => setAdminOpen(true)}><ShieldCheck size={17}/> Admin Control {adminOpen && <span className="nav-indicator"/>}</button></>}
       <div className="nav-label lower">PERSONAL</div>
       <a className="nav-item" href="#"><ListFilter size={17}/> Watchlist</a>
       <a className="nav-item" href="#"><Settings2 size={17}/> Settings</a>
       <div className="sidebar-bottom"><div className="security"><ShieldCheck size={16}/><span>Read-only market access<br/><small>No exchange keys stored</small></span></div><div className="edition">Designed by <b>Mishad</b></div></div>
     </aside>
     <main className="main">
-      <header className="topbar"><div className="crumb">Workspace <span>/</span> Overview</div><div className="top-actions"><div className="market-status"><i/> AUTHENTICATED WORKSPACE</div><button className="icon-btn" aria-label="Search"><Search size={18}/></button><button className="icon-btn" aria-label="Notifications"><Bell size={18}/></button><div className="avatar">{(displayName || session.user.email || "M").slice(0,1).toUpperCase()}</div><button className="icon-btn" aria-label="Sign out" title={session.user.email} onClick={signOut} disabled={signingOut}><LogOut size={17}/></button></div></header>
+      <header className="topbar"><div className="crumb">Workspace <span>/</span> {adminOpen ? "Admin Control" : "Overview"}</div><div className="top-actions"><div className="market-status"><i/> {userRole ? userRole === "super_admin" ? "SUPER ADMIN" : "ADMIN" : "AUTHENTICATED WORKSPACE"}</div><button className="icon-btn" aria-label="Search"><Search size={18}/></button><button className="icon-btn" aria-label="Notifications"><Bell size={18}/></button><div className="avatar">{(displayName || session.user.email || "M").slice(0,1).toUpperCase()}</div><button className="icon-btn" aria-label="Sign out" title={session.user.email} onClick={signOut} disabled={signingOut}><LogOut size={17}/></button></div></header>
       <section className="content">
-        <div className="page-heading"><div><div className="eyebrow">PRIVATE WORKSPACE <span>•</span> {session.user.email}</div><h1>Market overview</h1><p>Your market intelligence, signals and risk in one place.</p></div><button className="outline-btn"><Command size={15}/> Command center <span>⌘ K</span></button></div>
+        {adminOpen && userRole ? <><div className="page-heading"><div><div className="eyebrow">RESTRICTED AREA <span>•</span> {userRole === "super_admin" ? "SUPER ADMIN" : "ADMIN"}</div><h1>Admin control center</h1><p>Administrative workspace for CryptoBot Mishad v2.</p></div><button className="outline-btn" onClick={() => setAdminOpen(false)}>Back to overview</button></div><div className="admin-welcome"><ShieldCheck size={22}/><div><b>{userRole === "super_admin" ? "Super Admin access verified" : "Admin access verified"}</b><span>{session.user.email} · Role is read from the protected Supabase role table.</span></div><span className="admin-role-pill">{userRole === "super_admin" ? "FULL ACCESS" : "ADMIN"}</span></div><div className="admin-grid"><article className="admin-card"><div className="admin-card-icon"><Settings2 size={18}/></div><b>Website controls</b><p>Maintenance mode, announcements, branding and feature switches.</p><small>CONTROL MODULE · NEXT PHASE</small></article><article className="admin-card"><div className="admin-card-icon"><UserRound size={18}/></div><b>User management</b><p>Review accounts, manage access and inspect user status.</p><small>CONTROL MODULE · NEXT PHASE</small></article><article className="admin-card"><div className="admin-card-icon"><Crosshair size={18}/></div><b>Trading system</b><p>Signal engine settings, supported pairs and paper-trading limits.</p><small>CONTROL MODULE · NEXT PHASE</small></article><article className="admin-card"><div className="admin-card-icon"><Activity size={18}/></div><b>System health</b><p>Market feed, Worker API, database health and audit history.</p><small>CONTROL MODULE · NEXT PHASE</small></article></div><div className="admin-security-note"><LockKeyhole size={15}/> Role checks are enforced by Supabase RLS. Privileged control actions will be executed server-side, never from browser-only checks.</div></> : <><div className="page-heading"><div><div className="eyebrow">PRIVATE WORKSPACE <span>•</span> {session.user.email}</div><h1>Market overview</h1><p>Your market intelligence, signals and risk in one place.</p></div><button className="outline-btn"><Command size={15}/> Command center <span>⌘ K</span></button></div>
         <div className="stats-grid">
           <article className="stat-card"><div className="stat-top">TOTAL MARKET CAP <span className="muted-pill">GLOBAL</span></div><div className="stat-value">—</div><div className="stat-foot">Market cap feed not connected</div></article>
           <article className="stat-card"><div className="stat-top">WATCHLIST VOLUME <span className="muted-pill">24H SPOT</span></div><div className="stat-value">{Object.values(marketTickers).reduce((sum, ticker) => sum + Number(ticker.quoteVolume || 0), 0).toLocaleString("en-US", {maximumFractionDigits:0})} <small>USDT</small></div><div className="stat-foot">24h quote volume · Binance Spot</div></article>
@@ -148,7 +160,7 @@ function Dashboard({ session }: { session: Session }) {
         <div className="section-row"><div><h2>Market watch</h2><p>{marketError ? marketError : marketUpdatedAt ? `Binance Spot · Updated ${new Date(marketUpdatedAt).toLocaleTimeString()}` : "Connecting to live market feed…"}</p></div><button className="text-btn">View all markets <ArrowUpRight size={14}/></button></div>
         <div className="market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>MARKET</span></div>{watchlist.map(coin => { const live = marketTickers[`${coin.symbol}USDT`]; const change = live ? Number(live.priceChangePercent) : null; return <div className="coin-row" key={coin.symbol}><div className="coin-name"><div className="coin-icon">{coin.symbol.slice(0,1)}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live ? Number(live.lastPrice).toLocaleString("en-US", {maximumFractionDigits:8}) : "—"}</b><span className={change !== null && change < 0 ? "negative" : "positive"}>{change !== null && change < 0 ? <ArrowDownRight size={14}/> : <ArrowUpRight size={14}/>} {change === null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}</span><span className="market-open"><i/> {live ? "LIVE" : "Connecting"}</span></div>; })}</div>
         <div className="bottom-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Market structure</h2><p>BTC / USDT · Multi-timeframe analysis</p></div><button className="select-btn">BTC / USDT <ChevronDown size={14}/></button></div><div className="chart-placeholder"><div className="chart-grid"/><div className="chart-center"><CandlestickChart size={25}/><b>Chart engine ready</b><span>Live candles will appear when market data connects.</span></div></div></section><section className="panel signal-panel"><div className="panel-head"><div><h2>Signal intelligence</h2><p>Validated setups only</p></div><span className="signal-count">0 ACTIVE</span></div><div className="empty-state"><div className="empty-icon"><CircleDot size={22}/></div><b>No confirmed setup</b><span>The engine will show a signal only when all required conditions pass.</span><strong>NO TRADE</strong></div></section></div>
-        <footer>CRYPTOBOT <span>·</span> MISHAD EDITION <span className="footer-right">SUPABASE AUTH CONNECTED <i/></span></footer>
+        {!adminOpen && <footer>CRYPTOBOT <span>·</span> MISHAD EDITION <span className="footer-right">SUPABASE AUTH CONNECTED <i/></span></footer>}{adminOpen && userRole && <footer>CRYPTOBOT <span>·</span> RESTRICTED ADMIN AREA <span className="footer-right">ROLE VERIFIED <i/></span></footer>}</>
       </section>
     </main>
   </div>;
