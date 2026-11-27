@@ -319,12 +319,11 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
         wsConnected = true;
         setMarketTickers(current => ({ ...current, [ticker.symbol]: ticker }));
         setMarketUpdatedAt(new Date().toISOString());
-        setMarketSource(marketWsStatus === "connected" ? marketSource : "Live exchange stream");
         setMarketError("");
       },
       onStatus: (status, source) => {
         if (!alive) return;
-        wsConnected = status === "connected";
+        if (status !== "connected") wsConnected = false;
         setMarketWsStatus(status);
         setMarketSource(source);
         if (!wsConnected) void refresh();
@@ -359,13 +358,12 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
           merged.set(Number(candle[0]), candle);
           return [...merged.values()].sort((a, b) => Number(a[0]) - Number(b[0])).slice(-120);
         });
-        setChartSource("Live exchange stream");
         setChartError("");
         if (firstLoad) { setChartLoading(false); firstLoad = false; }
       },
       onStatus: (status, source) => {
         if (!alive) return;
-        wsConnected = status === "connected";
+        if (status !== "connected") wsConnected = false;
         setChartWsStatus(status);
         setChartSource(source);
         if (!wsConnected) void refreshCandles();
