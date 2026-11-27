@@ -296,7 +296,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   const [activePage, setActivePage] = useState("Overview");
   const [chartSymbol, setChartSymbol] = useState("BTCUSDT");
   const [chartInterval, setChartInterval] = useState("1h");
-  const [enabledIndicators, setEnabledIndicators] = useState({ ema20: true, ema50: true, ema200: false, vwap: false, bollinger: false });
+  const [enabledIndicators, setEnabledIndicators] = useState({ ema20: true, ema50: true, ema100: false, ema200: false, sma20: false, sma50: false, sma200: false, vwap: false, bollinger: false });
   const [mtfRows, setMtfRows] = useState<Record<string, { trend: "Bullish" | "Bearish" | "Neutral"; loading: boolean }>>({});
   const [orderBook, setOrderBook] = useState<{ bids: [string,string][]; asks: [string,string][]; updatedAt: string; error: string }>({ bids: [], asks: [], updatedAt: "", error: "" });
   const [candles, setCandles] = useState<Kline[]>([]);
@@ -646,7 +646,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   </div>;
 }
 
-function CandlestickChartView({ candles, enabledIndicators, structure }: { candles: Kline[]; enabledIndicators: { ema20: boolean; ema50: boolean; ema200: boolean; vwap: boolean; bollinger: boolean }; structure: { support: number | null; resistance: number | null } }) {
+function CandlestickChartView({ candles, enabledIndicators, structure }: { candles: Kline[]; enabledIndicators: { ema20: boolean; ema50: boolean; ema100: boolean; ema200: boolean; sma20: boolean; sma50: boolean; sma200: boolean; vwap: boolean; bollinger: boolean }; structure: { support: number | null; resistance: number | null } }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candleSeriesRef = useRef<ReturnType<ReturnType<typeof createChart>["addSeries"]> | null>(null);
@@ -696,7 +696,11 @@ function CandlestickChartView({ candles, enabledIndicators, structure }: { candl
     const overlaySeries = {
       ema20: chart.addSeries(LineSeries, { color: "#e6bd67", lineWidth: 2, priceLineVisible: false, lastValueVisible: false }),
       ema50: chart.addSeries(LineSeries, { color: "#63a8ed", lineWidth: 2, priceLineVisible: false, lastValueVisible: false }),
+      ema100: chart.addSeries(LineSeries, { color: "#bd8a56", lineWidth: 2, priceLineVisible: false, lastValueVisible: false }),
       ema200: chart.addSeries(LineSeries, { color: "#c28be8", lineWidth: 2, priceLineVisible: false, lastValueVisible: false }),
+      sma20: chart.addSeries(LineSeries, { color: "#e5e7eb", lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      sma50: chart.addSeries(LineSeries, { color: "#94a3b8", lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
+      sma200: chart.addSeries(LineSeries, { color: "#64748b", lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
       vwap: chart.addSeries(LineSeries, { color: "#f39b61", lineWidth: 2, priceLineVisible: false, lastValueVisible: false }),
       bbUpper: chart.addSeries(LineSeries, { color: "#8194aa88", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false }),
       bbLower: chart.addSeries(LineSeries, { color: "#8194aa88", lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false }),
@@ -743,7 +747,11 @@ function CandlestickChartView({ candles, enabledIndicators, structure }: { candl
     const toChartPoints = (items: { time: number; value: number }[]) => items.map(item => ({ time: item.time as UTCTimestamp, value: item.value }));
     overlaySeriesRef.current.ema20?.setData(enabledIndicators.ema20 ? toChartPoints(values.ema20) : []);
     overlaySeriesRef.current.ema50?.setData(enabledIndicators.ema50 ? toChartPoints(values.ema50) : []);
+    overlaySeriesRef.current.ema100?.setData(enabledIndicators.ema100 ? toChartPoints(values.ema100) : []);
     overlaySeriesRef.current.ema200?.setData(enabledIndicators.ema200 ? toChartPoints(values.ema200) : []);
+    overlaySeriesRef.current.sma20?.setData(enabledIndicators.sma20 ? toChartPoints(values.sma20) : []);
+    overlaySeriesRef.current.sma50?.setData(enabledIndicators.sma50 ? toChartPoints(values.sma50) : []);
+    overlaySeriesRef.current.sma200?.setData(enabledIndicators.sma200 ? toChartPoints(values.sma200) : []);
     overlaySeriesRef.current.vwap?.setData(enabledIndicators.vwap ? toChartPoints(values.vwap) : []);
     overlaySeriesRef.current.bbUpper?.setData(enabledIndicators.bollinger ? toChartPoints(values.bbUpper) : []);
     overlaySeriesRef.current.bbLower?.setData(enabledIndicators.bollinger ? toChartPoints(values.bbLower) : []);
