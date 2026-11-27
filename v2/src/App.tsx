@@ -132,6 +132,138 @@ function PasswordRecoveryScreen({ onComplete }: { onComplete: () => void }) {
   </div></div>;
 }
 
+
+type PaperAccount = { id: string; initial_balance: number; current_balance: number; quote_asset: string };
+type PaperPosition = { id: string; symbol: string; market_type: "spot"|"futures"; side: "long"|"short"; leverage: number; quantity: number; entry_price: number; stop_loss: number|null; take_profit: number|null; status: string; opened_at: string; fees: number };
+type PaperTrade = { id: string; symbol: string; market_type: string; side: string; action: string; quantity: number; price: number; fee: number; realized_pnl: number|null; executed_at: string };
+
+function PaperTradingPanel({ session, marketTickers }: { session: Session | null; marketTickers: Record<string, MarketTicker> }) {
+  const [account, setAccount] = useState<PaperAccount|null>(null);
+  const [positions, setPositions] = useState<PaperPosition[]>([]);
+  const [trades, setTrades] = useState<PaperTrade[]>([]);
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [marketType, setMarketType] = useState<"spot"|"futures">("spot");
+  const [side, setSide] = useState<"long"|"short">("long");
+  const [leverage, setLeverage] = useState("1");
+  const [quantity, setQuantity] = useState("0.001");
+  const [entryPrice, setEntryPrice] = useState("");
+  const [stopLoss, setStopLoss] = useState("");
+  const [takeProfit, setTakeProfit] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const livePrice = marketTickers[symbol] ? Number(marketTickers[symbol].lastPrice) : 0;
+  const currentEntry = Number(entryPrice) > 0 ? Number(entryPrice) : livePrice;
+  const qty = Number(quantity);
+  const lev = marketType === "spot" ? 1 : Number(leverage);
+  const estimatedNotional = qty * currentEntry;
+  const estimatedMargin = marketType === "spot" ? estimatedNotional : estimatedNotional / lev;
+  const openFee = estimatedNotional * 0.0004;
+
+  async function loadData() {
+    if (!supabase || !session) return;
+    setLoading(true);
+    const { data: accounts, error: accountError } = await supabase.from("paper_accounts").select("id,initial_balance,current_balance,quote_asset").eq("user_id",session.user.id).order("created_at",{ascending:true}).limit(1);
+    if (accountError) { setError(accountError.message); setLoading(false); return; }
+    let activeAccount = accounts?.[0] as PaperAccount|undefined;
+    if (!activeAccount) {
+      const { data: created, error: createError } = await supabase.from("paper_accounts").insert({user_id:session.user.id,name:"Demo Account",quote_asset:"USDT",initial_balance:1000,current_balance:1000}).select("id,initial_balance,current_balance,quote_asset").single();
+      if (createError) { setError(createError.message); setLoading(false); return; }
+      activeAccount = created as PaperAccount;
+    }
+    setAccount(activeAccount);
+    const [positionResult, tradeResult] = await Promise.all([
+      supabase.from("paper_positions").select("id,symbol,market_type,side,leverage,quantity,entry_price,stop_loss,take_profit,status,opened_at,fees").eq("account_id",activeAccount.id).order("opened_at",{ascending:false}),
+      supabase.from("paper_trades").select("id,symbol,market_type,side,action,quantity,price,fee,realized_pnl,executed_at").eq("account_id",activeAccount.id).order("executed_at",{ascending:false}).limit(50),
+    ]);
+    if (positionResult.error) setError(positionResult.error.message);
+    else setPositions((positionResult.data||[]) as PaperPosition[]);
+    if (tradeResult.error) setError(tradeResult.error.message);
+    else setTrades((tradeResult.data||[]) as PaperTrade[]);
+    setLoading(false);
+  }
+
+  useEffect(() => { void loadData(); }, [session?.user.id]);
+
+  async function openPosition(event: FormEvent) {
+    event.preventDefault();
+    if (!supabase || !session) return;
+    setBusy(true); setError(""); setMessage("");
+    const price = currentEntry;
+    if (!price || !Number.isFinite(price)) { setError("Live price unavailable. Enter a valid entry price."); setBusy(false); return; }
+    const { error: rpcError } = await supabase.rpc("open_paper_position", {
+      p_symbol:symbol,p_market_type:marketType,p_side:side,p_leverage:lev,p_quantity:qty,p_entry_price:price,
+      p_stop_loss:stopLoss ? Number(stopLoss) : null,p_take_profit:takeProfit ? Number(takeProfit) : null,p_notes:notes || null,
+    });
+    setBusy(false);
+    if (rpcError) setError(rpcError.message);
+    else { setMessage("Paper position opened successfully."); setStopLoss("");setTakeProfit("");setNotes("");await loadData(); }
+  }
+
+  async function closePosition(position: PaperPosition) {
+    if (!supabase) return;
+    const price = marketTickers[position.symbol] ? Number(marketTickers[position.symbol].lastPrice) : 0;
+    if (!price) { setError("Live price unavailable. Cannot close at a verified market price."); return; }
+    if (!window.confirm(`Close ${position.symbol} at ${price.toLocaleString()} USDT?`)) return;
+    setBusy(true);setError("");setMessage("");
+    const { error: rpcError } = await supabase.rpc("close_paper_position",{p_position_id:position.id,p_exit_price:price});
+    setBusy(false);
+    if (rpcError) setError(rpcError.message);
+    else { setMessage(`${position.symbol} position closed.`);await loadData(); }
+  }
+
+  async function resetAccount() {
+    if (!supabase || !window.confirm("Reset demo account to its initial balance? This permanently clears all paper positions and trade history.")) return;
+    setBusy(true);setError("");setMessage("");
+    const { error: rpcError } = await supabase.rpc("reset_paper_account");
+    setBusy(false);
+    if (rpcError) setError(rpcError.message);
+    else { setMessage("Demo account reset. Trade history and positions cleared.");await loadData(); }
+  }
+
+  const openPositions = positions.filter(p=>p.status==="open");
+  const closedPositions = positions.filter(p=>p.status==="closed");
+  const unrealized = openPositions.reduce((sum,p)=>{const px=marketTickers[p.symbol]?Number(marketTickers[p.symbol].lastPrice):Number(p.entry_price);return sum+(p.side==="long"?(px-Number(p.entry_price)):(Number(p.entry_price)-px))*Number(p.quantity);},0);
+  const money = (value:number) => value.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+  if (!session) return <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><LockKeyhole size={22}/></div><b>Sign in to use Paper Trading</b><span>Guest users can explore public market data. Create an account to save demo positions and trade history privately.</span></div></section>;
+
+  return <div className="paper-workspace">
+    <div className="paper-summary-grid">
+      <article className="stat-card"><div className="stat-top">AVAILABLE BALANCE <span className="muted-pill">DEMO</span></div><div className="stat-value">{loading?"—":money(Number(account?.current_balance||0))} <small>USDT</small></div><div className="stat-foot">Reserved margin is excluded</div></article>
+      <article className="stat-card"><div className="stat-top">OPEN POSITIONS</div><div className="stat-value">{openPositions.length}</div><div className="stat-foot">Active virtual trades</div></article>
+      <article className="stat-card"><div className="stat-top">UNREALIZED PNL</div><div className={unrealized>=0?"stat-value paper-profit":"stat-value paper-loss"}>{unrealized>=0?"+":""}{money(unrealized)} <small>USDT</small></div><div className="stat-foot">Estimated from latest Binance prices</div></article>
+      <article className="stat-card"><div className="stat-top">CLOSED POSITIONS</div><div className="stat-value">{closedPositions.length}</div><div className="stat-foot">Completed demo trades</div></article>
+    </div>
+    <div className="paper-layout">
+      <section className="panel paper-order-panel">
+        <div className="panel-head"><div><h2>New paper order</h2><p>Manual execution · Virtual funds only</p></div><span className="signal-count">0.04% FEE</span></div>
+        <form className="paper-form" onSubmit={openPosition}>
+          <label>Asset<select value={symbol} onChange={e=>{setSymbol(e.target.value);setEntryPrice("");}}>{["BTCUSDT","ETHUSDT","SUIUSDT","SOLUSDT"].map(s=><option key={s} value={s}>{s.replace("USDT"," / USDT")}</option>)}</select></label>
+          <div className="paper-form-row"><label>Market<select value={marketType} onChange={e=>{const v=e.target.value as "spot"|"futures";setMarketType(v);if(v==="spot"){setSide("long");setLeverage("1");}}}><option value="spot">Spot</option><option value="futures">Futures</option></select></label><label>Direction<select value={side} onChange={e=>setSide(e.target.value as "long"|"short")}><option value="long">Long / Buy</option><option value="short" disabled={marketType==="spot"}>Short / Sell</option></select></label></div>
+          {marketType==="futures" && <label>Leverage<select value={leverage} onChange={e=>setLeverage(e.target.value)}>{["1","2","3","5","10","20"].map(v=><option key={v} value={v}>{v}x</option>)}</select></label>}
+          <label>Quantity<input type="number" min="0.00000001" step="any" value={quantity} onChange={e=>setQuantity(e.target.value)} required/></label>
+          <label>Entry price (USDT)<input type="number" min="0.00000001" step="any" value={entryPrice} onChange={e=>setEntryPrice(e.target.value)} placeholder={livePrice?String(livePrice):"Waiting for live price"}/></label>
+          <div className="paper-form-row"><label>Stop loss (optional)<input type="number" min="0" step="any" value={stopLoss} onChange={e=>setStopLoss(e.target.value)} placeholder="Price"/></label><label>Take profit (optional)<input type="number" min="0" step="any" value={takeProfit} onChange={e=>setTakeProfit(e.target.value)} placeholder="Price"/></label></div>
+          <label>Notes (optional)<input value={notes} onChange={e=>setNotes(e.target.value)} maxLength={300} placeholder="Trade thesis or reason"/></label>
+          <div className="paper-estimate"><div><span>Live price</span><b>{livePrice?money(livePrice):"—"}</b></div><div><span>Notional</span><b>{currentEntry?money(estimatedNotional):"—"} USDT</b></div><div><span>Required margin</span><b>{currentEntry?money(estimatedMargin+openFee):"—"} USDT</b></div></div>
+          {error && <div className="auth-message error">{error}</div>}{message && <div className="auth-message success">{message}</div>}
+          <button className="auth-submit paper-submit" disabled={busy||loading||!currentEntry||qty<=0||!Number.isFinite(qty)}>{busy?"Processing…":`Open ${side==="long"?"Long":"Short"} Position`}</button>
+        </form>
+        <button className="paper-reset-btn" onClick={resetAccount} disabled={busy||loading}>Reset demo balance & history</button>
+      </section>
+      <section className="panel paper-positions-panel">
+        <div className="panel-head"><div><h2>Open positions</h2><p>Mark-to-market using public live prices</p></div><button className="text-btn" onClick={()=>void loadData()}>Refresh</button></div>
+        {loading?<div className="paper-empty">Loading your demo account…</div>:openPositions.length===0?<div className="paper-empty">No open positions. Create your first paper order.</div>:<div className="paper-position-list">{openPositions.map(p=>{const px=marketTickers[p.symbol]?Number(marketTickers[p.symbol].lastPrice):Number(p.entry_price);const pnl=(p.side==="long"?(px-Number(p.entry_price)):(Number(p.entry_price)-px))*Number(p.quantity);return <article className="paper-position" key={p.id}><div className="paper-position-top"><div><b>{p.symbol}</b><small>{p.market_type.toUpperCase()} · {p.side.toUpperCase()} · {p.leverage}x</small></div><strong className={pnl>=0?"paper-profit":"paper-loss"}>{pnl>=0?"+":""}{money(pnl)} USDT</strong></div><div className="paper-position-stats"><span>Entry <b>{money(Number(p.entry_price))}</b></span><span>Mark <b>{money(px)}</b></span><span>Qty <b>{p.quantity}</b></span><span>SL <b>{p.stop_loss?money(Number(p.stop_loss)):"—"}</b></span><span>TP <b>{p.take_profit?money(Number(p.take_profit)):"—"}</b></span></div><button className="paper-close-btn" onClick={()=>void closePosition(p)} disabled={busy||!marketTickers[p.symbol]}>Close at market price</button></article>})}</div>}
+      </section>
+    </div>
+    <section className="panel paper-history-panel"><div className="panel-head"><div><h2>Trade history</h2><p>Latest 50 paper executions</p></div></div>{trades.length===0?<div className="paper-empty">Your completed and open trade activity will appear here.</div>:<div className="paper-history-table"><div className="table-head"><span>TIME</span><span>PAIR / ACTION</span><span>QTY</span><span>PRICE</span><span>FEE</span><span>NET PNL</span></div>{trades.map(t=><div className="paper-history-row" key={t.id}><span>{new Date(t.executed_at).toLocaleString()}</span><span><b>{t.symbol}</b><small>{t.market_type.toUpperCase()} · {t.action.toUpperCase()} · {t.side.toUpperCase()}</small></span><span>{t.quantity}</span><span>{money(Number(t.price))}</span><span>{money(Number(t.fee))}</span><b className={Number(t.realized_pnl||0)>=0?"paper-profit":"paper-loss"}>{t.realized_pnl===null?"—":money(Number(t.realized_pnl))}</b></div>)}</div>}</section>
+    <div className="paper-disclaimer"><ShieldCheck size={15}/> Paper trading only. Prices are indicative Binance Spot tickers; no real orders are sent to any exchange.</div>
+  </div>;
+}
+
 function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: () => void }) {
   const [signingOut, setSigningOut] = useState(false);
   const [activePage, setActivePage] = useState("Overview");
@@ -319,7 +451,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
             <div className="table-head candle-head"><span>TIME</span><span>OPEN</span><span>HIGH</span><span>LOW</span><span>CLOSE</span></div>{candles.slice(-10).reverse().map(k=><div className="candle-row" key={String(k[0])}><span>{new Date(k[0]).toLocaleString()}</span><span>{Number(k[1]).toPrecision(7)}</span><span>{Number(k[2]).toPrecision(7)}</span><span>{Number(k[3]).toPrecision(7)}</span><b>{Number(k[4]).toPrecision(7)}</b></div>)}
           </section>}
           {activePage === "Signal Center" && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><Crosshair size={22}/></div><b>NO TRADE · Signal engine not live</b><span>We will not invent BUY/SELL signals. Strategy validation and Bangla rejection reasons will be added before live signals are shown.</span><strong>NO TRADE</strong></div></section>}
-          {(activePage === "Portfolio" || activePage === "Paper Trading") && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><Wallet size={22}/></div><b>Paper trading workspace</b><span>Next: manual entries, open positions, close trade, stop-loss, take-profit and trade history.</span></div></section>}
+          {(activePage === "Portfolio" || activePage === "Paper Trading") && <PaperTradingPanel session={session} marketTickers={marketTickers}/> }
           {activePage === "Backtesting" && <section className="panel user-empty-panel"><div className="empty-state"><div className="empty-icon"><SlidersHorizontal size={22}/></div><b>Backtesting module pending</b><span>Historical candle feed is ready. Strategy rules, fees, slippage and performance reports will be added next.</span></div></section>}
           {activePage === "Watchlist" && <div className="market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>MARKET</span></div>{watchlist.map(coin=>{const live=marketTickers[coin.symbol+"USDT"];const change=live?Number(live.priceChangePercent):null;return <button className="coin-row coin-row-button" key={coin.symbol} onClick={()=>{setChartSymbol(coin.symbol+"USDT");setActivePage("Market Analysis");}}><div className="coin-name"><div className="coin-icon">{coin.symbol[0]}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live?Number(live.lastPrice).toLocaleString("en-US",{maximumFractionDigits:8}):"—"}</b><span className={change!==null&&change<0?"negative":"positive"}>{change===null?"—":change.toFixed(2)+"%"}</span><span className="market-open"><i/>{live?"LIVE":"Connecting"}</span></button>})}</div>}
           {activePage === "Settings" && <section className="panel user-empty-panel"><h2>Workspace settings</h2><p>Account: {session?.user.email || "Guest (not signed in)"}</p><p>Market data: Binance public Spot</p><p>Trading: Manual paper trading only</p><p>Exchange API credentials: Not used</p></section>}
