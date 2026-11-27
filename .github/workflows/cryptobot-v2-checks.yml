@@ -1,0 +1,34 @@
+name: CryptoBot v2 checks
+
+on:
+  pull_request:
+    paths:
+      - "v2/**"
+      - ".github/workflows/cryptobot-v2-checks.yml"
+  push:
+    branches:
+      - rebuild-cloudflare-supabase
+    paths:
+      - "v2/**"
+      - ".github/workflows/cryptobot-v2-checks.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: v2/package.json
+      - name: Install dependencies
+        run: npm install
+      - name: Typecheck and build
+        run: npm run build
