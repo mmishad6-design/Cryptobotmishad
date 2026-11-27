@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Activity, AlertTriangle, BarChart3, RefreshCw, ShieldCheck } from "lucide-react";
-import { getConsensusKlines, type Kline } from "./lib/market";
+import { getConsensusHistory, type Kline } from "./lib/market";
 import { calculateIndicators, calculateMarketStructure, getEmaTrend } from "./lib/indicators";
 import { evaluateAdvancedSignal } from "./core/advancedSignalEngine";
 import { runHistoricalBacktest } from "./core/backtestEngine";
@@ -8,6 +8,7 @@ import { runHistoricalBacktest } from "./core/backtestEngine";
 type MarketMode = "Spot" | "Futures";
 type Frame = { close:number; trend:"BULLISH"|"BEARISH"|"MIXED"; rsi:number; adx:number; volumeRatio:number; atr:number; structure:string; takerRatio:number };
 const FRAMES = ["1d","4h","1h","15m","5m"] as const;
+const HISTORY_DAYS:Record<(typeof FRAMES)[number],number>={"1d":180,"4h":60,"1h":30,"15m":14,"5m":14};
 const fmt=(n:number)=>n.toLocaleString("en-US",{maximumFractionDigits:4});
 function adxValue(rows:Kline[],period=14):number {
   if(rows.length<period*2+1)return 0;
@@ -47,7 +48,7 @@ export default function BacktestingPanel({symbol}:{symbol:string}){
   async function run(){
     setBusy(true);setError("");setResult(null);setInfo("");
     try{
-      const responses=await Promise.all(FRAMES.map(tf=>getConsensusKlines(symbol,tf,300,market)));
+      const responses=await Promise.all(FRAMES.map(tf=>getConsensusHistory(symbol,tf,HISTORY_DAYS[tf],market)));
       const closedHistories=responses.map(r=>r.data.filter(k=>+k[6]<=Date.now()));
       const bad=responses.findIndex((r,i)=>closedHistories[i].length<60||r.maxSpreadPct>0.5);
       if(bad>=0)throw new Error(FRAMES[bad].toUpperCase()+" timeframe-এ পর্যাপ্ত বা নির্ভরযোগ্য multi-exchange candle নেই।");
@@ -73,14 +74,14 @@ export default function BacktestingPanel({symbol}:{symbol:string}){
       });
       if(!simulation.ok)throw new Error(simulation.reason);
       setResult(simulation);
-      setInfo("৫ মিনিটের candle-এ পরীক্ষা · "+base.length+" candle · "+responses.map((r,i)=>FRAMES[i].toUpperCase()+": "+r.exchanges+" exchanges").join(" · "));
+      setInfo("৫ মিনিটের candle-এ পরীক্ষা · "+base.length+" candle · প্রায় ১৪ দিনের execution history · "+responses.map((r,i)=>FRAMES[i].toUpperCase()+": "+r.data.length+" candle / "+r.pages+" pages").join(" · "));
     }catch(e){setError(e instanceof Error?e.message:"Backtest চালানো যায়নি।");}
     finally{setBusy(false);}
   }
   const m=result?.metrics;
   return <div className="user-page">
     <section className="panel">
-      <div className="market-toolbar"><div><div className="eyebrow">HISTORICAL SIMULATION · MULTI-TIMEFRAME</div><h2>Signal Engine Backtest</h2><p>বর্তমান Advanced Signal Engine-এর নিয়ম দিয়ে অতীতের closed candle পরীক্ষা করা হবে।</p></div><button className="outline-btn" onClick={()=>void run()} disabled={busy}><RefreshCw size={14} style={{marginRight:6}}/>{busy?"Running…":"Run backtest"}</button></div>
+      <div className="market-toolbar"><div><div className="eyebrow">HISTORICAL SIMULATION · MULTI-TIMEFRAME</div><h2>Signal Engine Backtest</h2><p>বর্তমান Advanced Signal Engine-এর নিয়ম দিয়ে multi-exchange closed candle-এ ঐতিহাসিক পরীক্ষা হবে। 5M/15M: 14 দিন · 1H: 30 দিন · 4H: 60 দিন · 1D: 180 দিন।</p></div><button className="outline-btn" onClick={()=>void run()} disabled={busy}><RefreshCw size={14} style={{marginRight:6}}/>{busy?"Running…":"Run backtest"}</button></div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:10,marginTop:16}}>
         <label className="admin-field"><span>Symbol</span><input value={symbol} readOnly/></label>
         <label className="admin-field"><span>Market mode</span><select value={market} onChange={e=>setMarket(e.target.value as MarketMode)}><option>Spot</option><option>Futures</option></select></label>
