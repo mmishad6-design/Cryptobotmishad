@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "v2/**"
+      - "tests/**"
       - ".github/workflows/cryptobot-v2-checks.yml"
   push:
     branches:
