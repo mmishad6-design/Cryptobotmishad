@@ -26,9 +26,9 @@ async function okx(symbol:string,interval:string,limit:number,market:string):Pro
 export const onRequestGet=async({request}:{request:Request})=>{
  const u=new URL(request.url),symbol=(u.searchParams.get("symbol")||"BTCUSDT").toUpperCase(),interval=u.searchParams.get("interval")||"1h",market=u.searchParams.get("market")==="Futures"?"Futures":"Spot",limit=Number(u.searchParams.get("limit")||240);
  if(!SYMBOL.test(symbol)||!INTERVALS.has(interval)||!Number.isInteger(limit)||limit<60||limit>300)return Response.json({error:"Invalid symbol, interval or limit."},{status:400});
- const feeds=await Promise.allSettled([binance(symbol,interval,limit,market),bybit(symbol,interval,limit,market),okx(symbol,interval,limit,market)]);
+ const feeds=await Promise.allSettled(market==="Futures"?[binance(symbol,interval,limit,market),bybit(symbol,interval,limit,market)]:[binance(symbol,interval,limit,market),bybit(symbol,interval,limit,market),okx(symbol,interval,limit,market)]);
  const good=feeds.flatMap(x=>x.status==="fulfilled"?[x.value]:[]);
- if(good.length<2)return Response.json({error:"At least two independent exchange feeds are required.",available:good.length,exchanges:feeds.map((x,i)=>({name:["Binance","Bybit","OKX"][i],ok:x.status==="fulfilled"}))},{status:502});
+ if(good.length<2)return Response.json({error:"At least two independent exchange feeds are required.",available:good.length,exchanges:feeds.map((x,i)=>({name:(market==="Futures"?["Binance USDⓈ-M","Bybit Linear"]:["Binance Spot","Bybit Spot","OKX Spot"])[i],ok:x.status==="fulfilled"}))},{status:502});
  const maps=good.map(rows=>new Map(rows.map(c=>[c.time,c]))),common=[...maps[0].keys()].filter(t=>maps.every(m=>m.has(t))).sort((a,b)=>a-b).slice(-limit);
  const data=common.map(time=>{
   const cs=maps.map(m=>m.get(time)!);const median=(v:number[])=>v.sort((a,b)=>a-b)[Math.floor(v.length/2)];
