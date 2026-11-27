@@ -135,7 +135,7 @@ export function connectTickerStream(callbacks: StreamCallbacks<MarketTicker>) {
 
 const BYBIT_INTERVAL: Record<string, string> = {
   "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
-  "1h": "60", "2h": "120", "4h": "240", "6h": "360",
+  "1h": "60", "2h": "120", "4h": "240", "6h": "360", "8h": "480",
   "12h": "720", "1d": "D", "1w": "W", "1M": "M",
 };
 
@@ -205,7 +205,11 @@ function startKlineSocket(
           callbacks.onData([Number(k.t), k.o, k.h, k.l, k.c, k.v, Number(k.q), String(k.T), Number(k.n), k.V, k.Q, "0"]);
         } else if (fallbackMode && message.topic?.startsWith("kline.") && Array.isArray(message.data)) {
           const k = message.data[0];
-          callbacks.onData([Number(k.start), k.open, k.high, k.low, k.close, k.volume, Number(k.turnover), "", 0, "", "", ""]);
+          const start = Number(k.start);
+          const closeTime = interval === "M"
+            ? Date.UTC(new Date(start).getUTCFullYear(), new Date(start).getUTCMonth() + 1, 1) - 1
+            : start + (interval === "W" ? 7 * 86400000 : interval === "D" ? 86400000 : Number(interval) * 60000) - 1;
+          callbacks.onData([start, k.open, k.high, k.low, k.close, k.volume, closeTime, "", 0, "", "", ""]);
         }
       } catch { /* Ignore heartbeat and malformed messages. */ }
     };
