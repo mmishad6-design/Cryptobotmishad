@@ -95,3 +95,41 @@
 @media(max-width:680px){.market-toolbar{align-items:flex-start;flex-direction:column}.chart-controls{width:100%}.chart-controls select{flex:1;min-width:0}.chart-meta{grid-template-columns:repeat(2,1fr)}.live-chart{height:230px}.candle-head,.candle-row{grid-template-columns:1.3fr repeat(4,1fr);font-size:7px;padding:9px 5px;gap:3px}.candle-row{font-size:7px}.candle-row b{font-size:7px}}
 
 .guest-entry-btn{width:100%;height:42px;margin-top:10px;display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid #365c50;border-radius:6px;background:#101d1a;color:#a8e4cc;font-size:11px;font-weight:600;cursor:pointer}.guest-entry-btn:hover{background:#172a24;border-color:#4b9c82}.guest-entry-note{text-align:center;color:#718397;font-size:9px;line-height:1.55;margin:8px 8px 0}.guest-signin-btn{height:32px;padding:0 12px;border:1px solid #365c50;border-radius:5px;background:#14231f;color:#a8e4cc;font-size:10px;font-weight:600;cursor:pointer}.guest-signin-btn:hover{background:#1a332a}
+
+
+/* Paper trading workspace */
+.paper-summary-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:13px}
+.paper-layout{display:grid;grid-template-columns:minmax(280px,.82fr) minmax(0,1.5fr);gap:13px}
+.paper-order-panel,.paper-positions-panel,.paper-history-panel{min-width:0}
+.paper-form{display:flex;flex-direction:column;gap:12px;margin-top:17px}
+.paper-form label{display:flex;flex-direction:column;gap:6px;color:#9eafc0;font-size:10px}
+.paper-form input,.paper-form select{height:38px;width:100%;min-width:0;background:#09111a;border:1px solid #29394a;border-radius:5px;color:#e6edf5;padding:0 10px;font:11px 'DM Sans';outline:none}
+.paper-form input:focus,.paper-form select:focus{border-color:#4b9c82}
+.paper-form-row{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.paper-estimate{padding:11px;background:#0a121a;border:1px solid #1d2b39;border-radius:6px;display:grid;gap:9px}
+.paper-estimate div{display:flex;justify-content:space-between;gap:8px;font-size:9px;color:#7f90a3}
+.paper-estimate b{font:10px 'DM Mono';color:#d5e3ed}
+.paper-submit{width:100%;cursor:pointer}
+.paper-reset-btn{width:100%;height:35px;margin-top:9px;border:1px solid #51383a;border-radius:5px;background:#211719;color:#dca0a0;font-size:9px;cursor:pointer}
+.paper-reset-btn:disabled,.paper-close-btn:disabled{opacity:.5;cursor:not-allowed}
+.paper-empty{min-height:170px;display:grid;place-items:center;text-align:center;color:#718397;font-size:10px;padding:20px}
+.paper-position-list{display:flex;flex-direction:column;gap:9px;margin-top:15px}
+.paper-position{border:1px solid #223241;border-radius:7px;padding:13px;background:#0b131c}
+.paper-position-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.paper-position-top b{font-size:12px}
+.paper-position-top small,.paper-history-row small{display:block;color:#718397;font:8px 'DM Mono';margin-top:5px;letter-spacing:.5px}
+.paper-position-top strong{font:11px 'DM Mono'}
+.paper-profit{color:#68d2aa!important}.paper-loss{color:#e58b90!important}
+.paper-position-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin:14px 0}
+.paper-position-stats span{font-size:8px;color:#718397;display:flex;flex-direction:column;gap:5px}
+.paper-position-stats b{font:9px 'DM Mono';color:#c6d2de;overflow-wrap:anywhere}
+.paper-close-btn{height:32px;width:100%;border:1px solid #315d50;border-radius:5px;background:#14251f;color:#a6e4ca;font-size:9px;cursor:pointer}
+.paper-history-panel{margin-top:13px}
+.paper-history-table{overflow-x:auto;margin-top:12px}
+.paper-history-table .table-head,.paper-history-row{min-width:660px;display:grid;grid-template-columns:1.4fr 1.3fr .7fr 1fr .8fr .9fr;gap:8px;align-items:center;padding:10px 12px}
+.paper-history-row{border-bottom:1px solid #1b2936;color:#aab8c7;font:9px 'DM Mono'}
+.paper-history-row b{font:9px 'DM Mono'}
+.paper-disclaimer{display:flex;align-items:center;gap:9px;margin-top:13px;padding:12px 14px;border:1px solid #263d36;border-radius:6px;background:#101b19;color:#8eafa3;font-size:9px;line-height:1.5}
+.paper-disclaimer svg{flex-shrink:0;color:#69c9a8}
+@media(max-width:1000px){.paper-layout{grid-template-columns:1fr}.paper-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:680px){.paper-summary-grid{gap:8px}.paper-summary-grid .stat-card{padding:11px}.paper-position-stats{grid-template-columns:repeat(3,1fr)}.paper-position-top{flex-wrap:wrap}}
