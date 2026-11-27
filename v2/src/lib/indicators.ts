@@ -4,7 +4,11 @@ export type IndicatorPoint = { time: number; value: number };
 export type IndicatorResult = {
   ema20: IndicatorPoint[];
   ema50: IndicatorPoint[];
+  ema100: IndicatorPoint[];
   ema200: IndicatorPoint[];
+  sma20: IndicatorPoint[];
+  sma50: IndicatorPoint[];
+  sma200: IndicatorPoint[];
   vwap: IndicatorPoint[];
   bbUpper: IndicatorPoint[];
   bbLower: IndicatorPoint[];
@@ -27,6 +31,12 @@ function ema(values: number[], period: number): Array<number | null> {
   return out;
 }
 
+function sma(values: number[], period: number): Array<number | null> {
+  const out: Array<number | null> = Array(values.length).fill(null);
+  for (let i = period - 1; i < values.length; i++) out[i] = values.slice(i - period + 1, i + 1).reduce((sum, value) => sum + value, 0) / period;
+  return out;
+}
+
 function points(candles: Kline[], values: Array<number | null>): IndicatorPoint[] {
   return candles.flatMap((candle, index) => values[index] === null ? [] : [{
     time: Math.floor(Number(candle[0]) / 1000),
@@ -41,7 +51,11 @@ export function calculateIndicators(candles: Kline[]): IndicatorResult {
   const volume = candles.map(k => Number(k[5]));
   const ema20 = ema(close, 20);
   const ema50 = ema(close, 50);
+  const ema100 = ema(close, 100);
   const ema200 = ema(close, 200);
+  const sma20 = sma(close, 20);
+  const sma50 = sma(close, 50);
+  const sma200 = sma(close, 200);
 
   const upper: Array<number | null> = Array(close.length).fill(null);
   const lower: Array<number | null> = Array(close.length).fill(null);
@@ -57,7 +71,10 @@ export function calculateIndicators(candles: Kline[]): IndicatorResult {
   const vwapValues: Array<number | null> = [];
   let cumulativePV = 0;
   let cumulativeVolume = 0;
+  let currentSession = -1;
   for (let i = 0; i < candles.length; i++) {
+    const session = Math.floor(Number(candles[i][0]) / 86_400_000);
+    if (session !== currentSession) { currentSession = session; cumulativePV = 0; cumulativeVolume = 0; }
     const typical = (high[i] + low[i] + close[i]) / 3;
     cumulativePV += typical * volume[i];
     cumulativeVolume += volume[i];
@@ -104,7 +121,11 @@ export function calculateIndicators(candles: Kline[]): IndicatorResult {
   return {
     ema20: points(candles, ema20),
     ema50: points(candles, ema50),
+    ema100: points(candles, ema100),
     ema200: points(candles, ema200),
+    sma20: points(candles, sma20),
+    sma50: points(candles, sma50),
+    sma200: points(candles, sma200),
     vwap: points(candles, vwapValues),
     bbUpper: points(candles, upper),
     bbLower: points(candles, lower),
