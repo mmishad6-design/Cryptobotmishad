@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CandlestickSeries, ColorType, CrosshairMode, HistogramSeries, LineSeries, createChart, type UTCTimestamp } from "lightweight-charts";
 import type { Session } from "@supabase/supabase-js";
 import {
@@ -366,8 +366,8 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
   // the exchange kline stream. This is a visual OHLC fallback if kline WS
   // packets are delayed or blocked; it uses the actual exchange last price.
   const liveChartPrice = marketTickers[chartSymbol]?.lastPrice;
-  const indicatorValues = calculateIndicators(candles);
-  const marketStructure = calculateMarketStructure(candles);
+  const indicatorValues = useMemo(() => calculateIndicators(candles), [candles]);
+  const marketStructure = useMemo(() => calculateMarketStructure(candles), [candles]);
   useEffect(() => {
     const price = Number(liveChartPrice);
     if (!Number.isFinite(price) || price <= 0) return;
