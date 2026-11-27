@@ -40,82 +40,99 @@ function frameFrom(rows:Kline[]):Frame|null {
 }
 function metric(label:string,value:string,sub?:string){return <div className="stat-card" style={{minHeight:92}}><div className="stat-top">{label}</div><div className="stat-value" style={{fontSize:21}}>{value}</div>{sub&&<div className="stat-foot">{sub}</div>}</div>;}
 export default function BacktestingPanel({symbol}:{symbol:string}){
-  const [market,setMarket]=useState<MarketMode>("Spot");
   const [balance,setBalance]=useState("1000");
   const [leverage,setLeverage]=useState(3);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
-  const [result,setResult]=useState<any>(null);
+  const [records,setRecords]=useState<any[]>([]);
   const [info,setInfo]=useState("");
   async function run(){
-    setBusy(true);setError("");setResult(null);setInfo("");
+    setBusy(true);setError("");setRecords([]);setInfo("");
     try{
-      const responses=await Promise.all(FRAMES.map(tf=>getConsensusHistory(symbol,tf,HISTORY_DAYS[tf],market)));
-      const closedHistories=responses.map(r=>r.data.filter(k=>+k[6]<=Date.now()));
-      const bad=responses.findIndex((r,i)=>closedHistories[i].length<60||r.maxSpreadPct>0.5);
-      if(bad>=0)throw new Error(FRAMES[bad].toUpperCase()+" timeframe-এ পর্যাপ্ত বা নির্ভরযোগ্য multi-exchange candle নেই।");
-      const histories=Object.fromEntries(FRAMES.map((tf,i)=>[tf,closedHistories[i]])) as Record<string,Kline[]>;
-      const base=histories["5m"], rows=base.map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
+      const symbols=[...new Set([symbol.toUpperCase(),"SUIUSDT"])];
+      const markets:MarketMode[]=["Spot","Futures"];
       const initialBalance=Number(balance);
       if(!Number.isFinite(initialBalance)||initialBalance<=0)throw new Error("শুরুর balance সঠিকভাবে দাও।");
-      const folds=createSequentialOosFolds(rows,Math.floor(rows.length*0.6),3,60);
-      if(folds.length!==3)throw new Error("Walk-Forward-এর জন্য পর্যাপ্ত historical candle নেই।");
-      const foldResults=folds.map(fold=>{
-        const simulation=runHistoricalBacktest({candles:fold.data,market,initialBalance,warmup:fold.warmupCount,maxHoldingBars:288,feeRate:0.0005,slippageRate:0.0002,
-          evaluate:visible=>{
-            const decisionTime=visible.at(-1)!.closeTime!, data:Record<string,Frame>={};
-            for(const tf of FRAMES){
-              const frame=frameFrom((histories[tf] as Kline[]).filter(k=>+k[6]<=decisionTime).slice(-240));
-              if(!frame)return null; data[tf]=frame;
-            }
-            return evaluateAdvancedSignal({data,market,entry:data["5m"].close,accountBalance:initialBalance,leverage:market==="Spot"?1:leverage,flow:{takerRatio:data["5m"].takerRatio}});
-          }});
-        if(!simulation.ok)throw new Error("Fold "+fold.index+": "+simulation.reason);
-        return {...fold,simulation};
-      });
-      const aggregate=aggregateWalkForwardResults(foldResults.map(f=>f.simulation),initialBalance);
-      setResult({metrics:aggregate,folds:foldResults.map(f=>({index:f.index,start:f.testStartTime,end:f.testEndTime,metrics:f.simulation.metrics,tradeCount:f.simulation.trades.length,trades:f.simulation.trades}))});
-      setInfo("প্রথম ৬০% data warm-up/history হিসেবে বাদ; শেষের ৪০% তিনটি chronological unseen fold-এ পরীক্ষা হয়েছে। "+base.length+"টি 5M candle · "+responses.map((r,i)=>FRAMES[i].toUpperCase()+": "+r.data.length+" candle / "+r.pages+" pages").join(" · "));
-    }catch(e){setError(e instanceof Error?e.message:"Walk-Forward validation চালানো যায়নি।");}
+      const output:any[]=[];
+      for(const pair of symbols){
+        for(const market of markets){
+          const responses=await Promise.all(FRAMES.map(tf=>getConsensusHistory(pair,tf,HISTORY_DAYS[tf],market)));
+          const histories=Object.fromEntries(FRAMES.map((tf,i)=>[tf,responses[i].data.filter(k=>+k[6]<=Date.now())])) as Record<string,Kline[]>;
+          const bad=FRAMES.findIndex(tf=>histories[tf].length<60||responses[FRAMES.indexOf(tf)].maxSpreadPct>0.5);
+          if(bad>=0)throw new Error(pair+" "+market+" · "+FRAMES[bad].toUpperCase()+" timeframe-এ পর্যাপ্ত বা নির্ভরযোগ্য multi-exchange candle নেই।");
+          const base=histories["5m"];
+          const rows=base.map(k=>({time:+k[0],closeTime:+k[6],open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
+          const folds=createSequentialOosFolds(rows,Math.floor(rows.length*0.6),3,60);
+          if(folds.length!==3)throw new Error(pair+" "+market+"-এর জন্য পর্যাপ্ত Out-of-Sample history নেই।");
+          const foldCaches=folds.map(()=>new Map<number,any>());
+          const scenarios=[
+            {label:"Base costs",feeRate:0.0005,slippageRate:0.0002},
+            {label:"Elevated costs",feeRate:0.00075,slippageRate:0.0005},
+            {label:"Severe costs",feeRate:0.001,slippageRate:0.001}
+          ];
+          const scenarioResults=scenarios.map(cost=>{
+            const foldRuns=folds.map((fold,foldIndex)=>{
+              const cache=foldCaches[foldIndex];
+              const simulation=runHistoricalBacktest({
+                candles:fold.data,market,initialBalance,warmup:fold.warmupCount,maxHoldingBars:288,
+                feeRate:cost.feeRate,slippageRate:cost.slippageRate,
+                evaluate:(visible,index)=>{
+                  if(cache.has(index))return cache.get(index);
+                  const decisionTime=visible.at(-1)!.closeTime!,data:Record<string,Frame>={};
+                  for(const tf of FRAMES){
+                    const frame=frameFrom(histories[tf].filter(k=>+k[6]<=decisionTime).slice(-240));
+                    if(!frame){cache.set(index,null);return null;}
+                    data[tf]=frame;
+                  }
+                  const signal=evaluateAdvancedSignal({data,market,entry:data["5m"].close,accountBalance:initialBalance,leverage:market==="Spot"?1:leverage,flow:{takerRatio:data["5m"].takerRatio}});
+                  cache.set(index,signal);
+                  return signal;
+                }
+              });
+              if(!simulation.ok)throw new Error(pair+" "+market+" Fold "+fold.index+": "+simulation.reason);
+              return simulation;
+            });
+            return {label:cost.label,metrics:aggregateWalkForwardResults(foldRuns,initialBalance),trades:foldRuns.flatMap(x=>x.trades),folds:foldRuns.map(x=>x.metrics)};
+          });
+          const regimes=classifyMarketRegimes(rows.map(r=>({time:r.time,close:r.close})),48,0.004);
+          const regimeReport=summarizeRegimePerformance(scenarioResults[0].trades,regimes);
+          output.push({symbol:pair,market,scenarios:scenarioResults,regimes:regimeReport,candleCount:base.length,spread:Math.max(...responses.map(r=>r.maxSpreadPct))});
+        }
+      }
+      setRecords(output);
+      setInfo("প্রতিটি pair ও market-এর শেষের ৪০% history তিনটি unseen fold-এ পরীক্ষা হয়েছে। Base / Elevated / Severe cost-এ একই signal sequence ব্যবহার করা হয়েছে; regime label প্রতিটি signal close-এর আগের candle data থেকে নির্ধারিত।");
+    }catch(e){setError(e instanceof Error?e.message:"Robustness test চালানো যায়নি।");}
     finally{setBusy(false);}
   }
-  const m=result?.metrics;
   return <div className="user-page">
     <section className="panel">
-      <div className="market-toolbar"><div><div className="eyebrow">OUT-OF-SAMPLE · WALK-FORWARD VALIDATION</div><h2>Walk-Forward Validation</h2><p>প্রথম ৬০% history বাদ রেখে শেষের ৪০% তিনটি আলাদা chronological test fold-এ যাচাই হবে; strategy threshold অপরিবর্তিত থাকবে।</p></div><button className="outline-btn" onClick={()=>void run()} disabled={busy}><RefreshCw size={14} style={{marginRight:6}}/>{busy?"Validating…":"Run validation"}</button></div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))",gap:10,marginTop:16}}>
-        <label className="admin-field"><span>Symbol</span><input value={symbol} readOnly/></label>
-        <label className="admin-field"><span>Market mode</span><select value={market} onChange={e=>setMarket(e.target.value as MarketMode)}><option>Spot</option><option>Futures</option></select></label>
-        {market==="Futures"&&<label className="admin-field"><span>Leverage</span><select value={leverage} onChange={e=>setLeverage(Number(e.target.value))}>{[1,2,3,5,10,20].map(x=><option key={x} value={x}>{x}x</option>)}</select></label>}
+      <div className="market-toolbar"><div><div className="eyebrow">OUT-OF-SAMPLE · STRATEGY ROBUSTNESS</div><h2>Strategy Robustness Testing</h2><p>নির্বাচিত pair + SUI/USDT · Spot + Futures · তিন স্তরের fee/slippage stress · market-regime breakdown।</p></div><button className="outline-btn" onClick={()=>void run()} disabled={busy}><RefreshCw size={14} style={{marginRight:6}}/>{busy?"Testing…":"Run robustness test"}</button></div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10,marginTop:16}}>
+        <label className="admin-field"><span>Selected pair</span><input value={symbol} readOnly/></label>
+        <label className="admin-field"><span>Additional pair</span><input value="SUIUSDT" readOnly/></label>
+        <label className="admin-field"><span>Markets</span><input value="Spot + Futures" readOnly/></label>
+        <label className="admin-field"><span>Futures leverage</span><select value={leverage} onChange={e=>setLeverage(Number(e.target.value))}>{[1,2,3,5,10,20].map(x=><option key={x} value={x}>{x}x</option>)}</select></label>
         <label className="admin-field"><span>Starting balance (USDT)</span><input type="number" min="1" value={balance} onChange={e=>setBalance(e.target.value)}/></label>
       </div>
-      <div className="chart-meta"><span>TIMEFRAME <b>5M execution</b></span><span>ANALYSIS <b>1D · 4H · 1H · 15M · 5M</b></span><span>FEES <b>0.05% each side</b></span><span>SLIPPAGE <b>0.02% each side</b></span><span>MAX HOLD <b>24 hours</b></span></div>
+      <div className="chart-meta"><span>EXECUTION <b>5M</b></span><span>ANALYSIS <b>1D · 4H · 1H · 15M · 5M</b></span><span>BASE COST <b>0.05% fee + 0.02% slippage / side</b></span><span>SEVERE COST <b>0.10% + 0.10% / side</b></span></div>
       {error&&<div className="auth-message error"><AlertTriangle size={14}/> {error}</div>}
       {info&&<p style={{marginTop:12}}>{info}</p>}
     </section>
-    {m&&<>
-      <div className="stats-grid" style={{gridTemplateColumns:"repeat(auto-fit,minmax(145px,1fr))"}}>
-        {metric("TOTAL TRADES",String(m.tradeCount),m.wins+" wins · "+m.losses+" losses")}
-        {metric("WIN RATE",m.winRatePct.toFixed(1)+"%",m.tradeCount+" closed trades")}
-        {metric("NET PNL",(m.netPnl>=0?"+":"")+fmt(m.netPnl)+" USDT",m.returnPct.toFixed(2)+"% return")}
-        {metric("PROFIT FACTOR",m.profitFactor===null?"∞":m.profitFactor.toFixed(2))}
-        {metric("EXPECTANCY",(m.expectancy>=0?"+":"")+fmt(m.expectancy)+" USDT / trade")}
-        {metric("MAX DRAWDOWN",m.maxDrawdownPct.toFixed(2)+"%")}
-        {metric("AVERAGE R",m.averageR.toFixed(2)+"R")}
-        {metric("FEES PAID",fmt(m.feesPaid)+" USDT")}
+    {records.map(record=><section className="panel" key={record.symbol+"-"+record.market}>
+      <div className="panel-head"><h2>{record.symbol} · {record.market}</h2><p>{record.candleCount.toLocaleString()} closed 5M candles · max cross-exchange spread {record.spread.toFixed(3)}%</p></div>
+      <div className="stats-grid" style={{gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))"}}>
+        {record.scenarios.map((s:any)=><div className="stat-card" key={s.label}>
+          <div className="stat-top">{s.label.toUpperCase()}</div>
+          <div className="stat-value" style={{fontSize:19,color:s.metrics.netPnl>=0?"#55d5a6":"#f17d89"}}>{s.metrics.netPnl>=0?"+":""}{fmt(s.metrics.netPnl)} USDT</div>
+          <div className="stat-foot">{s.metrics.tradeCount} trades · {s.metrics.winRatePct.toFixed(1)}% win · PF {s.metrics.profitFactor===null?"∞":s.metrics.profitFactor.toFixed(2)}</div>
+          <div className="stat-foot">Worst fold DD {s.metrics.maxDrawdownPct.toFixed(2)}% · Expectancy {fmt(s.metrics.expectancy)}</div>
+        </div>)}
       </div>
-      <section className="panel">
-        <div className="panel-head"><h2>Out-of-sample fold results</h2><p>প্রতিটি fold আলাদা chronological test period।</p></div>
-        <div className="stats-grid" style={{gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))"}}>
-          {result.folds.map((f:any)=><div className="stat-card" key={f.index}><div className="stat-top">TEST FOLD {f.index}</div><div className="stat-value" style={{fontSize:17}}>{f.metrics.returnPct>=0?"+":""}{f.metrics.returnPct.toFixed(2)}%</div><div className="stat-foot">{f.tradeCount} trades · {f.metrics.winRatePct.toFixed(1)}% win · PF {f.metrics.profitFactor===null?"∞":f.metrics.profitFactor.toFixed(2)}</div><div className="stat-foot">{new Date(f.start).toLocaleDateString()} — {new Date(f.end).toLocaleDateString()}</div></div>)}
-        </div>
-      </section>
-      <section className="panel">
-        <div className="panel-head"><h2>Out-of-sample trade history</h2><p>শুধু unseen test folds-এর closed trades</p></div>
-        {!result.folds.some((f:any)=>f.trades.length)?<div className="empty-state"><BarChart3 size={22}/><b>কোনো valid signal পাওয়া যায়নি</b><span>এই sample-এ strategy সব mandatory gate পূরণ করতে পারেনি।</span></div>:
-        <>{result.folds.flatMap((f:any)=>f.trades.map((t:any)=>({...t,fold:f.index}))).slice().reverse().map((t:any,i:number)=><div className="paper-history-row" key={t.entryTime+"-"+i} style={{display:"grid",gridTemplateColumns:"0.45fr 1.2fr .6fr 1fr 1fr 1fr 1fr",gap:8,fontSize:10}}><span>F{t.fold}</span><span>{new Date(t.entryTime).toLocaleString()}</span><b>{t.side}</b><span>{fmt(t.entry)}</span><span>{fmt(t.exit)}</span><b style={{color:t.netPnl>=0?"#55d5a6":"#f17d89"}}>{t.netPnl>=0?"+":""}{fmt(t.netPnl)}</b><span>{t.exitReason}</span></div>)}</>}
-      </section>
-    </>}
-    <div className="paper-disclaimer"><ShieldCheck size={15}/> Simulation only. Historical results do not predict future returns. No real orders are placed.</div>
+      <div className="panel-head" style={{marginTop:18}}><h3>Market regime · Base cost</h3><p>Signal close-এর সময়কার trailing 48-candle trend/volatility</p></div>
+      {!record.regimes.length?<div className="empty-state">এই pair/market-এ কোনো completed trade পাওয়া যায়নি।</div>:
+      <div style={{overflowX:"auto"}}><div className="table-head" style={{gridTemplateColumns:"1.2fr .7fr .7fr .8fr .8fr .8fr",minWidth:580}}><span>REGIME</span><span>TRADES</span><span>WIN RATE</span><span>NET PNL</span><span>EXPECTANCY</span><span>PROFIT FACTOR</span></div>
+      {record.regimes.map((r:any)=><div className="candle-row" key={r.regime} style={{gridTemplateColumns:"1.2fr .7fr .7fr .8fr .8fr .8fr",minWidth:580}}><b>{r.regime.replace("_"," · ")}</b><span>{r.tradeCount}</span><span>{r.winRatePct.toFixed(1)}%</span><span>{fmt(r.netPnl)}</span><span>{fmt(r.expectancy)}</span><span>{r.profitFactor===null?"∞":r.profitFactor.toFixed(2)}</span></div>)}</div>}
+    </section>)}
+    <div className="paper-disclaimer"><ShieldCheck size={15}/> Simulation only. Each fold starts from the same paper balance; combined fold PnL is a sum, not a compounded portfolio return. Historical results do not predict future returns. No real orders are placed.</div>
   </div>;
 }
