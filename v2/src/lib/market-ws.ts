@@ -4,7 +4,7 @@ const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SUIUSDT", "SOLUSDT"];
 
 type StreamCallbacks<T> = {
   onData: (value: T) => void;
-  onStatus: (status: "connecting" | "connected" | "reconnecting", source: string) => void;
+  onStatus: (status: "connecting" | "connected" | "stale" | "reconnecting", source: string) => void;
 };
 
 function startFailoverSocket(
@@ -32,8 +32,16 @@ function startFailoverSocket(
       scheduleReconnect(fallback);
       return;
     }
-    let received = false;
     const current = socket;
+    const armWatchdog = () => {
+      window.clearTimeout(watchdogTimer);
+      watchdogTimer = window.setTimeout(() => {
+        if (!stopped && socket === current) {
+          onStatus("stale", source);
+          current.close();
+        }
+      }, 12000);
+    };
     current.onopen = () => {
       if (stopped || socket !== current) return;
       attempt = 0;
@@ -44,15 +52,11 @@ function startFailoverSocket(
         heartbeatTimer = window.setInterval(() => { if (current.readyState === WebSocket.OPEN) current.send(JSON.stringify({ op: "ping" })); }, 20000);
       }
       onStatus("connected", source);
-      window.clearTimeout(watchdogTimer);
-      watchdogTimer = window.setTimeout(() => {
-        if (!received && !stopped) current.close();
-      }, 9000);
+      armWatchdog();
     };
     current.onmessage = event => {
       if (stopped || socket !== current) return;
-      received = true;
-      window.clearTimeout(watchdogTimer);
+      armWatchdog();
       onMessage(event, source);
     };
     current.onerror = () => {
@@ -168,7 +172,15 @@ function startKlineSocket(
     try { socket = fallbackMode ? fallback() : primary(); }
     catch { schedule(fallbackMode); return; }
     const current = socket;
-    let received = false;
+    const armWatchdog = () => {
+      window.clearTimeout(watchdogTimer);
+      watchdogTimer = window.setTimeout(() => {
+        if (!stopped && socket === current) {
+          callbacks.onStatus("stale", source);
+          current.close();
+        }
+      }, 12000);
+    };
     current.onopen = () => {
       if (stopped || socket !== current) return;
       retry = 0;
@@ -178,15 +190,11 @@ function startKlineSocket(
         heartbeatTimer = window.setInterval(() => { if (current.readyState === WebSocket.OPEN) current.send(JSON.stringify({ op: "ping" })); }, 20000);
       }
       callbacks.onStatus("connected", source);
-      window.clearTimeout(watchdogTimer);
-      watchdogTimer = window.setTimeout(() => {
-        if (!received && !stopped) current.close();
-      }, 9000);
+      armWatchdog();
     };
     current.onmessage = event => {
       if (stopped || socket !== current) return;
-      received = true;
-      window.clearTimeout(watchdogTimer);
+      armWatchdog();
       try {
         const message = JSON.parse(String(event.data));
         // Binance /ws streams send the kline at message.k; combined
