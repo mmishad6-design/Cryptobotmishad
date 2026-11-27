@@ -36,7 +36,7 @@ function frameFrom(rows:Kline[]):Frame|null {
   const takerBuy=rows.slice(-20).reduce((s,r)=>s+Number(r[9]||0),0);
   const total=rows.slice(-20).reduce((s,r)=>s+Number(r[5]||0),0);
   const takerSell=total-takerBuy;
-  const trend=getEmaTrend(rows).toUpperCase() as Frame["trend"];
+  const rawTrend=getEmaTrend(rows);\n  const trend:Frame["trend"]=rawTrend==="Bullish"?"BULLISH":rawTrend==="Bearish"?"BEARISH":"MIXED";
   if(ind.rsi14===null||ind.atr14===null||!close||!Number.isFinite(close))return null;
   return {close,trend,rsi:ind.rsi14,adx:adxValue(rows),volumeRatio:baseline>0?recent/baseline:0,atr:ind.atr14,structure:structure.event,takerRatio:takerSell>0?takerBuy/takerSell:0};
 }
