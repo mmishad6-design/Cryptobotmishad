@@ -9,7 +9,7 @@ export type MarketTicker = {
 
 type ApiEnvelope<T> = {
   data: T;
-  source: string;
+  source: string | string[];
   receivedAt: string;
 };
 
@@ -77,7 +77,8 @@ export async function getConsensusKlines(symbol:string,interval:string,limit=240
     c.time,String(c.open),String(c.high),String(c.low),String(c.close),String(c.volume),
     candleCloseTime(c.time,interval),"",0,String(c.takerRatio??""),"",""
   ]);
-  return {...response,data:normalizeKlines(data),exchanges:response.data.length?Math.max(...response.data.map(c=>c.sourceCount)):0,maxSpreadPct:Math.max(0,...response.data.map(c=>c.spreadPct))};
+  const sources=Array.isArray(response.source)?response.source:[response.source];
+  return {...response,data:normalizeKlines(data),sources,exchanges:response.data.length?Math.max(...response.data.map(c=>c.sourceCount)):0,maxSpreadPct:Math.max(0,...response.data.map(c=>c.spreadPct))};
 }
 
 /** Fetch a bounded, chronological history by paging backwards across two independent exchanges. */
