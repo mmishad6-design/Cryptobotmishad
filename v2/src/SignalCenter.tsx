@@ -56,7 +56,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
     try{
       const results=await Promise.all(FRAMES.map(async interval=>{
         const response=await getConsensusKlines(symbol,interval,240,market);
-        if(response.maxSpreadPct>0.5) return [interval,null,[]] as const;
+        
         const frame=frameFrom(response.data);
         return [interval,frame,response.sources] as const;
       }));
@@ -67,7 +67,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
       const analysisEntry=data["5m"]?.close ?? (livePrice>0?livePrice:undefined);
       const usableDepthRatio=market==="Spot"?(depthRatio??undefined):undefined;
       const result=evaluateAdvancedSignal({data,market,entry:analysisEntry,accountBalance:Number(balance)>0?Number(balance):null,leverage:market==="Spot"?1:leverage,flow:{depthRatio:usableDepthRatio}});
-      if(results.some(([,frame])=>!frame)) throw new Error("এক বা একাধিক timeframe-এ পর্যাপ্ত multi-exchange data পাওয়া যায়নি।");
+      if(results.some(([,frame])=>!frame)) throw new Error("এক বা একাধিক timeframe-এ পর্যাপ্ত Binance candle data পাওয়া যায়নি।");
       setEvaluation(result as Evaluation);setUpdatedAt(new Date().toISOString());
     }catch(e){setError(e instanceof Error?e.message:"Market data load failed.");}
     finally{setLoading(false);}
@@ -81,7 +81,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
   return <div style={{display:"grid",gap:14}}>
     <section className="panel" style={{padding:16}}>
       <div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap",alignItems:"center"}}>
-        <div><div className="eyebrow">MULTI-EXCHANGE · PUBLIC MARKET DATA</div><h2 style={{margin:"5px 0"}}>Advanced Signal Engine</h2><p style={{margin:0,color:"var(--muted)",fontSize:12}}>Pair: {symbol} · {exchangeSources.length?exchangeSources.join(" + "):"Exchange feeds যাচাই হচ্ছে"} · Manual execution</p></div>
+        <div><div className="eyebrow">BINANCE · PUBLIC MARKET DATA</div><h2 style={{margin:"5px 0"}}>Advanced Signal Engine</h2><p style={{margin:0,color:"var(--muted)",fontSize:12}}>Pair: {symbol} · Binance {market} · Manual execution</p></div>
         <button className="outline-btn" onClick={()=>void run()} disabled={loading}><RefreshCw size={14} style={{marginRight:6}}/>{loading?"Analyzing…":"Refresh analysis"}</button>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:9,marginTop:16}}>
@@ -96,7 +96,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
       {error&&<div className="auth-message error" style={{marginTop:12}}>{error}</div>}
     </section>
     <section className="panel" style={{padding:16}}>
-      {!evaluation?<div className="empty-state"><Activity size={22}/><b>{loading?"Analyzing five timeframes…":"Waiting for analysis"}</b><span>Signal দেখানোর আগে একাধিক exchange-এর candle data মিলিয়ে যাচাই করা হবে।</span></div>:<>
+      {!evaluation?<div className="empty-state"><Activity size={22}/><b>{loading?"Analyzing five timeframes…":"Waiting for analysis"}</b><span>Binance-এর live candle data দিয়ে পাঁচটি timeframe বিশ্লেষণ করা হবে।</span></div>:<>
         <div style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",flexWrap:"wrap"}}>
           <div><div className="eyebrow">CURRENT DECISION · {market.toUpperCase()}</div><h2 style={{fontSize:25,margin:"6px 0",color:evaluation.decision==="NO TRADE"?"var(--text-2)":evaluation.decision==="LONG"?"#42d2a3":"#f07883"}}>{market==="Spot"&&evaluation.decision==="LONG"?"BUY":evaluation.decision==="SHORT"?"SHORT":evaluation.decision}</h2><small style={{color:"var(--muted)"}}>Score {evaluation.score}/100 · Minimum 80 · {updatedAt?new Date(updatedAt).toLocaleTimeString():""}</small></div>
           <div style={{fontSize:32,fontWeight:750,fontVariantNumeric:"tabular-nums"}}>{evaluation.score}<small style={{fontSize:12,color:"var(--muted)"}}>/100</small></div>
