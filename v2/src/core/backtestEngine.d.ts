@@ -1,0 +1,52 @@
+export type BacktestCandle = {
+  time: number;
+  closeTime?: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+};
+export type BacktestTrade = {
+  side: "LONG" | "SHORT";
+  signalTime: number;
+  entryTime: number;
+  exitTime: number;
+  entry: number;
+  stop: number;
+  target: number;
+  exit: number;
+  exitReason: string;
+  quantity: number;
+  grossPnl: number;
+  fees: number;
+  netPnl: number;
+  rMultiple: number;
+  equityAfter: number;
+  barsHeld: number;
+};
+export type BacktestMetrics = {
+  tradeCount: number;
+  wins: number;
+  losses: number;
+  breakeven: number;
+  winRatePct: number;
+  netPnl: number;
+  returnPct: number;
+  profitFactor: number | null;
+  expectancy: number;
+  averageR: number;
+  maxDrawdownPct: number;
+  finalBalance: number;
+  initialBalance: number;
+  feesPaid: number;
+};
+export function runHistoricalBacktest(options: {
+  candles: BacktestCandle[];
+  evaluate: (visibleCandles: BacktestCandle[], index: number) => { decision: string; riskPlan: { ok: boolean; stopDistance: number; rewardDistance: number; quantity?: number } | null } | null;
+  market?: "Spot" | "Futures";
+  initialBalance?: number;
+  feeRate?: number;
+  slippageRate?: number;
+  warmup?: number;
+  maxHoldingBars?: number;
+}): { ok: true; reason: ""; trades: BacktestTrade[]; metrics: BacktestMetrics } | { ok: false; reason: string; trades: []; metrics: null };
