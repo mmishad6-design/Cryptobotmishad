@@ -77,7 +77,8 @@ export async function getConsensusKlines(symbol:string,interval:string,limit=240
     c.time,String(c.open),String(c.high),String(c.low),String(c.close),String(c.volume),
     candleCloseTime(c.time,interval),"",0,String(c.takerRatio??""),"",""
   ]);
-  const rawSource=(response as ApiEnvelope<ConsensusCandle[]> & {source:string|string[]}).source;\n  const sources=Array.isArray(rawSource)?rawSource:[rawSource];
+  const rawSource=(response as ApiEnvelope<ConsensusCandle[]> & {source:string|string[]}).source;
+  const sources=Array.isArray(rawSource)?rawSource:[rawSource];
   return {...response,data:normalizeKlines(data),sources,exchanges:response.data.length?Math.max(...response.data.map(c=>c.sourceCount)):0,maxSpreadPct:Math.max(0,...response.data.map(c=>c.spreadPct))};
 }
 
