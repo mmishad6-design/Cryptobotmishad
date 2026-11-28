@@ -5,7 +5,7 @@ import { calculateIndicators, calculateMarketStructure, getEmaTrend } from "./li
 import { evaluateAdvancedSignal } from "./core/advancedSignalEngine";
 
 type MarketMode = "Spot" | "Futures";
-type Frame = { close:number; trend:"BULLISH"|"BEARISH"|"MIXED"; rsi:number; adx:number; volumeRatio:number; atr:number; structure:string; takerRatio:number };
+type Frame = { close:number; trend:"BULLISH"|"BEARISH"|"MIXED"; rsi:number; adx:number; volumeRatio:number; atr:number; structure:string; takerRatio:number|null };
 type Evaluation = { decision:string; score:number; reasons:string[]; riskPlan:any; gates:Record<string,boolean>; diagnostics:Record<string,any> };
 const FRAMES = ["1d","4h","1h","15m","5m"] as const;
 const money = (n:number) => n.toLocaleString("en-US",{maximumFractionDigits:6});
@@ -34,7 +34,7 @@ function frameFrom(rows:Kline[]):Frame|null {
   const recent=volume.slice(-5).reduce((a,b)=>a+b,0)/5;
   const baseline=volume.slice(-25,-5).reduce((a,b)=>a+b,0)/20;
   const flowSamples=rows.slice(-20).map(r=>Number(r[9])).filter(v=>Number.isFinite(v)&&v>0);
-  const takerRatio=flowSamples.length?flowSamples.reduce((a,b)=>a+b,0)/flowSamples.length:0;
+  const takerRatio=flowSamples.length?flowSamples.reduce((a,b)=>a+b,0)/flowSamples.length:null;
   const rawTrend=getEmaTrend(rows);
   const trend:Frame["trend"]=rawTrend==="Bullish"?"BULLISH":rawTrend==="Bearish"?"BEARISH":"MIXED";
   if(ind.rsi14===null||ind.atr14===null||!close||!Number.isFinite(close))return null;
@@ -48,7 +48,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
   const [updatedAt,setUpdatedAt]=useState("");
-  const [frameStatus,setFrameStatus]=useState<Record<string,string>>({});
+  const [frameStatus,setFrameStatus]=useState<Record<string,string>>({});\n  const [exchangeSources,setExchangeSources]=useState<string[]>([]);\n  const [takerFlowAvailable,setTakerFlowAvailable]=useState(false);
   async function run(){
     setLoading(true);setError("");setEvaluation(null);
     try{
@@ -56,7 +56,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
         const response=await getConsensusKlines(symbol,interval,240,market);
         if(response.maxSpreadPct>0.5) return [interval,null] as const;
         const frame=frameFrom(response.data);
-        return [interval,frame] as const;
+        return [interval,frame,response.sources] as const;
       }));
       const data=Object.fromEntries(results.filter((x):x is [typeof FRAMES[number],Frame]=>Boolean(x[1])));
       setFrameStatus(Object.fromEntries(results.map(([tf,frame])=>[tf,frame?"READY":"INSUFFICIENT DATA"])));
@@ -77,7 +77,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
   return <div style={{display:"grid",gap:14}}>
     <section className="panel" style={{padding:16}}>
       <div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap",alignItems:"center"}}>
-        <div><div className="eyebrow">MULTI-EXCHANGE · PUBLIC MARKET DATA</div><h2 style={{margin:"5px 0"}}>Advanced Signal Engine</h2><p style={{margin:0,color:"var(--muted)",fontSize:12}}>Pair: {symbol} · Binance + Bybit{market==="Spot"?" + OKX":""} · Manual execution</p></div>
+        <div><div className="eyebrow">MULTI-EXCHANGE · PUBLIC MARKET DATA</div><h2 style={{margin:"5px 0"}}>Advanced Signal Engine</h2><p style={{margin:0,color:"var(--muted)",fontSize:12}}>Pair: {symbol} · {exchangeSources.length?exchangeSources.join(" + "):"Exchange feeds যাচাই হচ্ছে"} · Manual execution</p></div>
         <button className="outline-btn" onClick={()=>void run()} disabled={loading}><RefreshCw size={14} style={{marginRight:6}}/>{loading?"Analyzing…":"Refresh analysis"}</button>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:9,marginTop:16}}>
