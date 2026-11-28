@@ -137,7 +137,7 @@ export function evaluateAdvancedSignal({
     reasons.push(depthAvailable
       ? 'Taker flow ও Order Book depth একই দিককে সমর্থন করছে।'
       : 'Taker flow সমর্থন করছে; live Order Book depth না থাকায় score সীমিত রাখা হয়েছে।');
-  } else reasons.push('NO TRADE: Taker flow অথবা Order Book depth বিপরীত/অপর্যাপ্ত।');
+  } else if (!Number.isFinite(takerRatio) || takerRatio <= 0) {\n    reasons.push('NO TRADE: নির্বাচিত exchange feed থেকে নির্ভরযোগ্য Taker Buy/Sell flow পাওয়া যায়নি; তাই flow confirmation ছাড়া signal অনুমোদিত নয়।');\n  } else reasons.push('NO TRADE: Taker flow অথবা Order Book depth বিপরীত/অপর্যাপ্ত।');
 
   if (!adxOk) reasons.push('NO TRADE: 1D, 4H ও 1H-এর ADX trend-strength শর্ত পূরণ হয়নি।');
   if (market === 'Spot' && candidateSide === 'SHORT') {
@@ -203,7 +203,7 @@ export function evaluateAdvancedSignal({
       frames: REQUIRED_FRAMES,
       takerRatio: Number.isFinite(takerRatio) ? takerRatio : null,
       depthRatio: depthAvailable ? depthRatio : null,
-      flowMode: depthAvailable ? 'taker+depth' : 'taker-only',
+      flowMode: Number.isFinite(takerRatio) && takerRatio > 0 ? (depthAvailable ? 'taker+depth' : 'taker-only') : 'unavailable',\n      takerFlowAvailable: Number.isFinite(takerRatio) && takerRatio > 0,
       market,
       leverage: market === 'Futures' ? leverage : 1,
       minimumScore: minScore,
