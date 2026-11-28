@@ -48,7 +48,9 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
   const [updatedAt,setUpdatedAt]=useState("");
-  const [frameStatus,setFrameStatus]=useState<Record<string,string>>({});\n  const [exchangeSources,setExchangeSources]=useState<string[]>([]);\n  const [takerFlowAvailable,setTakerFlowAvailable]=useState(false);
+  const [frameStatus,setFrameStatus]=useState<Record<string,string>>({});
+  const [exchangeSources,setExchangeSources]=useState<string[]>([]);
+  const [takerFlowAvailable,setTakerFlowAvailable]=useState(false);
   async function run(){
     setLoading(true);setError("");setEvaluation(null);
     try{
@@ -58,8 +60,10 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
         const frame=frameFrom(response.data);
         return [interval,frame,response.sources] as const;
       }));
-      const data=Object.fromEntries(results.filter((x):x is [typeof FRAMES[number],Frame]=>Boolean(x[1])));
+      const data=Object.fromEntries(results.filter(([,frame])=>Boolean(frame)).map(([tf,frame])=>[tf,frame])) as Record<typeof FRAMES[number],Frame>;
       setFrameStatus(Object.fromEntries(results.map(([tf,frame])=>[tf,frame?"READY":"INSUFFICIENT DATA"])));
+      setExchangeSources([...new Set(results.flatMap(([,frame,sources])=>frame?sources:[]))]);
+      setTakerFlowAvailable(Boolean(data["5m"]&&data["5m"].takerRatio!==null&&Number.isFinite(data["5m"].takerRatio)));
       const analysisEntry=data["5m"]?.close ?? (livePrice>0?livePrice:undefined);
       const usableDepthRatio=market==="Spot"?(depthRatio??undefined):undefined;
       const result=evaluateAdvancedSignal({data,market,entry:analysisEntry,accountBalance:Number(balance)>0?Number(balance):null,leverage:market==="Spot"?1:leverage,flow:{depthRatio:usableDepthRatio}});
