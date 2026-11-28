@@ -54,7 +54,7 @@ export default function SignalCenter({symbol, livePrice, depthRatio}:{symbol:str
     try{
       const results=await Promise.all(FRAMES.map(async interval=>{
         const response=await getConsensusKlines(symbol,interval,240,market);
-        if(response.maxSpreadPct>0.5) return [interval,null] as const;
+        if(response.maxSpreadPct>0.5) return [interval,null,[]] as const;
         const frame=frameFrom(response.data);
         return [interval,frame,response.sources] as const;
       }));
