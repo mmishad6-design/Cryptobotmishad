@@ -65,6 +65,16 @@ test('weak volume, structure, flow and ADX each block the setup', () => {
   }
 });
 
+test('missing exchange taker-flow data blocks Futures signal with explicit reason', () => {
+  const data = bullish();
+  data['5m'].takerRatio = null;
+  const result = evaluateAdvancedSignal({ data, market: 'Futures', entry: 100, leverage: 3 });
+  assert.equal(result.decision, 'NO TRADE');
+  assert.equal(result.gates.flow, false);
+  assert.equal(result.diagnostics.takerFlowAvailable, false);
+  assert.ok(result.reasons.some(reason => reason.includes('Taker Buy/Sell flow পাওয়া যায়নি')));
+});
+
 test('rejects invalid leverage and never applies leverage to Spot', () => {
   assert.equal(evaluateAdvancedSignal({ data: bullish(), market: 'Futures', leverage: 0 }).decision, 'NO TRADE');
   assert.equal(evaluateAdvancedSignal({ data: bullish(), market: 'Spot', leverage: 2 }).decision, 'NO TRADE');
