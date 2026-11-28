@@ -44,6 +44,15 @@ async function bybit(symbol:string,interval:string,limit:number,market:string,en
  if(a.retCode!==0||!a.result?.list)throw Error("Bybit unavailable");
  return a.result.list.map((x:string[])=>({time:+x[0],open:+x[1],high:+x[2],low:+x[3],close:+x[4],volume:+x[5],source:"Bybit"})).reverse();
 }
+async function gateFutures(symbol:string,interval:string,limit:number,endTime?:number):Promise<Candle[]>{
+ const bar:Record<string,string>={"1m":"1m","5m":"5m","15m":"15m","30m":"30m","1h":"1h","4h":"4h","8h":"8h","1d":"1d","1w":"7d"};
+ if(!bar[interval])throw Error("Interval unsupported by Gate Futures: "+interval);
+ const p=new URLSearchParams({contract:symbol.replace(/USDT$/,"_USDT"),interval:bar[interval],limit:String(Math.min(limit,2000))});
+ if(endTime!==undefined)p.set("to",String(Math.floor(endTime/1000)));
+ const a=await json("https://api.gateio.ws/api/v4/futures/usdt/candlesticks?"+p) as any[];
+ if(!Array.isArray(a)||!a.length)throw Error("Gate Futures returned no candles");
+ return a.map(x=>{const close=Number(x.c),quoteVolume=Number(x.sum);return {time:Number(x.t)*1000,open:Number(x.o),high:Number(x.h),low:Number(x.l),close,volume:Number.isFinite(quoteVolume)&&close>0?quoteVolume/close:0,source:"Gate"};}).filter(x=>Number.isFinite(x.time)&&x.close>0);
+}
 async function okx(symbol:string,interval:string,limit:number,market:string,endTime?:number):Promise<Candle[]>{
  const bar:Record<string,string>={"1m":"1m","3m":"3m","5m":"5m","15m":"15m","30m":"30m","1h":"1H","2h":"2H","4h":"4H","6h":"6H","12h":"12H","1d":"1D","1w":"1W"};
  if(!bar[interval])throw Error("Interval unsupported by OKX: "+interval);
@@ -61,17 +70,24 @@ export const onRequestGet=async({request}:{request:Request})=>{
  // OKX derivative candle volume is returned in base-currency units (volCcy),
  // while its contract-count volume (vol) is not comparable with Bybit/Binance base volume.
  // Keep all three independent feeds eligible for both latest and paginated history.
- const feeds=await Promise.allSettled([
+ const feedNames=market==="Futures"?["Binance USDⓈ-M","Bybit Linear","OKX USDT Swap","Gate USDT Futures"]:["Binance Spot","Bybit Spot","OKX Spot"];
+ const feedTasks=market==="Futures"?[
+  binance(symbol,interval,limit,market,endTime),
+  bybit(symbol,interval,limit,market,endTime),
+  okx(symbol,interval,limit,market,endTime),
+  gateFutures(symbol,interval,limit,endTime)
+ ]:[
   binance(symbol,interval,limit,market,endTime),
   bybit(symbol,interval,limit,market,endTime),
   okx(symbol,interval,limit,market,endTime)
- ]);
+ ];
+ const feeds=await Promise.allSettled(feedTasks);
  const good=feeds.flatMap(x=>x.status==="fulfilled"?[x.value]:[]);
  if(good.length<2)return Response.json({
   error:"At least two independent exchange feeds are required.",
   available:good.length,
   exchanges:feeds.map((x,i)=>({
-   name:(market==="Futures"?["Binance USDⓈ-M","Bybit Linear","OKX USDT Swap"]:["Binance Spot","Bybit Spot","OKX Spot"])[i],
+   name:feedNames[i],
    ok:x.status==="fulfilled",
    ...(x.status==="rejected"?{reason:failureReason(x.reason)}:{})
   }))
