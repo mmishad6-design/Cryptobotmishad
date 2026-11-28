@@ -30,31 +30,34 @@ async function bybit(symbol:string,interval:string,limit:number,market:string,en
  if(a.retCode!==0||!a.result?.list)throw Error("Bybit unavailable");
  return a.result.list.map((x:string[])=>({time:+x[0],open:+x[1],high:+x[2],low:+x[3],close:+x[4],volume:+x[5],source:"Bybit"})).reverse();
 }
-async function okx(symbol:string,interval:string,limit:number,market:string):Promise<Candle[]>{
+async function okx(symbol:string,interval:string,limit:number,market:string,endTime?:number):Promise<Candle[]>{
  const bar:Record<string,string>={"1m":"1m","3m":"3m","5m":"5m","15m":"15m","30m":"30m","1h":"1H","2h":"2H","4h":"4H","6h":"6H","12h":"12H","1d":"1D","1w":"1W"};
- if(!bar[interval])throw Error("Interval unsupported");
+ if(!bar[interval])throw Error("Interval unsupported by OKX: "+interval);
  const inst=symbol.replace(/USDT$/,"-USDT")+(market==="Futures"?"-SWAP":"");
  const p=new URLSearchParams({instId:inst,bar:bar[interval],limit:String(Math.min(limit,300))});
+ if(endTime!==undefined)p.set("after",String(endTime));
  const a=await json("https://www.okx.com/api/v5/market/candles?"+p) as any;
  if(a.code!=="0"||!a.data?.length)throw Error("OKX unavailable");
- return a.data.map((x:string[])=>({time:+x[0],open:+x[1],high:+x[2],low:+x[3],close:+x[4],volume:+x[5],source:"OKX"})).reverse();
+ return a.data.map((x:string[])=>({time:+x[0],open:+x[1],high:+x[2],low:+x[3],close:+x[4],volume:+x[market==="Futures"?6:5],source:"OKX"})).reverse();
 }
 export const onRequestGet=async({request}:{request:Request})=>{
  const u=new URL(request.url),symbol=(u.searchParams.get("symbol")||"BTCUSDT").toUpperCase(),interval=u.searchParams.get("interval")||"1h",market=u.searchParams.get("market")==="Futures"?"Futures":"Spot",limit=Number(u.searchParams.get("limit")||240),endRaw=u.searchParams.get("endTime"),endTime=endRaw===null?undefined:Number(endRaw);
  if(endTime!==undefined&&(!Number.isFinite(endTime)||endTime<=0))return Response.json({error:"Invalid endTime."},{status:400});
  if(!SYMBOL.test(symbol)||!INTERVALS.has(interval)||!Number.isInteger(limit)||limit<60||limit>300)return Response.json({error:"Invalid symbol, interval or limit."},{status:400});
- // Historical pages use Binance + Bybit, both of which support end-time pagination.
- // The latest-page request retains the third Spot source for the normal consensus feed.
- const feeds=await Promise.allSettled(endTime!==undefined
-  ?[binance(symbol,interval,limit,market,endTime),bybit(symbol,interval,limit,market,endTime)]
-  :market==="Futures"?[binance(symbol,interval,limit,market),bybit(symbol,interval,limit,market)]
-  :[binance(symbol,interval,limit,market),bybit(symbol,interval,limit,market),okx(symbol,interval,limit,market)]);
+ // OKX derivative candle volume is returned in base-currency units (volCcy),
+ // while its contract-count volume (vol) is not comparable with Bybit/Binance base volume.
+ // Keep all three independent feeds eligible for both latest and paginated history.
+ const feeds=await Promise.allSettled([
+  binance(symbol,interval,limit,market,endTime),
+  bybit(symbol,interval,limit,market,endTime),
+  okx(symbol,interval,limit,market,endTime)
+ ]);
  const good=feeds.flatMap(x=>x.status==="fulfilled"?[x.value]:[]);
  if(good.length<2)return Response.json({
   error:"At least two independent exchange feeds are required.",
   available:good.length,
   exchanges:feeds.map((x,i)=>({
-   name:(market==="Futures"?["Binance USDⓈ-M","Bybit Linear"]:["Binance Spot","Bybit Spot","OKX Spot"])[i],
+   name:(market==="Futures"?["Binance USDⓈ-M","Bybit Linear","OKX USDT Swap"]:["Binance Spot","Bybit Spot","OKX Spot"])[i],
    ok:x.status==="fulfilled",
    ...(x.status==="rejected"?{reason:failureReason(x.reason)}:{})
   }))
