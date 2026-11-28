@@ -3,14 +3,28 @@ const INTERVALS=new Set(["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12
 const BYBIT:Record<string,string>={"1m":"1","3m":"3","5m":"5","15m":"15","30m":"30","1h":"60","2h":"120","4h":"240","6h":"360","8h":"480","12h":"720","1d":"D","3d":"D","1w":"W"};
 type Candle={time:number;open:number;high:number;low:number;close:number;volume:number;source:string;takerRatio?:number};
 async function json(url:string){
- const r=await fetch(url,{headers:{accept:"application/json"},signal:AbortSignal.timeout(7000)});
- if(!r.ok){
-  const body=(await r.text()).slice(0,240);
-  let detail=body;
-  try{const parsed=JSON.parse(body);detail=parsed.msg||parsed.message||parsed.retMsg||body;}catch{}
-  throw Error("HTTP "+r.status+(detail?" — "+String(detail).slice(0,160):""));
+ const cacheKey=new Request(url,{method:"GET"});
+ const cache=caches.default;
+ const cached=await cache.match(cacheKey);
+ const storedAt=cached?Number(cached.headers.get("x-feed-cached-at")||0):0;
+ const ageMs=storedAt?Date.now()-storedAt:Infinity;
+ if(cached&&ageMs<=5000)return cached.clone().json();
+ try{
+  const r=await fetch(url,{headers:{accept:"application/json"},signal:AbortSignal.timeout(7000)});
+  if(!r.ok){
+   const body=(await r.text()).slice(0,240);
+   let detail=body;
+   try{const parsed=JSON.parse(body);detail=parsed.msg||parsed.message||parsed.retMsg||body;}catch{}
+   throw Error("HTTP "+r.status+(detail?" — "+String(detail).slice(0,160):""));
+  }
+  const body=await r.text();
+  const response=new Response(body,{headers:{"content-type":"application/json; charset=utf-8","cache-control":"public, max-age=60","x-feed-cached-at":String(Date.now())}});
+  await cache.put(cacheKey,response);
+  return JSON.parse(body);
+ }catch(error){
+  if(cached&&ageMs<=30000)return cached.clone().json();
+  throw error;
  }
- return r.json();
 }
 function failureReason(reason:unknown){
  if(reason instanceof Error){
