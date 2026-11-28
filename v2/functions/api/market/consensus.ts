@@ -2,7 +2,23 @@ const SYMBOL=/^[A-Z0-9]{2,20}USDT$/;
 const INTERVALS=new Set(["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"]);
 const BYBIT:Record<string,string>={"1m":"1","3m":"3","5m":"5","15m":"15","30m":"30","1h":"60","2h":"120","4h":"240","6h":"360","8h":"480","12h":"720","1d":"D","3d":"D","1w":"W"};
 type Candle={time:number;open:number;high:number;low:number;close:number;volume:number;source:string;takerRatio?:number};
-async function json(url:string){const r=await fetch(url,{headers:{accept:"application/json"},signal:AbortSignal.timeout(7000)});if(!r.ok)throw Error("HTTP "+r.status);return r.json();}
+async function json(url:string){
+ const r=await fetch(url,{headers:{accept:"application/json"},signal:AbortSignal.timeout(7000)});
+ if(!r.ok){
+  const body=(await r.text()).slice(0,240);
+  let detail=body;
+  try{const parsed=JSON.parse(body);detail=parsed.msg||parsed.message||parsed.retMsg||body;}catch{}
+  throw Error("HTTP "+r.status+(detail?" — "+String(detail).slice(0,160):""));
+ }
+ return r.json();
+}
+function failureReason(reason:unknown){
+ if(reason instanceof Error){
+  if(reason.name==="TimeoutError"||reason.name==="AbortError")return "Request timeout (7s)";
+  return reason.message.slice(0,200);
+ }
+ return String(reason).slice(0,200);
+}
 async function binance(symbol:string,interval:string,limit:number,market:string,endTime?:number):Promise<Candle[]>{
  const base=market==="Futures"?"https://fapi.binance.com/fapi/v1/klines":"https://api.binance.com/api/v3/klines";
  const p=new URLSearchParams({symbol,interval,limit:String(limit)});if(endTime!==undefined)p.set("endTime",String(endTime));const a=await json(base+"?"+p) as any[];
@@ -34,7 +50,15 @@ export const onRequestGet=async({request}:{request:Request})=>{
   :market==="Futures"?[binance(symbol,interval,limit,market),bybit(symbol,interval,limit,market)]
   :[binance(symbol,interval,limit,market),bybit(symbol,interval,limit,market),okx(symbol,interval,limit,market)]);
  const good=feeds.flatMap(x=>x.status==="fulfilled"?[x.value]:[]);
- if(good.length<2)return Response.json({error:"At least two independent exchange feeds are required.",available:good.length,exchanges:feeds.map((x,i)=>({name:(market==="Futures"?["Binance USDⓈ-M","Bybit Linear"]:["Binance Spot","Bybit Spot","OKX Spot"])[i],ok:x.status==="fulfilled"}))},{status:502});
+ if(good.length<2)return Response.json({
+  error:"At least two independent exchange feeds are required.",
+  available:good.length,
+  exchanges:feeds.map((x,i)=>({
+   name:(market==="Futures"?["Binance USDⓈ-M","Bybit Linear"]:["Binance Spot","Bybit Spot","OKX Spot"])[i],
+   ok:x.status==="fulfilled",
+   ...(x.status==="rejected"?{reason:failureReason(x.reason)}:{})
+  }))
+ },{status:502});
  const maps=good.map(rows=>new Map(rows.map(c=>[c.time,c]))),common=[...maps[0].keys()].filter(t=>maps.every(m=>m.has(t))).sort((a,b)=>a-b).slice(-limit);
  const data=common.map(time=>{
   const cs=maps.map(m=>m.get(time)!);const median=(v:number[])=>v.sort((a,b)=>a-b)[Math.floor(v.length/2)];
