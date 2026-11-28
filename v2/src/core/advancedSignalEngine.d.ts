@@ -7,7 +7,7 @@ export type AdvancedSignalResult = {
   diagnostics: Record<string, unknown>;
 };
 export function evaluateAdvancedSignal(options?: {
-  data?: Record<string, { close:number; trend:"BULLISH"|"BEARISH"|"MIXED"; rsi:number; adx:number; volumeRatio:number; atr:number; structure?:string; takerRatio?:number }>;
+  data?: Record<string, { close:number; trend:"BULLISH"|"BEARISH"|"MIXED"; rsi:number; adx:number; volumeRatio:number; atr:number; structure?:string; takerRatio?:number|null }>;
   market?: "Spot"|"Futures"; entry?:number; accountBalance?:number|null; leverage?:number;
   flow?: { takerRatio?:number; depthRatio?:number };
   thresholds?: Record<string,number>;
