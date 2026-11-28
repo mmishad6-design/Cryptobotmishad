@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CandlestickSeries, ColorType, CrosshairMode, HistogramSeries, LineSeries, LineStyle, createChart, type UTCTimestamp } from "lightweight-charts";
 import type { Session } from "@supabase/supabase-js";
 import {
-  Activity, ArrowDownRight, ArrowUpRight, Bell, CandlestickChart,
+  Activity, ArrowDownRight, ArrowUpRight, Bell, CandlestickChart, Coins,
   ChevronDown, CircleDot, Command, Crosshair, LayoutDashboard,
   ListFilter, Search, Settings2, ShieldCheck, SlidersHorizontal,
   Wallet, LogOut, LockKeyhole, Mail, UserRound, LoaderCircle, Eye, EyeOff
@@ -13,6 +13,7 @@ import { connectTickerStream, connectKlineStream, connectOrderBookStream } from 
 import { calculateIndicators, calculateMarketStructure, DEFAULT_INDICATOR_SETTINGS, getEmaTrend, type IndicatorSettings } from "./lib/indicators";
 import SignalCenter from "./SignalCenter";
 import BacktestingPanel from "./BacktestingPanel";
+import CoinExplorer from "./CoinExplorer";
 
 const CHART_INTERVALS = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w","1M"] as const;
 
@@ -47,6 +48,7 @@ const watchlist = [
 const nav = [
   { label: "Overview", icon: LayoutDashboard, active: true },
   { label: "Market Analysis", icon: CandlestickChart },
+  { label: "Coin Explorer", icon: Coins },
   { label: "Signal Center", icon: Crosshair },
   { label: "Portfolio", icon: Wallet },
   { label: "Paper Trading", icon: Activity },
@@ -671,7 +673,7 @@ function Dashboard({ session, onSignIn }: { session: Session | null; onSignIn: (
             </section>
             <div className="table-head candle-head"><span>TIME</span><span>OPEN</span><span>HIGH</span><span>LOW</span><span>CLOSE</span></div>{candles.slice(-10).reverse().map(k=><div className="candle-row" key={String(k[0])}><span>{new Date(k[0]).toLocaleString()}</span><span>{Number(k[1]).toFixed(4)}</span><span>{Number(k[2]).toFixed(4)}</span><span>{Number(k[3]).toFixed(4)}</span><b>{Number(k[4]).toFixed(4)}</b></div>)}
           </section>}
-          {activePage === "Signal Center" && <SignalCenter symbol={chartSymbol} livePrice={Number(marketTickers[chartSymbol]?.lastPrice ?? 0)} depthRatio={bidDepth > 0 && askDepth > 0 ? bidDepth / askDepth : null}/>}
+          {activePage === "Coin Explorer" && <CoinExplorer onAnalyze={symbol => { setChartSymbol(symbol+"USDT"); setChartInterval("1h"); setActivePage("Signal Center"); setAdminOpen(false); }}/>}\n          {activePage === "Signal Center" && <SignalCenter symbol={chartSymbol} livePrice={Number(marketTickers[chartSymbol]?.lastPrice ?? 0)} depthRatio={bidDepth > 0 && askDepth > 0 ? bidDepth / askDepth : null}/>}
           {(activePage === "Portfolio" || activePage === "Paper Trading") && <PaperTradingPanel session={session} marketTickers={marketTickers}/> }
           {activePage === "Backtesting" && <BacktestingPanel symbol={chartSymbol}/>}
           {activePage === "Watchlist" && <div className="market-table"><div className="table-head"><span>ASSET</span><span>LAST PRICE</span><span>24H CHANGE</span><span>MARKET</span></div>{watchlist.map(coin=>{const live=marketTickers[coin.symbol+"USDT"];const change=live?Number(live.priceChangePercent):null;return <button className="coin-row coin-row-button" key={coin.symbol} onClick={()=>{setChartSymbol(coin.symbol+"USDT");setActivePage("Market Analysis");}}><div className="coin-name"><div className="coin-icon">{coin.symbol[0]}</div><div><b>{coin.symbol}</b><small>{coin.pair}</small></div></div><b className="price">{live?Number(live.lastPrice).toLocaleString("en-US",{maximumFractionDigits:8}):"—"}</b><span className={change!==null&&change<0?"negative":"positive"}>{change===null?"—":change.toFixed(2)+"%"}</span><span className="market-open"><i/>{live?"LIVE":"Connecting"}</span></button>})}</div>}
